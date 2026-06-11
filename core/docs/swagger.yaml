@@ -39,6 +39,27 @@ definitions:
       value:
         type: integer
     type: object
+  github_com_alpkeskin_rota_core_internal_models.CreatePoolAlertRuleRequest:
+    properties:
+      cooldown_minutes:
+        minimum: 1
+        type: integer
+      enabled:
+        type: boolean
+      min_active_proxies:
+        minimum: 1
+        type: integer
+      webhook_method:
+        enum:
+        - POST
+        - GET
+        type: string
+      webhook_url:
+        type: string
+    required:
+    - min_active_proxies
+    - webhook_url
+    type: object
   github_com_alpkeskin_rota_core_internal_models.CreateProxyRequest:
     properties:
       address:
@@ -53,6 +74,13 @@ definitions:
         - socks4a
         - socks5
         type: string
+      source_id:
+        description: set internally when importing from a source
+        type: integer
+      tags:
+        items:
+          type: string
+        type: array
       username:
         type: string
     required:
@@ -167,28 +195,94 @@ definitions:
       total_pages:
         type: integer
     type: object
+  github_com_alpkeskin_rota_core_internal_models.PoolAlertRule:
+    properties:
+      cooldown_minutes:
+        type: integer
+      created_at:
+        type: string
+      enabled:
+        type: boolean
+      id:
+        type: integer
+      last_fired_at:
+        type: string
+      min_active_proxies:
+        type: integer
+      pool_id:
+        type: integer
+      updated_at:
+        type: string
+      webhook_method:
+        type: string
+      webhook_url:
+        type: string
+    type: object
   github_com_alpkeskin_rota_core_internal_models.Proxy:
     properties:
       address:
         type: string
       avg_response_time:
         type: integer
+      city_name:
+        type: string
+      cooldown_reason:
+        type: string
+      cooldown_until:
+        description: 'Manual invalidation: excluded from rotation until CooldownUntil
+          passes'
+        type: string
+      country_code:
+        description: GeoIP fields
+        type: string
+      country_name:
+        type: string
       created_at:
+        type: string
+      geo_updated_at:
         type: string
       id:
         type: integer
+      isp:
+        type: string
       last_check:
         type: string
+      latitude:
+        type: number
+      longitude:
+        type: number
       protocol:
+        type: string
+      region_name:
         type: string
       requests:
         type: integer
       status:
         type: string
+      tags:
+        description: Tags
+        items:
+          type: string
+        type: array
       updated_at:
         type: string
       username:
         type: string
+    type: object
+  github_com_alpkeskin_rota_core_internal_models.ProxyCleanupSettings:
+    properties:
+      cleanup_interval_hours:
+        description: How often to run cleanup
+        type: integer
+      enabled:
+        description: Enable automatic dead proxy cleanup
+        type: boolean
+      max_failed_days:
+        description: Remove proxies failed for more than N days
+        type: integer
+      min_success_rate:
+        description: Remove proxies with success rate below X% (0 = disabled)
+        type: number
     type: object
   github_com_alpkeskin_rota_core_internal_models.ProxyListResponse:
     properties:
@@ -220,13 +314,29 @@ definitions:
         type: string
       avg_response_time:
         type: integer
+      city_name:
+        type: string
+      cooldown_reason:
+        type: string
+      cooldown_until:
+        description: Manual invalidation / cooldown
+        type: string
+      country_code:
+        description: GeoIP fields
+        type: string
+      country_name:
+        type: string
       created_at:
         type: string
       id:
         type: integer
+      isp:
+        type: string
       last_check:
         type: string
       protocol:
+        type: string
+      region_name:
         type: string
       requests:
         type: integer
@@ -234,6 +344,11 @@ definitions:
         type: string
       success_rate:
         type: number
+      tags:
+        description: Tags
+        items:
+          type: string
+        type: array
       updated_at:
         type: string
       username:
@@ -295,6 +410,8 @@ definitions:
         $ref: '#/definitions/github_com_alpkeskin_rota_core_internal_models.HealthCheckSettings'
       log_retention:
         $ref: '#/definitions/github_com_alpkeskin_rota_core_internal_models.LogRetentionSettings'
+      proxy_cleanup:
+        $ref: '#/definitions/github_com_alpkeskin_rota_core_internal_models.ProxyCleanupSettings'
       rate_limit:
         $ref: '#/definitions/github_com_alpkeskin_rota_core_internal_models.RateLimitSettings'
       rotation:
@@ -336,6 +453,10 @@ definitions:
         - socks4a
         - socks5
         type: string
+      tags:
+        items:
+          type: string
+        type: array
       username:
         type: string
     type: object
@@ -656,6 +777,161 @@ paths:
       summary: System metrics
       tags:
       - metrics
+  /pools/{id}/alert-rules:
+    get:
+      parameters:
+      - description: Pool ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List pool alert rules
+      tags:
+      - pools
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Pool ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Alert rule
+        in: body
+        name: rule
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_alpkeskin_rota_core_internal_models.CreatePoolAlertRuleRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_alpkeskin_rota_core_internal_models.PoolAlertRule'
+      summary: Create a pool alert rule
+      tags:
+      - pools
+  /pools/{id}/alert-rules/{rule_id}:
+    delete:
+      parameters:
+      - description: Pool ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Alert rule ID
+        in: path
+        name: rule_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Delete a pool alert rule
+      tags:
+      - pools
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Pool ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Alert rule ID
+        in: path
+        name: rule_id
+        required: true
+        type: integer
+      - description: Alert rule
+        in: body
+        name: rule
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_alpkeskin_rota_core_internal_models.CreatePoolAlertRuleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_alpkeskin_rota_core_internal_models.PoolAlertRule'
+      summary: Update a pool alert rule
+      tags:
+      - pools
+  /pools/{id}/export:
+    get:
+      description: Export a pool's proxies as txt or csv
+      parameters:
+      - description: Pool ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Export format (txt|csv)
+        in: query
+        name: format
+        type: string
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Exported proxies
+          schema:
+            type: string
+      summary: Export pool proxies
+      tags:
+      - pools
+  /pools/isp-list:
+    get:
+      description: Unique ISP names from the proxy table (for pool filter builder)
+      parameters:
+      - description: Search substring
+        in: query
+        name: q
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List known ISPs
+      tags:
+      - pools
+  /pools/tag-list:
+    get:
+      description: Unique proxy tags (for pool filter builder)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List known proxy tags
+      tags:
+      - pools
   /proxies:
     get:
       description: Get paginated list of proxies with optional filters
@@ -792,6 +1068,53 @@ paths:
           schema:
             $ref: '#/definitions/github_com_alpkeskin_rota_core_internal_models.ErrorResponse'
       summary: Update proxy
+      tags:
+      - proxies
+  /proxies/{id}/invalidate:
+    post:
+      description: Pull a proxy out of rotation for a cooldown period (rate-limited,
+        etc.)
+      parameters:
+      - description: Proxy ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Cooldown minutes (default 30; 0 = until reactivated)
+        in: body
+        name: minutes
+        schema:
+          type: integer
+      - description: Why the proxy was invalidated
+        in: body
+        name: reason
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Invalidate a proxy
+      tags:
+      - proxies
+  /proxies/{id}/reactivate:
+    post:
+      description: Clear a proxy's cooldown and return it to rotation
+      parameters:
+      - description: Proxy ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Reactivate a proxy
       tags:
       - proxies
   /proxies/{id}/test:
@@ -938,6 +1261,42 @@ paths:
       summary: Reload proxy pool
       tags:
       - proxies
+  /sessions:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List active sessions
+      tags:
+      - sessions
+  /sessions/release:
+    post:
+      parameters:
+      - description: Session token
+        in: body
+        name: token
+        required: true
+        schema:
+          type: string
+      - description: Restrict to a single pool
+        in: body
+        name: pool_id
+        schema:
+          type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Release a sticky session
+      tags:
+      - sessions
   /settings:
     get:
       description: Get current system configuration

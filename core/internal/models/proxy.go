@@ -16,6 +16,9 @@ type Proxy struct {
 	AvgResponseTime    int       `json:"avg_response_time"`
 	LastCheck          *time.Time `json:"last_check,omitempty"`
 	LastError          *string   `json:"-"`
+	// Manual invalidation: excluded from rotation until CooldownUntil passes
+	CooldownUntil  *time.Time `json:"cooldown_until,omitempty"`
+	CooldownReason *string    `json:"cooldown_reason,omitempty"`
 	// GeoIP fields
 	CountryCode   *string   `json:"country_code,omitempty"`
 	CountryName   *string   `json:"country_name,omitempty"`
@@ -42,6 +45,9 @@ type ProxyWithStats struct {
 	SuccessRate     float64    `json:"success_rate"`
 	AvgResponseTime int        `json:"avg_response_time"`
 	LastCheck       *time.Time `json:"last_check,omitempty"`
+	// Manual invalidation / cooldown
+	CooldownUntil  *time.Time `json:"cooldown_until,omitempty"`
+	CooldownReason *string    `json:"cooldown_reason,omitempty"`
 	// GeoIP fields
 	CountryCode  *string  `json:"country_code,omitempty"`
 	CountryName  *string  `json:"country_name,omitempty"`

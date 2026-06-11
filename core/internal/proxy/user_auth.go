@@ -27,6 +27,27 @@ type userChainKey struct{}
 // UserChainContextKey is exported for use in the handler.
 var UserChainContextKey = userChainKey{}
 
+// sessionTokenKey is the context key that carries the parsed session token
+// (from a "user-session-<token>" style proxy username), if any.
+type sessionTokenKey struct{}
+
+// SessionTokenContextKey is exported for use in the handler / pool selector.
+var SessionTokenContextKey = sessionTokenKey{}
+
+// sessionMarker separates the base username from a sticky-session token in the
+// proxy username, e.g. "myuser-session-abc123" → user "myuser", token "abc123".
+const sessionMarker = "-session-"
+
+// splitSessionUsername extracts a session token from a proxy username.
+// If the marker is absent it returns (raw, "").
+func splitSessionUsername(raw string) (baseUser, token string) {
+	idx := strings.LastIndex(raw, sessionMarker)
+	if idx < 0 {
+		return raw, ""
+	}
+	return raw[:idx], raw[idx+len(sessionMarker):]
+}
+
 // userEntry caches a resolved PoolChain and the verified password hash for a user.
 // This avoids bcrypt on every request — bcrypt only runs on first auth or after TTL expiry.
 type userEntry struct {
@@ -47,6 +68,7 @@ type UserAuthMiddleware struct {
 	db          *database.DB
 	logger      *logger.Logger
 	rotSettings *models.RotationSettings
+	sessionMgr  *SessionManager
 
 	// legacy fallback (original single-user auth)
 	legacy *AuthMiddleware
@@ -63,6 +85,7 @@ func NewUserAuthMiddleware(
 	db *database.DB,
 	legacy *AuthMiddleware,
 	rotSettings *models.RotationSettings,
+	sessionMgr *SessionManager,
 	log *logger.Logger,
 ) *UserAuthMiddleware {
 	m := &UserAuthMiddleware{
@@ -71,6 +94,7 @@ func NewUserAuthMiddleware(
 		db:          db,
 		legacy:      legacy,
 		rotSettings: rotSettings,
+		sessionMgr:  sessionMgr,
 		logger:      log,
 		cache:       make(map[string]userEntry),
 	}
@@ -83,11 +107,14 @@ func NewUserAuthMiddleware(
 // It reads Proxy-Authorization, looks up the user, builds a PoolChain and stores
 // it in the request context so the handler can use it.
 func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *http.Response) {
-	username, password, ok := parseProxyAuth(req)
+	rawUsername, password, ok := parseProxyAuth(req)
 	if !ok {
 		// No credentials provided — check legacy auth
 		return m.legacy.HandleRequest(req)
 	}
+
+	// A session token may be embedded in the username ("user-session-<token>").
+	username, sessionToken := splitSessionUsername(rawUsername)
 
 	chain, err := m.resolve(req.Context(), username, password)
 	if err != nil {
@@ -104,8 +131,12 @@ func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *h
 		return req, unauthorized()
 	}
 
-	// Attach chain to context and strip the Proxy-Authorization header
+	// Attach chain (and session token, if any) to context and strip the
+	// Proxy-Authorization header.
 	newCtx := context.WithValue(req.Context(), UserChainContextKey, chain)
+	if sessionToken != "" {
+		newCtx = context.WithValue(newCtx, SessionTokenContextKey, sessionToken)
+	}
 	req = req.WithContext(newCtx)
 	req.Header.Del("Proxy-Authorization")
 	return req, nil
@@ -191,7 +222,7 @@ func (m *UserAuthMiddleware) buildChain(ctx context.Context, user *models.ProxyU
 		maxRetry = 5
 	}
 
-	chain := NewPoolChain(m.db, pools, maxRetry, m.logger)
+	chain := NewPoolChain(m.db, pools, maxRetry, m.sessionMgr, m.logger)
 	chain.Refresh(ctx)
 	return chain, nil
 }
@@ -221,6 +252,20 @@ func (m *UserAuthMiddleware) InvalidateUser(username string) {
 	m.mu.Lock()
 	delete(m.cache, username)
 	m.mu.Unlock()
+}
+
+// EvictProxy removes a proxy from every cached user's pool chain so it stops
+// being selected immediately (without waiting for the next refresh).
+func (m *UserAuthMiddleware) EvictProxy(proxyID int) {
+	m.mu.RLock()
+	chains := make([]*PoolChain, 0, len(m.cache))
+	for _, v := range m.cache {
+		chains = append(chains, v.chain)
+	}
+	m.mu.RUnlock()
+	for _, c := range chains {
+		c.EvictProxy(proxyID)
+	}
 }
 
 // parseProxyAuth extracts username+password from the Proxy-Authorization header.

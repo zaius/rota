@@ -35,7 +35,7 @@ Whether you're conducting web scraping operations, performing security research,
 
 ### Core Proxy Server
 - 🚀 **High Performance**: Handle thousands of concurrent requests with minimal latency
-- 🔄 **Smart Rotation**: Multiple rotation strategies (random, round-robin, least connections, time-based)
+- 🔄 **Smart Rotation**: Multiple rotation strategies (random, round-robin, least connections, time-based, plus per-pool sticky and session-based)
 - 🤖 **Automatic Management**: Real-time proxy pool monitoring with automatic unhealthy proxy removal
 - 🌍 **Multi-Protocol**: Full support for HTTP, HTTPS, SOCKS4, SOCKS4A, and SOCKS5
 - ✅ **Health Checking**: Built-in proxy validation to maintain a healthy pool
@@ -61,7 +61,9 @@ Whether you're conducting web scraping operations, performing security research,
 - 🗂️ **Named Pools**: Group proxies by any combination of countries, cities, ISPs, or custom tags
 - ☑️ **Multi-Filter Builder**: Pick geo locations, ISP substrings, or proxy tags — mix freely in one pool
 - 🔄 **Auto / Manual Sync**: `sync_mode: auto` rebuilds membership on every import; `manual` keeps it frozen until you trigger sync explicitly
-- 🔁 **Rotation Strategies**: Per-pool `roundrobin`, `random`, or `sticky` (hold N requests per IP)
+- 🔁 **Rotation Strategies**: Per-pool `roundrobin`, `random`, `sticky` (hold N requests per IP), or `session` (hold one proxy per client session until released or idle)
+- 📌 **Session Stickiness**: Pin a proxy to a client-chosen session via the proxy username (`user-session-<id>`); released explicitly, on idle TTL, or when the proxy is invalidated
+- 🚫 **Manual Invalidation**: Pull a single proxy out of rotation on demand (e.g. when you detect it's rate-limited) with a cooldown, then auto-recover or reactivate it
 - ⚡ **Async Health Checks**: Run health checks against any URL; progress shown in real time
 - ⏱️ **Scheduled Checks**: Cron-style schedule per pool (`*/30 * * * *`)
 - 📤 **Export**: Download pool proxy list as `.txt` or `.csv` (`GET /api/v1/pools/{id}/export?format=txt|csv`)
@@ -294,10 +296,19 @@ Rota is built as a modern monorepo with three main components:
 
 ### Rotation Strategies
 
+Global strategies (legacy single-pool mode):
+
 - **Random**: Select a random proxy for each request
 - **Round Robin**: Distribute requests evenly across all proxies
 - **Least Connections**: Route to the proxy with fewest active connections
 - **Time-Based**: Rotate proxies at fixed intervals
+
+Per-pool strategies (set on each pool via `rotation_method`):
+
+- **`roundrobin`**: Cycle through the pool's proxies in order
+- **`random`**: Pick a random proxy from the pool each request
+- **`sticky`**: Hold one proxy for `stick_count` requests, then advance
+- **`session`**: Hold one proxy per **client session** until released, idle past `session_ttl_minutes`, or invalidated — see [Session Stickiness](#-session-stickiness--proxy-invalidation)
 
 ---
 
@@ -403,6 +414,51 @@ http://username:password@your-proxy-host:8000
 ```
 
 If the main pool has no live IPs the request automatically cascades to the next fallback pool.
+
+---
+
+## 📌 Session Stickiness & Proxy Invalidation
+
+### Session-based rotation
+
+Set a pool's `rotation_method` to `session` to keep the **same proxy** for a whole client session instead of rotating per request. A session is identified by a token you embed in the proxy **username**, using the common `user-session-<token>` convention:
+
+```bash
+# Every request with this username reuses the same upstream proxy
+curl -x "http://alice-session-job42:password@your-proxy-host:8000" https://example.com
+curl -x "http://alice-session-job42:password@your-proxy-host:8000" https://example.com/next
+
+# A different token gets a different proxy
+curl -x "http://alice-session-other:password@your-proxy-host:8000" https://example.com
+```
+
+A session binding is held until one of:
+
+- **You release it** — `POST /api/v1/sessions/release` with `{"token":"job42"}` (add `"pool_id":<id>` to scope to one pool)
+- **It goes idle** — no requests for `session_ttl_minutes` (default 10, configurable per pool)
+- **Its proxy is invalidated or fails** — the session automatically rebinds to a fresh proxy on the next request
+
+Inspect live bindings with `GET /api/v1/sessions`.
+
+> Requests with no `-session-` token in the username fall back to round-robin, so a `session` pool stays safe to use without a token.
+
+### Invalidating a proxy mid-session
+
+When you detect a proxy is rate-limited (or otherwise bad) while using it, pull it out of rotation immediately:
+
+```bash
+# Cooldown for 30 minutes (omit "minutes" or pass 0 to keep it out until reactivated)
+curl -X POST "http://localhost:8001/api/v1/proxies/123/invalidate" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"minutes": 30, "reason": "429 from target"}'
+
+# Put it back early
+curl -X POST "http://localhost:8001/api/v1/proxies/123/reactivate" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Invalidation sets a database cooldown **and** evicts the proxy from every active user's live rotation right away (no wait for the refresh cycle), rebinding any sessions that were using it. The proxy automatically returns to rotation when its cooldown expires. You can also do this from the dashboard via the **Invalidate / Reactivate** actions in the Proxies table row menu.
 
 ---
 

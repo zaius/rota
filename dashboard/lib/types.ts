@@ -9,6 +9,8 @@ export interface Proxy {
   success_rate: number
   avg_response_time: number
   last_check: string
+  cooldown_until?: string
+  cooldown_reason?: string
   username?: string
   created_at: string
   updated_at: string
@@ -223,8 +225,9 @@ export interface ProxyPool {
   country_code?: string
   region_name?: string
   city_name?: string
-  rotation_method: "roundrobin" | "random" | "stick"
+  rotation_method: "roundrobin" | "random" | "stick" | "session"
   stick_count: number
+  session_ttl_minutes: number
   health_check_url: string
   health_check_cron: string
   health_check_enabled: boolean
@@ -373,14 +376,24 @@ export interface CreatePoolRequest {
   geo_filters?: GeoFilter[]
   isp_filters?: string[]
   tag_filters?: string[]
-  rotation_method: "roundrobin" | "random" | "stick"
+  rotation_method: "roundrobin" | "random" | "stick" | "session"
   stick_count: number
+  session_ttl_minutes?: number
   health_check_url?: string
   health_check_cron?: string
   health_check_enabled: boolean
   auto_sync: boolean
   sync_mode?: "auto" | "manual"
   enabled: boolean
+}
+
+export interface SessionInfo {
+  pool_id: number
+  token: string
+  proxy_id: number
+  created_at: string
+  last_used: string
+  expires_at: string
 }
 
 export interface ProxyWithTags {

@@ -24,10 +24,10 @@ type PoolChain struct {
 }
 
 // NewPoolChain builds a PoolChain from an ordered list of ProxyPool objects.
-func NewPoolChain(db *database.DB, pools []models.ProxyPool, maxRetry int, log *logger.Logger) *PoolChain {
+func NewPoolChain(db *database.DB, pools []models.ProxyPool, maxRetry int, sessionMgr *SessionManager, log *logger.Logger) *PoolChain {
 	selectors := make([]*PoolSelector, 0, len(pools))
 	for _, p := range pools {
-		selectors = append(selectors, NewPoolSelector(db, p))
+		selectors = append(selectors, NewPoolSelector(db, p, sessionMgr))
 	}
 	return &PoolChain{
 		selectors: selectors,
@@ -78,6 +78,13 @@ func (c *PoolChain) pickProxy(ctx context.Context, tried map[int]bool) (*models.
 func (c *PoolChain) markFailed(selIdx int, proxyID int) {
 	if selIdx >= 0 && selIdx < len(c.selectors) {
 		c.selectors[selIdx].RemoveProxy(proxyID)
+	}
+}
+
+// EvictProxy removes a proxy from every pool selector in this chain.
+func (c *PoolChain) EvictProxy(proxyID int) {
+	for _, sel := range c.selectors {
+		sel.RemoveProxy(proxyID)
 	}
 }
 

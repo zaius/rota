@@ -483,6 +483,30 @@ var migrations = []Migration{
 		`,
 	},
 	{
+		Version:     22,
+		Description: "Session rotation (pool session TTL) + proxy cooldown (manual invalidation)",
+		Up: `
+			-- session rotation: how long an idle session keeps its proxy binding
+			ALTER TABLE proxy_pools
+			  ADD COLUMN IF NOT EXISTS session_ttl_minutes INTEGER NOT NULL DEFAULT 10;
+
+			-- manual invalidation: proxy is excluded from rotation until cooldown_until
+			ALTER TABLE proxies
+			  ADD COLUMN IF NOT EXISTS cooldown_until  TIMESTAMP,
+			  ADD COLUMN IF NOT EXISTS cooldown_reason TEXT;
+
+			CREATE INDEX IF NOT EXISTS idx_proxies_cooldown_until
+			  ON proxies(cooldown_until)
+			  WHERE cooldown_until IS NOT NULL;
+		`,
+		Down: `
+			DROP INDEX IF EXISTS idx_proxies_cooldown_until;
+			ALTER TABLE proxies     DROP COLUMN IF EXISTS cooldown_reason;
+			ALTER TABLE proxies     DROP COLUMN IF EXISTS cooldown_until;
+			ALTER TABLE proxy_pools DROP COLUMN IF EXISTS session_ttl_minutes;
+		`,
+	},
+	{
 		Version:     21,
 		Description: "Source: last_total column + per-source soft cleanup settings + proxies.last_seen_at",
 		Up: `

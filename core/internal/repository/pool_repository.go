@@ -28,7 +28,7 @@ func (r *PoolRepository) GetDB() *database.DB {
 const poolColumns = `
 	pp.id, pp.name, pp.description,
 	pp.country_code, pp.region_name, pp.city_name,
-	pp.rotation_method, pp.stick_count,
+	pp.rotation_method, pp.stick_count, pp.session_ttl_minutes,
 	pp.health_check_url, pp.health_check_cron, pp.health_check_enabled,
 	pp.auto_sync, COALESCE(pp.sync_mode,'auto') AS sync_mode, pp.enabled,
 	pp.created_at, pp.updated_at
@@ -41,7 +41,7 @@ func scanPool(row interface {
 	return row.Scan(
 		&pool.ID, &pool.Name, &pool.Description,
 		&pool.CountryCode, &pool.RegionName, &pool.CityName,
-		&pool.RotationMethod, &pool.StickCount,
+		&pool.RotationMethod, &pool.StickCount, &pool.SessionTTLMinutes,
 		&pool.HealthCheckURL, &pool.HealthCheckCron, &pool.HealthCheckEnabled,
 		&pool.AutoSync, &pool.SyncMode, &pool.Enabled,
 		&pool.CreatedAt, &pool.UpdatedAt,
@@ -74,7 +74,7 @@ func (r *PoolRepository) List(ctx context.Context) ([]models.ProxyPool, error) {
 		err := rows.Scan(
 			&pool.ID, &pool.Name, &pool.Description,
 			&pool.CountryCode, &pool.RegionName, &pool.CityName,
-			&pool.RotationMethod, &pool.StickCount,
+			&pool.RotationMethod, &pool.StickCount, &pool.SessionTTLMinutes,
 			&pool.HealthCheckURL, &pool.HealthCheckCron, &pool.HealthCheckEnabled,
 			&pool.AutoSync, &pool.SyncMode, &pool.Enabled,
 			&pool.CreatedAt, &pool.UpdatedAt,
@@ -109,7 +109,7 @@ func (r *PoolRepository) GetByID(ctx context.Context, id int) (*models.ProxyPool
 	err := r.db.Pool.QueryRow(ctx, query, id).Scan(
 		&pool.ID, &pool.Name, &pool.Description,
 		&pool.CountryCode, &pool.RegionName, &pool.CityName,
-		&pool.RotationMethod, &pool.StickCount,
+		&pool.RotationMethod, &pool.StickCount, &pool.SessionTTLMinutes,
 		&pool.HealthCheckURL, &pool.HealthCheckCron, &pool.HealthCheckEnabled,
 		&pool.AutoSync, &pool.SyncMode, &pool.Enabled,
 		&pool.CreatedAt, &pool.UpdatedAt,
@@ -129,11 +129,11 @@ func (r *PoolRepository) Create(ctx context.Context, req models.CreatePoolReques
 	query := `
 		INSERT INTO proxy_pools
 			(name, description, country_code, region_name, city_name,
-			 rotation_method, stick_count, health_check_url, health_check_cron,
+			 rotation_method, stick_count, session_ttl_minutes, health_check_url, health_check_cron,
 			 health_check_enabled, auto_sync, sync_mode, enabled)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		RETURNING id, name, description, country_code, region_name, city_name,
-		          rotation_method, stick_count, health_check_url, health_check_cron,
+		          rotation_method, stick_count, session_ttl_minutes, health_check_url, health_check_cron,
 		          health_check_enabled, auto_sync, COALESCE(sync_mode,'auto'), enabled, created_at, updated_at
 	`
 	hcURL := req.HealthCheckURL
@@ -148,6 +148,10 @@ func (r *PoolRepository) Create(ctx context.Context, req models.CreatePoolReques
 	if sc < 1 {
 		sc = 10
 	}
+	sttl := req.SessionTTLMinutes
+	if sttl < 1 {
+		sttl = 10
+	}
 	syncMode := req.SyncMode
 	if syncMode == "" {
 		syncMode = "auto"
@@ -156,12 +160,12 @@ func (r *PoolRepository) Create(ctx context.Context, req models.CreatePoolReques
 	var pool models.ProxyPool
 	err := r.db.Pool.QueryRow(ctx, query,
 		req.Name, req.Description, req.CountryCode, req.RegionName, req.CityName,
-		req.RotationMethod, sc, hcURL, hcCron,
+		req.RotationMethod, sc, sttl, hcURL, hcCron,
 		req.HealthCheckEnabled, req.AutoSync, syncMode, req.Enabled,
 	).Scan(
 		&pool.ID, &pool.Name, &pool.Description,
 		&pool.CountryCode, &pool.RegionName, &pool.CityName,
-		&pool.RotationMethod, &pool.StickCount,
+		&pool.RotationMethod, &pool.StickCount, &pool.SessionTTLMinutes,
 		&pool.HealthCheckURL, &pool.HealthCheckCron, &pool.HealthCheckEnabled,
 		&pool.AutoSync, &pool.SyncMode, &pool.Enabled,
 		&pool.CreatedAt, &pool.UpdatedAt,
@@ -183,27 +187,28 @@ func (r *PoolRepository) Update(ctx context.Context, id int, req models.UpdatePo
 			city_name           = $5,
 			rotation_method     = CASE WHEN $6 <> '' THEN $6 ELSE rotation_method END,
 			stick_count         = CASE WHEN $7 > 0 THEN $7 ELSE stick_count END,
-			health_check_url    = CASE WHEN $8 <> '' THEN $8 ELSE health_check_url END,
-			health_check_cron   = CASE WHEN $9 <> '' THEN $9 ELSE health_check_cron END,
-			health_check_enabled= COALESCE($10, health_check_enabled),
-			auto_sync           = COALESCE($11, auto_sync),
-			sync_mode           = CASE WHEN $12 <> '' THEN $12 ELSE sync_mode END,
-			enabled             = COALESCE($13, enabled),
+			session_ttl_minutes = CASE WHEN $8 > 0 THEN $8 ELSE session_ttl_minutes END,
+			health_check_url    = CASE WHEN $9 <> '' THEN $9 ELSE health_check_url END,
+			health_check_cron   = CASE WHEN $10 <> '' THEN $10 ELSE health_check_cron END,
+			health_check_enabled= COALESCE($11, health_check_enabled),
+			auto_sync           = COALESCE($12, auto_sync),
+			sync_mode           = CASE WHEN $13 <> '' THEN $13 ELSE sync_mode END,
+			enabled             = COALESCE($14, enabled),
 			updated_at          = NOW()
-		WHERE id = $14
+		WHERE id = $15
 		RETURNING id, name, description, country_code, region_name, city_name,
-		          rotation_method, stick_count, health_check_url, health_check_cron,
+		          rotation_method, stick_count, session_ttl_minutes, health_check_url, health_check_cron,
 		          health_check_enabled, auto_sync, COALESCE(sync_mode,'auto'), enabled, created_at, updated_at
 	`
 	var pool models.ProxyPool
 	err := r.db.Pool.QueryRow(ctx, query,
 		req.Name, req.Description, req.CountryCode, req.RegionName, req.CityName,
-		req.RotationMethod, req.StickCount, req.HealthCheckURL, req.HealthCheckCron,
+		req.RotationMethod, req.StickCount, req.SessionTTLMinutes, req.HealthCheckURL, req.HealthCheckCron,
 		req.HealthCheckEnabled, req.AutoSync, req.SyncMode, req.Enabled, id,
 	).Scan(
 		&pool.ID, &pool.Name, &pool.Description,
 		&pool.CountryCode, &pool.RegionName, &pool.CityName,
-		&pool.RotationMethod, &pool.StickCount,
+		&pool.RotationMethod, &pool.StickCount, &pool.SessionTTLMinutes,
 		&pool.HealthCheckURL, &pool.HealthCheckCron, &pool.HealthCheckEnabled,
 		&pool.AutoSync, &pool.SyncMode, &pool.Enabled,
 		&pool.CreatedAt, &pool.UpdatedAt,
@@ -525,7 +530,7 @@ func (r *PoolRepository) GetGeoSummary(ctx context.Context) ([]models.GeoSummary
 func (r *PoolRepository) GetAllEnabledWithHC(ctx context.Context) ([]models.ProxyPool, error) {
 	query := `
 		SELECT id, name, description, country_code, region_name, city_name,
-		       rotation_method, stick_count, health_check_url, health_check_cron,
+		       rotation_method, stick_count, session_ttl_minutes, health_check_url, health_check_cron,
 		       health_check_enabled, auto_sync, COALESCE(sync_mode,'auto'), enabled, created_at, updated_at
 		FROM proxy_pools
 		WHERE enabled = true AND health_check_enabled = true
@@ -542,7 +547,7 @@ func (r *PoolRepository) GetAllEnabledWithHC(ctx context.Context) ([]models.Prox
 		err := rows.Scan(
 			&pool.ID, &pool.Name, &pool.Description,
 			&pool.CountryCode, &pool.RegionName, &pool.CityName,
-			&pool.RotationMethod, &pool.StickCount,
+			&pool.RotationMethod, &pool.StickCount, &pool.SessionTTLMinutes,
 			&pool.HealthCheckURL, &pool.HealthCheckCron, &pool.HealthCheckEnabled,
 			&pool.AutoSync, &pool.SyncMode, &pool.Enabled,
 			&pool.CreatedAt, &pool.UpdatedAt,

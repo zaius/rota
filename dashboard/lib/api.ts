@@ -27,6 +27,7 @@ import {
   UpdateProxyUserRequest,
   PoolAlertRule,
   CreatePoolAlertRuleRequest,
+  SessionInfo,
 } from "./types"
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001"
@@ -220,6 +221,33 @@ class ApiClient {
   async testProxy(id: number): Promise<ProxyTestResult> {
     return this.request<ProxyTestResult>(`/api/v1/proxies/${id}/test`, {
       method: "POST",
+    })
+  }
+
+  async invalidateProxy(
+    id: number,
+    opts?: { minutes?: number; reason?: string }
+  ): Promise<{ status: string; id: number; address: string; cooldown_until?: string }> {
+    return this.request(`/api/v1/proxies/${id}/invalidate`, {
+      method: "POST",
+      body: JSON.stringify(opts ?? {}),
+    })
+  }
+
+  async reactivateProxy(id: number): Promise<{ status: string; id: number }> {
+    return this.request(`/api/v1/proxies/${id}/reactivate`, {
+      method: "POST",
+    })
+  }
+
+  async listSessions(): Promise<{ sessions: SessionInfo[] }> {
+    return this.request("/api/v1/sessions")
+  }
+
+  async releaseSession(token: string, poolId?: number): Promise<{ status: string; count: number }> {
+    return this.request("/api/v1/sessions/release", {
+      method: "POST",
+      body: JSON.stringify({ token, pool_id: poolId }),
     })
   }
 

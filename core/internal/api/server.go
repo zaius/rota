@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/api/handlers"
@@ -23,9 +25,13 @@ import (
 	_ "github.com/alpkeskin/rota/core/internal/models"
 )
 
-// ProxyServer interface for reloading proxy pool
+// ProxyServer interface for reloading proxy pool and live session/proxy control
 type ProxyServer interface {
 	ReloadSettings(ctx context.Context) error
+	EvictProxy(proxyID int)
+	ListSessions() []proxy.SessionInfo
+	ReleaseSession(poolID int, token string) bool
+	ReleaseSessionToken(token string) int
 }
 
 // Server represents the API server
@@ -37,6 +43,7 @@ type Server struct {
 	port      int
 	jwtSecret string
 	authRL    *authRateLimiter
+	proxyRepo *repository.ProxyRepository
 
 	// Proxy server reference for reloading
 	proxyServer ProxyServer
@@ -125,6 +132,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB) *Server {
 		port:                 cfg.APIPort,
 		jwtSecret:            jwtSecret,
 		authRL:               authRL,
+		proxyRepo:            proxyRepo,
 		authHandler:          authHandler,
 		healthHandler:        healthHandler,
 		dashboardHandler:     dashboardHandler,
@@ -246,7 +254,13 @@ func (s *Server) setupRoutes() {
 		r.Put("/proxies/{id}", s.proxyHandler.Update)
 		r.Delete("/proxies/{id}", s.proxyHandler.Delete)
 		r.Post("/proxies/{id}/test", s.proxyHandler.Test)
+		r.Post("/proxies/{id}/invalidate", s.InvalidateProxy)
+		r.Post("/proxies/{id}/reactivate", s.ReactivateProxy)
 		r.Post("/proxies/reload", s.ReloadProxyPool)
+
+		// Sticky sessions (session rotation method)
+		r.Get("/sessions", s.ListSessions)
+		r.Post("/sessions/release", s.ReleaseSession)
 
 		// System logs
 		r.Get("/logs", s.logsHandler.List)
@@ -355,6 +369,150 @@ func (s *Server) ReloadProxyPool(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"success","message":"Proxy pool reloaded successfully"}`))
+}
+
+// InvalidateProxy marks a proxy as temporarily out of rotation (e.g. when the
+// client detects it has been rate-limited). It sets a DB cooldown and evicts the
+// proxy from live rotation immediately, rebinding any sessions that were using it.
+//
+//	@Summary		Invalidate a proxy
+//	@Description	Pull a proxy out of rotation for a cooldown period (rate-limited, etc.)
+//	@Tags			proxies
+//	@Param			id		path	int		true	"Proxy ID"
+//	@Param			minutes	body	int		false	"Cooldown minutes (default 30; 0 = until reactivated)"
+//	@Param			reason	body	string	false	"Why the proxy was invalidated"
+//	@Success		200	{object}	map[string]interface{}
+//	@Router			/proxies/{id}/invalidate [post]
+func (s *Server) InvalidateProxy(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Minutes int    `json:"minutes"`
+		Reason  string `json:"reason"`
+	}
+	// Body is optional.
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	// minutes <= 0 → long default ("until reactivated"); >0 → that many minutes.
+	d := time.Duration(body.Minutes) * time.Minute
+
+	proxyObj, err := s.proxyRepo.SetCooldown(r.Context(), id, d, body.Reason)
+	if err != nil {
+		s.logger.Error("failed to invalidate proxy", "id", id, "error", err)
+		http.Error(w, `{"error":"failed to invalidate proxy"}`, http.StatusInternalServerError)
+		return
+	}
+	if proxyObj == nil {
+		http.Error(w, `{"error":"proxy not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Evict from live rotation + drop bound sessions immediately.
+	if s.proxyServer != nil {
+		s.proxyServer.EvictProxy(id)
+	}
+
+	s.logger.Info("proxy invalidated", "id", id, "minutes", body.Minutes, "reason", body.Reason)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	resp := map[string]interface{}{
+		"status":         "invalidated",
+		"id":             proxyObj.ID,
+		"address":        proxyObj.Address,
+		"cooldown_until": proxyObj.CooldownUntil,
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// ReactivateProxy clears a proxy's cooldown, returning it to rotation.
+//
+//	@Summary		Reactivate a proxy
+//	@Description	Clear a proxy's cooldown and return it to rotation
+//	@Tags			proxies
+//	@Param			id	path	int	true	"Proxy ID"
+//	@Success		200	{object}	map[string]interface{}
+//	@Router			/proxies/{id}/reactivate [post]
+func (s *Server) ReactivateProxy(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	proxyObj, err := s.proxyRepo.ClearCooldown(r.Context(), id)
+	if err != nil {
+		s.logger.Error("failed to reactivate proxy", "id", id, "error", err)
+		http.Error(w, `{"error":"failed to reactivate proxy"}`, http.StatusInternalServerError)
+		return
+	}
+	if proxyObj == nil {
+		http.Error(w, `{"error":"proxy not found"}`, http.StatusNotFound)
+		return
+	}
+	s.logger.Info("proxy reactivated", "id", id)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "reactivated", "id": proxyObj.ID})
+}
+
+// ListSessions returns all live sticky-session bindings.
+//
+//	@Summary		List active sessions
+//	@Tags			sessions
+//	@Produce		json
+//	@Success		200	{object}	map[string]interface{}
+//	@Router			/sessions [get]
+func (s *Server) ListSessions(w http.ResponseWriter, r *http.Request) {
+	var sessions []proxy.SessionInfo
+	if s.proxyServer != nil {
+		sessions = s.proxyServer.ListSessions()
+	}
+	if sessions == nil {
+		sessions = []proxy.SessionInfo{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": sessions})
+}
+
+// ReleaseSession drops a sticky session. Provide a token (released across all
+// pools) and optionally a pool_id to scope the release to a single pool.
+//
+//	@Summary		Release a sticky session
+//	@Tags			sessions
+//	@Param			token	body	string	true	"Session token"
+//	@Param			pool_id	body	int		false	"Restrict to a single pool"
+//	@Success		200	{object}	map[string]interface{}
+//	@Router			/sessions/release [post]
+func (s *Server) ReleaseSession(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token  string `json:"token"`
+		PoolID *int   `json:"pool_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
+		http.Error(w, `{"error":"token is required"}`, http.StatusBadRequest)
+		return
+	}
+	if s.proxyServer == nil {
+		http.Error(w, `{"error":"proxy server not available"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	released := 0
+	if body.PoolID != nil {
+		if s.proxyServer.ReleaseSession(*body.PoolID, body.Token) {
+			released = 1
+		}
+	} else {
+		released = s.proxyServer.ReleaseSessionToken(body.Token)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "released", "count": released})
 }
 
 // serveSwaggerJSON serves the swagger.json file

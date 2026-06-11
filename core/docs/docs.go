@@ -391,6 +391,241 @@ const docTemplate = `{
                 }
             }
         },
+        "/pools/isp-list": {
+            "get": {
+                "description": "Unique ISP names from the proxy table (for pool filter builder)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pools"
+                ],
+                "summary": "List known ISPs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search substring",
+                        "name": "q",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/pools/tag-list": {
+            "get": {
+                "description": "Unique proxy tags (for pool filter builder)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pools"
+                ],
+                "summary": "List known proxy tags",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/pools/{id}/alert-rules": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pools"
+                ],
+                "summary": "List pool alert rules",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Pool ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pools"
+                ],
+                "summary": "Create a pool alert rule",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Pool ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Alert rule",
+                        "name": "rule",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_alpkeskin_rota_core_internal_models.CreatePoolAlertRuleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_alpkeskin_rota_core_internal_models.PoolAlertRule"
+                        }
+                    }
+                }
+            }
+        },
+        "/pools/{id}/alert-rules/{rule_id}": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pools"
+                ],
+                "summary": "Update a pool alert rule",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Pool ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Alert rule ID",
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Alert rule",
+                        "name": "rule",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_alpkeskin_rota_core_internal_models.CreatePoolAlertRuleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_alpkeskin_rota_core_internal_models.PoolAlertRule"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pools"
+                ],
+                "summary": "Delete a pool alert rule",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Pool ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Alert rule ID",
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/pools/{id}/export": {
+            "get": {
+                "description": "Export a pool's proxies as txt or csv",
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "pools"
+                ],
+                "summary": "Export pool proxies",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Pool ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Export format (txt|csv)",
+                        "name": "format",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Exported proxies",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/proxies": {
             "get": {
                 "description": "Get paginated list of proxies with optional filters",
@@ -769,6 +1004,76 @@ const docTemplate = `{
                 }
             }
         },
+        "/proxies/{id}/invalidate": {
+            "post": {
+                "description": "Pull a proxy out of rotation for a cooldown period (rate-limited, etc.)",
+                "tags": [
+                    "proxies"
+                ],
+                "summary": "Invalidate a proxy",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Proxy ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Cooldown minutes (default 30; 0 = until reactivated)",
+                        "name": "minutes",
+                        "in": "body",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Why the proxy was invalidated",
+                        "name": "reason",
+                        "in": "body",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/proxies/{id}/reactivate": {
+            "post": {
+                "description": "Clear a proxy's cooldown and return it to rotation",
+                "tags": [
+                    "proxies"
+                ],
+                "summary": "Reactivate a proxy",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Proxy ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/proxies/{id}/test": {
             "post": {
                 "description": "Test a proxy server's connectivity and performance",
@@ -811,6 +1116,62 @@ const docTemplate = `{
                         "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/github_com_alpkeskin_rota_core_internal_models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/sessions": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "List active sessions",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/sessions/release": {
+            "post": {
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "Release a sticky session",
+                "parameters": [
+                    {
+                        "description": "Session token",
+                        "name": "token",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Restrict to a single pool",
+                        "name": "pool_id",
+                        "in": "body",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -1001,6 +1362,36 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_alpkeskin_rota_core_internal_models.CreatePoolAlertRuleRequest": {
+            "type": "object",
+            "required": [
+                "min_active_proxies",
+                "webhook_url"
+            ],
+            "properties": {
+                "cooldown_minutes": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "min_active_proxies": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "webhook_method": {
+                    "type": "string",
+                    "enum": [
+                        "POST",
+                        "GET"
+                    ]
+                },
+                "webhook_url": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_alpkeskin_rota_core_internal_models.CreateProxyRequest": {
             "type": "object",
             "required": [
@@ -1023,6 +1414,16 @@ const docTemplate = `{
                         "socks4a",
                         "socks5"
                     ]
+                },
+                "source_id": {
+                    "description": "set internally when importing from a source",
+                    "type": "integer"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "username": {
                     "type": "string"
@@ -1192,6 +1593,41 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_alpkeskin_rota_core_internal_models.PoolAlertRule": {
+            "type": "object",
+            "properties": {
+                "cooldown_minutes": {
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "last_fired_at": {
+                    "type": "string"
+                },
+                "min_active_proxies": {
+                    "type": "integer"
+                },
+                "pool_id": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "webhook_method": {
+                    "type": "string"
+                },
+                "webhook_url": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_alpkeskin_rota_core_internal_models.Proxy": {
             "type": "object",
             "properties": {
@@ -1201,16 +1637,48 @@ const docTemplate = `{
                 "avg_response_time": {
                     "type": "integer"
                 },
+                "city_name": {
+                    "type": "string"
+                },
+                "cooldown_reason": {
+                    "type": "string"
+                },
+                "cooldown_until": {
+                    "description": "Manual invalidation: excluded from rotation until CooldownUntil passes",
+                    "type": "string"
+                },
+                "country_code": {
+                    "description": "GeoIP fields",
+                    "type": "string"
+                },
+                "country_name": {
+                    "type": "string"
+                },
                 "created_at": {
+                    "type": "string"
+                },
+                "geo_updated_at": {
                     "type": "string"
                 },
                 "id": {
                     "type": "integer"
                 },
+                "isp": {
+                    "type": "string"
+                },
                 "last_check": {
                     "type": "string"
                 },
+                "latitude": {
+                    "type": "number"
+                },
+                "longitude": {
+                    "type": "number"
+                },
                 "protocol": {
+                    "type": "string"
+                },
+                "region_name": {
                     "type": "string"
                 },
                 "requests": {
@@ -1219,11 +1687,39 @@ const docTemplate = `{
                 "status": {
                     "type": "string"
                 },
+                "tags": {
+                    "description": "Tags",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "updated_at": {
                     "type": "string"
                 },
                 "username": {
                     "type": "string"
+                }
+            }
+        },
+        "github_com_alpkeskin_rota_core_internal_models.ProxyCleanupSettings": {
+            "type": "object",
+            "properties": {
+                "cleanup_interval_hours": {
+                    "description": "How often to run cleanup",
+                    "type": "integer"
+                },
+                "enabled": {
+                    "description": "Enable automatic dead proxy cleanup",
+                    "type": "boolean"
+                },
+                "max_failed_days": {
+                    "description": "Remove proxies failed for more than N days",
+                    "type": "integer"
+                },
+                "min_success_rate": {
+                    "description": "Remove proxies with success rate below X% (0 = disabled)",
+                    "type": "number"
                 }
             }
         },
@@ -1273,16 +1769,39 @@ const docTemplate = `{
                 "avg_response_time": {
                     "type": "integer"
                 },
+                "city_name": {
+                    "type": "string"
+                },
+                "cooldown_reason": {
+                    "type": "string"
+                },
+                "cooldown_until": {
+                    "description": "Manual invalidation / cooldown",
+                    "type": "string"
+                },
+                "country_code": {
+                    "description": "GeoIP fields",
+                    "type": "string"
+                },
+                "country_name": {
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
                 "id": {
                     "type": "integer"
                 },
+                "isp": {
+                    "type": "string"
+                },
                 "last_check": {
                     "type": "string"
                 },
                 "protocol": {
+                    "type": "string"
+                },
+                "region_name": {
                     "type": "string"
                 },
                 "requests": {
@@ -1293,6 +1812,13 @@ const docTemplate = `{
                 },
                 "success_rate": {
                     "type": "number"
+                },
+                "tags": {
+                    "description": "Tags",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "updated_at": {
                     "type": "string"
@@ -1384,6 +1910,9 @@ const docTemplate = `{
                 "log_retention": {
                     "$ref": "#/definitions/github_com_alpkeskin_rota_core_internal_models.LogRetentionSettings"
                 },
+                "proxy_cleanup": {
+                    "$ref": "#/definitions/github_com_alpkeskin_rota_core_internal_models.ProxyCleanupSettings"
+                },
                 "rate_limit": {
                     "$ref": "#/definitions/github_com_alpkeskin_rota_core_internal_models.RateLimitSettings"
                 },
@@ -1444,6 +1973,12 @@ const docTemplate = `{
                         "socks4a",
                         "socks5"
                     ]
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "username": {
                     "type": "string"

@@ -80,6 +80,7 @@ type Server struct {
 	rateLimitMw     *RateLimitMiddleware
 	proxyRepo       *repository.ProxyRepository
 	settingsRepo    *repository.SettingsRepository
+	sessionMgr      *SessionManager
 	refreshTicker   *time.Ticker
 	cleanupTicker   *time.Ticker
 	stopChan        chan struct{}
@@ -125,8 +126,11 @@ func New(
 	authMiddleware := NewAuthMiddleware(settings.Authentication)
 	rateLimitMw := NewRateLimitMiddleware(settings.RateLimit)
 
+	// Session manager for "session" rotation (process-wide, survives chain rebuilds)
+	sessionMgr := NewSessionManager()
+
 	// Create user-aware auth middleware (pool-based routing)
-	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, authMiddleware, &settings.Rotation, log)
+	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, authMiddleware, &settings.Rotation, sessionMgr, log)
 
 	// Create the proxy router
 	router := &proxyRouter{
@@ -158,6 +162,7 @@ func New(
 		rateLimitMw:    rateLimitMw,
 		proxyRepo:      proxyRepo,
 		settingsRepo:   settingsRepo,
+		sessionMgr:     sessionMgr,
 		stopChan:       make(chan struct{}),
 	}
 
@@ -225,8 +230,50 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.cleanupTicker != nil {
 		s.cleanupTicker.Stop()
 	}
+	if s.sessionMgr != nil {
+		s.sessionMgr.Stop()
+	}
 
 	return s.server.Shutdown(ctx)
+}
+
+// ListSessions returns a snapshot of all live sticky-session bindings.
+func (s *Server) ListSessions() []SessionInfo {
+	if s.sessionMgr == nil {
+		return nil
+	}
+	return s.sessionMgr.List()
+}
+
+// ReleaseSession drops a sticky session for a specific pool. Returns true if a
+// binding existed.
+func (s *Server) ReleaseSession(poolID int, token string) bool {
+	if s.sessionMgr == nil {
+		return false
+	}
+	return s.sessionMgr.Release(poolID, token)
+}
+
+// ReleaseSessionToken drops a sticky session across all pools. Returns the count
+// of bindings removed.
+func (s *Server) ReleaseSessionToken(token string) int {
+	if s.sessionMgr == nil {
+		return 0
+	}
+	return s.sessionMgr.ReleaseToken(token)
+}
+
+// EvictProxy immediately removes a proxy from every active user's in-memory
+// selector and drops any sessions bound to it. The DB cooldown (set by the API
+// handler) keeps it out of rotation on the next refresh; this makes the removal
+// take effect right away without waiting for the 30s refresh cycle.
+func (s *Server) EvictProxy(proxyID int) {
+	if s.sessionMgr != nil {
+		s.sessionMgr.Evict(proxyID)
+	}
+	if s.userAuthMw != nil {
+		s.userAuthMw.EvictProxy(proxyID)
+	}
 }
 
 // ReloadSettings reloads settings from database and updates components

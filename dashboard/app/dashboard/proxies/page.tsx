@@ -233,6 +233,28 @@ export default function ProxiesPage() {
     }
   }
 
+  const handleInvalidateProxy = async (id: number) => {
+    try {
+      const res = await api.invalidateProxy(id, { reason: "manually invalidated" })
+      toast.success("Proxy invalidated", `${res.address} pulled out of rotation`)
+      fetchProxies()
+    } catch (error) {
+      console.error("Failed to invalidate proxy:", error)
+      toast.error("Failed to invalidate proxy", error instanceof Error ? error.message : "Unknown error")
+    }
+  }
+
+  const handleReactivateProxy = async (id: number) => {
+    try {
+      await api.reactivateProxy(id)
+      toast.success("Proxy reactivated", "Returned to rotation")
+      fetchProxies()
+    } catch (error) {
+      console.error("Failed to reactivate proxy:", error)
+      toast.error("Failed to reactivate proxy", error instanceof Error ? error.message : "Unknown error")
+    }
+  }
+
   const handleBulkDelete = async () => {
     const selectedIds = Object.keys(rowSelection).map(key => data[Number(key)].id)
     if (selectedIds.length === 0) return
@@ -578,6 +600,15 @@ export default function ProxiesPage() {
               <DropdownMenuItem onClick={() => handleTestProxy(proxy.id)}>
                 Test proxy
               </DropdownMenuItem>
+              {proxy.cooldown_until && new Date(proxy.cooldown_until) > new Date() ? (
+                <DropdownMenuItem onClick={() => handleReactivateProxy(proxy.id)}>
+                  Reactivate (clear cooldown)
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onClick={() => handleInvalidateProxy(proxy.id)}>
+                  Invalidate (rate-limited)
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => {
                 setEditingProxy(proxy)
                 setIsEditDialogOpen(true)

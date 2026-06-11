@@ -12,6 +12,7 @@ type ProxyPool struct {
 	CityName           *string    `json:"city_name,omitempty"`
 	RotationMethod     string     `json:"rotation_method"`
 	StickCount         int        `json:"stick_count"`
+	SessionTTLMinutes  int        `json:"session_ttl_minutes"`
 	HealthCheckURL     string     `json:"health_check_url"`
 	HealthCheckCron    string     `json:"health_check_cron"`
 	HealthCheckEnabled bool       `json:"health_check_enabled"`
@@ -128,8 +129,9 @@ type CreatePoolRequest struct {
 	GeoFilters         []GeoFilter `json:"geo_filters,omitempty"`  // multi-location
 	ISPFilters         []string    `json:"isp_filters,omitempty"`  // ISP name substrings
 	TagFilters         []string    `json:"tag_filters,omitempty"`  // proxy tags (AND logic)
-	RotationMethod     string      `json:"rotation_method" validate:"required,oneof=roundrobin random stick"`
+	RotationMethod     string      `json:"rotation_method" validate:"required,oneof=roundrobin random stick session"`
 	StickCount         int         `json:"stick_count"     validate:"min=1"`
+	SessionTTLMinutes  int         `json:"session_ttl_minutes" validate:"omitempty,min=1"`
 	HealthCheckURL     string      `json:"health_check_url"`
 	HealthCheckCron    string      `json:"health_check_cron"`
 	HealthCheckEnabled bool        `json:"health_check_enabled"`
@@ -148,8 +150,9 @@ type UpdatePoolRequest struct {
 	GeoFilters         []GeoFilter `json:"geo_filters"`  // replaces filters when provided
 	ISPFilters         []string    `json:"isp_filters"`  // replaces ISP filters
 	TagFilters         []string    `json:"tag_filters"`  // replaces tag filters
-	RotationMethod     string      `json:"rotation_method" validate:"omitempty,oneof=roundrobin random stick"`
+	RotationMethod     string      `json:"rotation_method" validate:"omitempty,oneof=roundrobin random stick session"`
 	StickCount         int         `json:"stick_count"     validate:"omitempty,min=1"`
+	SessionTTLMinutes  int         `json:"session_ttl_minutes" validate:"omitempty,min=1"`
 	HealthCheckURL     string      `json:"health_check_url"`
 	HealthCheckCron    string      `json:"health_check_cron"`
 	HealthCheckEnabled *bool       `json:"health_check_enabled"`

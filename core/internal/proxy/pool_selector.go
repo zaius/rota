@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -14,10 +15,12 @@ import (
 // PoolSelector selects a proxy from a specific pool using the pool's rotation strategy.
 // It keeps in-memory state (round-robin index, stick counters) per pool instance.
 type PoolSelector struct {
-	db     *database.DB
-	poolID int
-	method string // roundrobin | random | stick
-	stick  int    // stick_count
+	db         *database.DB
+	poolID     int
+	method     string // roundrobin | random | stick | session
+	stick      int    // stick_count
+	sessionTTL time.Duration
+	sessionMgr *SessionManager
 
 	mu         sync.Mutex
 	proxies    []*models.Proxy
@@ -27,12 +30,18 @@ type PoolSelector struct {
 }
 
 // NewPoolSelector creates a PoolSelector for the given pool.
-func NewPoolSelector(db *database.DB, pool models.ProxyPool) *PoolSelector {
+func NewPoolSelector(db *database.DB, pool models.ProxyPool, sessionMgr *SessionManager) *PoolSelector {
+	ttl := pool.SessionTTLMinutes
+	if ttl < 1 {
+		ttl = 10
+	}
 	return &PoolSelector{
-		db:     db,
-		poolID: pool.ID,
-		method: pool.RotationMethod,
-		stick:  pool.StickCount,
+		db:         db,
+		poolID:     pool.ID,
+		method:     pool.RotationMethod,
+		stick:      pool.StickCount,
+		sessionTTL: time.Duration(ttl) * time.Minute,
+		sessionMgr: sessionMgr,
 	}
 }
 
@@ -46,6 +55,7 @@ func (ps *PoolSelector) Refresh(ctx context.Context) error {
 		JOIN pool_proxies pp ON pp.proxy_id = p.id
 		WHERE pp.pool_id = $1
 		  AND p.status IN ('active', 'idle')
+		  AND (p.cooldown_until IS NULL OR p.cooldown_until < NOW())
 		ORDER BY p.id
 	`, ps.poolID)
 	if err != nil {
@@ -89,7 +99,7 @@ func (ps *PoolSelector) HasActive() bool {
 }
 
 // Select picks the next proxy according to the pool's rotation method.
-func (ps *PoolSelector) Select(_ context.Context) (*models.Proxy, error) {
+func (ps *PoolSelector) Select(ctx context.Context) (*models.Proxy, error) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -104,6 +114,30 @@ func (ps *PoolSelector) Select(_ context.Context) (*models.Proxy, error) {
 			return nil, fmt.Errorf("random selection failed: %w", err)
 		}
 		return ps.proxies[n.Int64()], nil
+
+	case "session":
+		// Bind a proxy to the client's session token and hold it until the
+		// session is released, goes idle (TTL), or its proxy disappears.
+		token, _ := ctx.Value(SessionTokenContextKey).(string)
+		if token == "" || ps.sessionMgr == nil {
+			// No session token supplied → behave like round-robin.
+			p := ps.proxies[ps.rrIdx]
+			ps.rrIdx = (ps.rrIdx + 1) % len(ps.proxies)
+			return p, nil
+		}
+		if boundID, ok := ps.sessionMgr.Get(ps.poolID, token); ok {
+			for _, p := range ps.proxies {
+				if p.ID == boundID {
+					return p, nil
+				}
+			}
+			// Bound proxy no longer available (failed/invalidated/cooled down) —
+			// fall through to rebind to a fresh one.
+		}
+		p := ps.proxies[ps.rrIdx]
+		ps.rrIdx = (ps.rrIdx + 1) % len(ps.proxies)
+		ps.sessionMgr.Bind(ps.poolID, token, p.ID, ps.sessionTTL)
+		return p, nil
 
 	case "stick":
 		p := ps.proxies[ps.stickIdx]

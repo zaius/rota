@@ -239,6 +239,7 @@ func (b *BaseSelector) loadActiveProxiesWithSettings(ctx context.Context, settin
 			avg_response_time, last_check, last_error, created_at, updated_at
 		FROM proxies
 		WHERE status IN ('active', 'idle')
+		  AND (cooldown_until IS NULL OR cooldown_until < NOW())
 		ORDER BY address
 	`
 
@@ -315,6 +316,11 @@ func NewProxySelector(repo *repository.ProxyRepository, settings *models.Rotatio
 			interval = 120 // Default 2 minutes
 		}
 		return NewTimeBasedSelector(repo, settings, interval), nil
+	case "session", "stick", "sticky":
+		// Session/sticky rotation is a per-pool concept (see PoolSelector). The
+		// legacy global selector has no session context, so fall back to
+		// round-robin here.
+		return NewRoundRobinSelector(repo, settings), nil
 	default:
 		// Default to random
 		return NewRandomSelector(repo, settings), nil

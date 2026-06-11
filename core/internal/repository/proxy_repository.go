@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -89,6 +90,7 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 			id, address, protocol, username, status,
 			requests, successful_requests, failed_requests,
 			avg_response_time, last_check,
+			cooldown_until, cooldown_reason,
 			country_code, country_name, region_name, city_name, isp,
 			COALESCE(tags, '{}') AS tags,
 			created_at, updated_at
@@ -113,6 +115,7 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 			&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Status,
 			&p.Requests, &p.SuccessfulRequests, &p.FailedRequests,
 			&p.AvgResponseTime, &p.LastCheck,
+			&p.CooldownUntil, &p.CooldownReason,
 			&p.CountryCode, &p.CountryName, &p.RegionName, &p.CityName, &p.ISP,
 			&p.Tags,
 			&p.CreatedAt, &p.UpdatedAt,
@@ -142,6 +145,8 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 			SuccessRate:     successRate,
 			AvgResponseTime: p.AvgResponseTime,
 			LastCheck:       p.LastCheck,
+			CooldownUntil:   p.CooldownUntil,
+			CooldownReason:  p.CooldownReason,
 			CountryCode:     p.CountryCode,
 			CountryName:     p.CountryName,
 			RegionName:      p.RegionName,
@@ -351,6 +356,59 @@ func (r *ProxyRepository) Delete(ctx context.Context, id int) error {
 		return fmt.Errorf("failed to delete proxy: %w", err)
 	}
 	return nil
+}
+
+// SetCooldown marks a proxy as temporarily invalidated (e.g. rate-limited) by
+// setting cooldown_until to now + the given duration. While in cooldown the
+// proxy is excluded from rotation. A non-positive duration applies a long
+// default (effectively "until manually reactivated").
+func (r *ProxyRepository) SetCooldown(ctx context.Context, id int, d time.Duration, reason string) (*models.Proxy, error) {
+	if d <= 0 {
+		d = 24 * time.Hour
+	}
+	until := time.Now().Add(d)
+	var reasonPtr *string
+	if reason != "" {
+		reasonPtr = &reason
+	}
+	query := `
+		UPDATE proxies
+		SET cooldown_until = $2, cooldown_reason = $3, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, address, protocol, status, cooldown_until, cooldown_reason
+	`
+	var p models.Proxy
+	err := r.db.Pool.QueryRow(ctx, query, id, until, reasonPtr).Scan(
+		&p.ID, &p.Address, &p.Protocol, &p.Status, &p.CooldownUntil, &p.CooldownReason,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to set proxy cooldown: %w", err)
+	}
+	return &p, nil
+}
+
+// ClearCooldown removes a proxy's cooldown, returning it to rotation immediately.
+func (r *ProxyRepository) ClearCooldown(ctx context.Context, id int) (*models.Proxy, error) {
+	query := `
+		UPDATE proxies
+		SET cooldown_until = NULL, cooldown_reason = NULL, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, address, protocol, status, cooldown_until, cooldown_reason
+	`
+	var p models.Proxy
+	err := r.db.Pool.QueryRow(ctx, query, id).Scan(
+		&p.ID, &p.Address, &p.Protocol, &p.Status, &p.CooldownUntil, &p.CooldownReason,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to clear proxy cooldown: %w", err)
+	}
+	return &p, nil
 }
 
 // BulkDelete deletes multiple proxies

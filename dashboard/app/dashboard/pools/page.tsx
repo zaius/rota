@@ -38,6 +38,7 @@ const ROTATION_LABELS: Record<string, string> = {
   roundrobin: "Round Robin",
   random: "Random",
   stick: "Sticky (N requests)",
+  session: "Session (sticky until released/idle)",
 }
 
 const FLAG_CDN = (cc: string) =>
@@ -54,6 +55,7 @@ const DEFAULT_POOL_FORM: CreatePoolRequest = {
   city_name: undefined,
   rotation_method: "roundrobin",
   stick_count: 10,
+  session_ttl_minutes: 10,
   health_check_url: "https://api.ipify.org",
   health_check_cron: "*/30 * * * *",
   health_check_enabled: true,
@@ -139,6 +141,7 @@ export default function PoolsPage() {
       city_name: p.city_name,
       rotation_method: p.rotation_method,
       stick_count: p.stick_count,
+      session_ttl_minutes: p.session_ttl_minutes ?? 10,
       health_check_url: p.health_check_url,
       health_check_cron: p.health_check_cron,
       health_check_enabled: p.health_check_enabled,
@@ -489,6 +492,7 @@ export default function PoolsPage() {
                         <div className="flex items-center gap-2 flex-wrap">
                           <span>Rotation: <strong>{ROTATION_LABELS[selectedPool.rotation_method]}</strong>
                             {selectedPool.rotation_method === "stick" && ` (every ${selectedPool.stick_count} req)`}
+                            {selectedPool.rotation_method === "session" && ` (idle ${selectedPool.session_ttl_minutes}m)`}
                           </span>
                           <Badge variant={selectedPool.sync_mode === "manual" ? "secondary" : "outline"} className="text-xs">
                             {selectedPool.sync_mode === "manual" ? "manual sync" : "auto sync"}
@@ -844,6 +848,7 @@ export default function PoolsPage() {
                     <SelectItem value="roundrobin">Round Robin</SelectItem>
                     <SelectItem value="random">Random</SelectItem>
                     <SelectItem value="stick">Sticky (N requests)</SelectItem>
+                    <SelectItem value="session">Session (sticky until released/idle)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -857,6 +862,23 @@ export default function PoolsPage() {
                     value={form.stick_count}
                     onChange={e => setForm({ ...form, stick_count: parseInt(e.target.value) || 10 })}
                   />
+                </div>
+              )}
+
+              {form.rotation_method === "session" && (
+                <div className="flex flex-col gap-1.5">
+                  <Label>Session idle TTL (minutes)</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={form.session_ttl_minutes}
+                    onChange={e => setForm({ ...form, session_ttl_minutes: parseInt(e.target.value) || 10 })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    A session keeps its proxy until released or idle this long.
+                    Clients pick a session via the proxy username:
+                    <code className="ml-1">user-session-&lt;id&gt;</code>
+                  </p>
                 </div>
               )}
 
