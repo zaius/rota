@@ -372,6 +372,14 @@ func (h *PoolHandler) GeoCitiesByCountry(w http.ResponseWriter, r *http.Request)
 // Export exports all proxies from a pool as txt or csv
 //
 //	GET /api/v1/pools/{id}/export?format=txt|csv
+//	@Summary		Export pool proxies
+//	@Description	Export a pool's proxies as txt or csv
+//	@Tags			pools
+//	@Produce		plain
+//	@Param			id		path	int		true	"Pool ID"
+//	@Param			format	query	string	false	"Export format (txt|csv)"
+//	@Success		200	{string}	string	"Exported proxies"
+//	@Router			/pools/{id}/export [get]
 func (h *PoolHandler) Export(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
@@ -442,6 +450,13 @@ func (h *PoolHandler) exportPoolCSV(w http.ResponseWriter, poolName string, prox
 // --- Alert Rules ---
 
 // ListAlertRules lists all alert rules for a pool
+//
+//	@Summary		List pool alert rules
+//	@Tags			pools
+//	@Produce		json
+//	@Param			id	path	int	true	"Pool ID"
+//	@Success		200	{object}	map[string]interface{}
+//	@Router			/pools/{id}/alert-rules [get]
 func (h *PoolHandler) ListAlertRules(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
@@ -457,6 +472,15 @@ func (h *PoolHandler) ListAlertRules(w http.ResponseWriter, r *http.Request) {
 }
 
 // CreateAlertRule creates an alert rule for a pool
+//
+//	@Summary		Create a pool alert rule
+//	@Tags			pools
+//	@Accept			json
+//	@Produce		json
+//	@Param			id		path	int									true	"Pool ID"
+//	@Param			rule	body	models.CreatePoolAlertRuleRequest	true	"Alert rule"
+//	@Success		201	{object}	models.PoolAlertRule
+//	@Router			/pools/{id}/alert-rules [post]
 func (h *PoolHandler) CreateAlertRule(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
@@ -482,6 +506,16 @@ func (h *PoolHandler) CreateAlertRule(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateAlertRule updates an alert rule
+//
+//	@Summary		Update a pool alert rule
+//	@Tags			pools
+//	@Accept			json
+//	@Produce		json
+//	@Param			id		path	int									true	"Pool ID"
+//	@Param			rule_id	path	int									true	"Alert rule ID"
+//	@Param			rule	body	models.CreatePoolAlertRuleRequest	true	"Alert rule"
+//	@Success		200	{object}	models.PoolAlertRule
+//	@Router			/pools/{id}/alert-rules/{rule_id} [put]
 func (h *PoolHandler) UpdateAlertRule(w http.ResponseWriter, r *http.Request) {
 	ruleID, err := strconv.Atoi(chi.URLParam(r, "rule_id"))
 	if err != nil {
@@ -502,6 +536,14 @@ func (h *PoolHandler) UpdateAlertRule(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteAlertRule deletes an alert rule
+//
+//	@Summary		Delete a pool alert rule
+//	@Tags			pools
+//	@Produce		json
+//	@Param			id		path	int	true	"Pool ID"
+//	@Param			rule_id	path	int	true	"Alert rule ID"
+//	@Success		200	{object}	map[string]string
+//	@Router			/pools/{id}/alert-rules/{rule_id} [delete]
 func (h *PoolHandler) DeleteAlertRule(w http.ResponseWriter, r *http.Request) {
 	ruleID, err := strconv.Atoi(chi.URLParam(r, "rule_id"))
 	if err != nil {
@@ -516,6 +558,14 @@ func (h *PoolHandler) DeleteAlertRule(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetISPList returns unique ISPs from proxy table for filter builder UI
+//
+//	@Summary		List known ISPs
+//	@Description	Unique ISP names from the proxy table (for pool filter builder)
+//	@Tags			pools
+//	@Produce		json
+//	@Param			q	query	string	false	"Search substring"
+//	@Success		200	{object}	map[string]interface{}
+//	@Router			/pools/isp-list [get]
 func (h *PoolHandler) GetISPList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	// Simple distinct query with optional search
@@ -541,6 +591,13 @@ func (h *PoolHandler) GetISPList(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetTagList returns unique proxy tags for filter builder UI
+//
+//	@Summary		List known proxy tags
+//	@Description	Unique proxy tags (for pool filter builder)
+//	@Tags			pools
+//	@Produce		json
+//	@Success		200	{object}	map[string]interface{}
+//	@Router			/pools/tag-list [get]
 func (h *PoolHandler) GetTagList(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.poolRepo.GetDB().Pool.Query(r.Context(),
 		`SELECT DISTINCT unnest(tags) AS tag FROM proxies WHERE array_length(tags,1) > 0 ORDER BY tag LIMIT 100`)
