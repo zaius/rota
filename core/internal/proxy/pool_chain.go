@@ -24,10 +24,10 @@ type PoolChain struct {
 }
 
 // NewPoolChain builds a PoolChain from an ordered list of ProxyPool objects.
-func NewPoolChain(db *database.DB, pools []models.ProxyPool, maxRetry int, sessionMgr *SessionManager, log *logger.Logger) *PoolChain {
+func NewPoolChain(db *database.DB, pools []models.ProxyPool, maxRetry int, sessionMgr *SessionManager, domainCD *DomainCooldownManager, log *logger.Logger) *PoolChain {
 	selectors := make([]*PoolSelector, 0, len(pools))
 	for _, p := range pools {
-		selectors = append(selectors, NewPoolSelector(db, p, sessionMgr))
+		selectors = append(selectors, NewPoolSelector(db, p, sessionMgr, domainCD))
 	}
 	return &PoolChain{
 		selectors: selectors,

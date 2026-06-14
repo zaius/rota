@@ -830,6 +830,26 @@ const docTemplate = `{
                 }
             }
         },
+        "/proxies/domain-cooldowns": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "proxies"
+                ],
+                "summary": "List domain-scoped proxy cooldowns",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/proxies/export": {
             "get": {
                 "description": "Export proxy list in various formats (txt, json, csv)",
@@ -1006,7 +1026,7 @@ const docTemplate = `{
         },
         "/proxies/{id}/invalidate": {
             "post": {
-                "description": "Pull a proxy out of rotation for a cooldown period (rate-limited, etc.)",
+                "description": "Pull a proxy out of rotation for a cooldown period (rate-limited, etc.). Pass \"domain\" to only invalidate it for that domain and its subdomains, keeping it available for other targets.",
                 "tags": [
                     "proxies"
                 ],
@@ -1034,6 +1054,14 @@ const docTemplate = `{
                         "schema": {
                             "type": "string"
                         }
+                    },
+                    {
+                        "description": "Scope the cooldown to this domain (e.g. foo.com, also covers *.foo.com)",
+                        "name": "domain",
+                        "in": "body",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -1049,7 +1077,7 @@ const docTemplate = `{
         },
         "/proxies/{id}/reactivate": {
             "post": {
-                "description": "Clear a proxy's cooldown and return it to rotation",
+                "description": "Clear a proxy's cooldown and return it to rotation. Pass \"domain\" to clear only that domain-scoped cooldown; omit it to clear the global cooldown and all domain cooldowns.",
                 "tags": [
                     "proxies"
                 ],
@@ -1061,6 +1089,14 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "description": "Clear only the cooldown for this domain",
+                        "name": "domain",
+                        "in": "body",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {

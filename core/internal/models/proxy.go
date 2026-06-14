@@ -34,6 +34,16 @@ type Proxy struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
+// ProxyDomainCooldown is a per-domain invalidation: the proxy is excluded from
+// rotation for requests to Domain (and its subdomains) until CooldownUntil,
+// but stays available for every other target.
+type ProxyDomainCooldown struct {
+	ProxyID       int       `json:"proxy_id"`
+	Domain        string    `json:"domain"`
+	CooldownUntil time.Time `json:"cooldown_until"`
+	Reason        *string   `json:"reason,omitempty"`
+}
+
 // ProxyWithStats represents a proxy with calculated statistics
 type ProxyWithStats struct {
 	ID              int        `json:"id"`

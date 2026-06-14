@@ -411,6 +411,91 @@ func (r *ProxyRepository) ClearCooldown(ctx context.Context, id int) (*models.Pr
 	return &p, nil
 }
 
+// SetDomainCooldown records a domain-scoped invalidation for a proxy: it is
+// excluded from rotation for requests to domain (and its subdomains) until
+// the given time, but stays available for other targets. Returns nil if the
+// proxy does not exist. domain must already be normalized.
+func (r *ProxyRepository) SetDomainCooldown(ctx context.Context, id int, domain string, until time.Time, reason string) (*models.Proxy, error) {
+	var reasonPtr *string
+	if reason != "" {
+		reasonPtr = &reason
+	}
+	query := `
+		WITH target AS (
+			SELECT id, address, protocol, status FROM proxies WHERE id = $1
+		), upsert AS (
+			INSERT INTO proxy_domain_cooldowns (proxy_id, domain, cooldown_until, reason)
+			SELECT id, $2, $3, $4 FROM target
+			ON CONFLICT (proxy_id, domain)
+			DO UPDATE SET cooldown_until = EXCLUDED.cooldown_until, reason = EXCLUDED.reason
+		)
+		SELECT id, address, protocol, status FROM target
+	`
+	var p models.Proxy
+	err := r.db.Pool.QueryRow(ctx, query, id, domain, until, reasonPtr).Scan(
+		&p.ID, &p.Address, &p.Protocol, &p.Status,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to set proxy domain cooldown: %w", err)
+	}
+	return &p, nil
+}
+
+// ClearDomainCooldown removes a single (proxy, domain) cooldown.
+// Returns true if one existed.
+func (r *ProxyRepository) ClearDomainCooldown(ctx context.Context, id int, domain string) (bool, error) {
+	result, err := r.db.Pool.Exec(ctx,
+		`DELETE FROM proxy_domain_cooldowns WHERE proxy_id = $1 AND domain = $2`, id, domain)
+	if err != nil {
+		return false, fmt.Errorf("failed to clear proxy domain cooldown: %w", err)
+	}
+	return result.RowsAffected() > 0, nil
+}
+
+// ClearAllDomainCooldowns removes every domain cooldown for a proxy.
+// Returns the number of cooldowns removed.
+func (r *ProxyRepository) ClearAllDomainCooldowns(ctx context.Context, id int) (int, error) {
+	result, err := r.db.Pool.Exec(ctx,
+		`DELETE FROM proxy_domain_cooldowns WHERE proxy_id = $1`, id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to clear proxy domain cooldowns: %w", err)
+	}
+	return int(result.RowsAffected()), nil
+}
+
+// ListActiveDomainCooldowns returns all unexpired domain cooldowns, pruning
+// expired rows along the way. Used to warm the in-memory manager at startup.
+func (r *ProxyRepository) ListActiveDomainCooldowns(ctx context.Context) ([]models.ProxyDomainCooldown, error) {
+	// Opportunistic cleanup; expired rows are inert either way.
+	_, _ = r.db.Pool.Exec(ctx, `DELETE FROM proxy_domain_cooldowns WHERE cooldown_until < NOW()`)
+
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT proxy_id, domain, cooldown_until, reason
+		FROM proxy_domain_cooldowns
+		WHERE cooldown_until > NOW()
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list proxy domain cooldowns: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.ProxyDomainCooldown
+	for rows.Next() {
+		var c models.ProxyDomainCooldown
+		if err := rows.Scan(&c.ProxyID, &c.Domain, &c.CooldownUntil, &c.Reason); err != nil {
+			return nil, fmt.Errorf("failed to scan proxy domain cooldown: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate proxy domain cooldowns: %w", err)
+	}
+	return out, nil
+}
+
 // BulkDelete deletes multiple proxies
 func (r *ProxyRepository) BulkDelete(ctx context.Context, ids []int) (int, error) {
 	query := `DELETE FROM proxies WHERE id = ANY($1)`

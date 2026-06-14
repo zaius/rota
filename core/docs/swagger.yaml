@@ -1073,7 +1073,8 @@ paths:
   /proxies/{id}/invalidate:
     post:
       description: Pull a proxy out of rotation for a cooldown period (rate-limited,
-        etc.)
+        etc.). Pass "domain" to only invalidate it for that domain and its subdomains,
+        keeping it available for other targets.
       parameters:
       - description: Proxy ID
         in: path
@@ -1090,6 +1091,12 @@ paths:
         name: reason
         schema:
           type: string
+      - description: Scope the cooldown to this domain (e.g. foo.com, also covers
+          *.foo.com)
+        in: body
+        name: domain
+        schema:
+          type: string
       responses:
         "200":
           description: OK
@@ -1101,13 +1108,20 @@ paths:
       - proxies
   /proxies/{id}/reactivate:
     post:
-      description: Clear a proxy's cooldown and return it to rotation
+      description: Clear a proxy's cooldown and return it to rotation. Pass "domain"
+        to clear only that domain-scoped cooldown; omit it to clear the global cooldown
+        and all domain cooldowns.
       parameters:
       - description: Proxy ID
         in: path
         name: id
         required: true
         type: integer
+      - description: Clear only the cooldown for this domain
+        in: body
+        name: domain
+        schema:
+          type: string
       responses:
         "200":
           description: OK
@@ -1204,6 +1218,19 @@ paths:
           schema:
             $ref: '#/definitions/github_com_alpkeskin_rota_core_internal_models.ErrorResponse'
       summary: Bulk delete proxies
+      tags:
+      - proxies
+  /proxies/domain-cooldowns:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List domain-scoped proxy cooldowns
       tags:
       - proxies
   /proxies/export:

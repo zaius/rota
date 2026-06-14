@@ -22,6 +22,7 @@ type UpstreamProxyHandler struct {
 	selector        ProxySelector
 	tracker         *UsageTracker
 	settings        *models.RotationSettings
+	domainCD        *DomainCooldownManager
 	logger          *logger.Logger
 	removeUnhealthy bool
 }
@@ -31,12 +32,14 @@ func NewUpstreamProxyHandler(
 	selector ProxySelector,
 	tracker *UsageTracker,
 	settings *models.RotationSettings,
+	domainCD *DomainCooldownManager,
 	log *logger.Logger,
 ) *UpstreamProxyHandler {
 	return &UpstreamProxyHandler{
 		selector:        selector,
 		tracker:         tracker,
 		settings:        settings,
+		domainCD:        domainCD,
 		logger:          log,
 		removeUnhealthy: settings.RemoveUnhealthy,
 	}
@@ -237,6 +240,37 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	io.CopyBuffer(w, resp.Body, buf) //nolint:errcheck
 }
 
+// selectEligibleProxy asks the selector for the next proxy that has neither
+// been tried for this request nor placed on a domain cooldown for targetHost.
+// Skipped proxies are recorded in tried and do NOT consume a fallback attempt —
+// only a returned, attemptable proxy does. This matters on the legacy path: the
+// global selectors are not domain-cooldown aware, so without this a request to a
+// host with several cooled proxies could exhaust its fallback budget on skips
+// and fail without ever trying an eligible proxy. The scan is bounded so a
+// selector that only ever yields ineligible proxies still terminates.
+func (h *UpstreamProxyHandler) selectEligibleProxy(ctx context.Context, tried map[int]bool, targetHost string) (*models.Proxy, error) {
+	const maxScan = 1000
+	for i := 0; i < maxScan; i++ {
+		selectedProxy, err := h.selector.Select(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if tried[selectedProxy.ID] {
+			continue
+		}
+		// Skip proxies invalidated for this request's target domain (the
+		// pool-aware path handles this inside PoolSelector.Select). Mark them
+		// tried so a repeating selector does not keep offering them.
+		if h.domainCD != nil && targetHost != "" && h.domainCD.IsCooled(selectedProxy.ID, targetHost) {
+			tried[selectedProxy.ID] = true
+			continue
+		}
+		tried[selectedProxy.ID] = true
+		return selectedProxy, nil
+	}
+	return nil, fmt.Errorf("no eligible proxy available for host %q", targetHost)
+}
+
 // sendWithRetry attempts to send the request with retry and fallback logic
 func (h *UpstreamProxyHandler) sendWithRetry(req *http.Request, ctx context.Context) (*http.Response, int, error) {
 	maxFallbackRetries := h.settings.FallbackMaxRetries
@@ -257,17 +291,17 @@ func (h *UpstreamProxyHandler) sendWithRetry(req *http.Request, ctx context.Cont
 
 	var lastErr error
 	triedProxies := make(map[int]bool)
+	targetHost, _ := ctx.Value(TargetHostContextKey).(string)
 
 	for fallbackAttempt := 0; fallbackAttempt < maxFallbackRetries; fallbackAttempt++ {
-		selectedProxy, err := h.selector.Select(ctx)
+		selectedProxy, err := h.selectEligibleProxy(ctx, triedProxies, targetHost)
 		if err != nil {
-			return nil, 0, fmt.Errorf("no proxy available: %w", err)
+			if fallbackAttempt == 0 {
+				return nil, 0, fmt.Errorf("no proxy available: %w", err)
+			}
+			// No more eligible proxies to fall back to; return what we have.
+			break
 		}
-
-		if triedProxies[selectedProxy.ID] {
-			continue
-		}
-		triedProxies[selectedProxy.ID] = true
 
 		h.logger.Debug("attempting request with proxy",
 			"source", "proxy",
@@ -373,17 +407,17 @@ func (h *UpstreamProxyHandler) connectThroughProxy(host string, ctx context.Cont
 
 	var lastErr error
 	triedProxies := make(map[int]bool)
+	targetHost := normalizeHost(host)
 
 	for fallbackAttempt := 0; fallbackAttempt < maxFallbackRetries; fallbackAttempt++ {
-		selectedProxy, err := h.selector.Select(ctx)
+		selectedProxy, err := h.selectEligibleProxy(ctx, triedProxies, targetHost)
 		if err != nil {
-			return nil, 0, fmt.Errorf("no proxy available: %w", err)
+			if fallbackAttempt == 0 {
+				return nil, 0, fmt.Errorf("no proxy available: %w", err)
+			}
+			// No more eligible proxies to fall back to; return what we have.
+			break
 		}
-
-		if triedProxies[selectedProxy.ID] {
-			continue
-		}
-		triedProxies[selectedProxy.ID] = true
 
 		conn, err := h.tryConnectWithRetries(selectedProxy, host, perProxyRetries)
 		duration := int(time.Since(startTime).Milliseconds())

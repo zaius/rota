@@ -21,6 +21,7 @@ type PoolSelector struct {
 	stick      int    // stick_count
 	sessionTTL time.Duration
 	sessionMgr *SessionManager
+	domainCD   *DomainCooldownManager
 
 	mu         sync.Mutex
 	proxies    []*models.Proxy
@@ -30,7 +31,7 @@ type PoolSelector struct {
 }
 
 // NewPoolSelector creates a PoolSelector for the given pool.
-func NewPoolSelector(db *database.DB, pool models.ProxyPool, sessionMgr *SessionManager) *PoolSelector {
+func NewPoolSelector(db *database.DB, pool models.ProxyPool, sessionMgr *SessionManager, domainCD *DomainCooldownManager) *PoolSelector {
 	ttl := pool.SessionTTLMinutes
 	if ttl < 1 {
 		ttl = 10
@@ -42,6 +43,7 @@ func NewPoolSelector(db *database.DB, pool models.ProxyPool, sessionMgr *Session
 		stick:      pool.StickCount,
 		sessionTTL: time.Duration(ttl) * time.Minute,
 		sessionMgr: sessionMgr,
+		domainCD:   domainCD,
 	}
 }
 
@@ -99,6 +101,9 @@ func (ps *PoolSelector) HasActive() bool {
 }
 
 // Select picks the next proxy according to the pool's rotation method.
+// When the context carries the request's target host (TargetHostContextKey),
+// proxies on a domain cooldown for that host are skipped — they remain
+// selectable for other targets.
 func (ps *PoolSelector) Select(ctx context.Context) (*models.Proxy, error) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -107,13 +112,33 @@ func (ps *PoolSelector) Select(ctx context.Context) (*models.Proxy, error) {
 		return nil, fmt.Errorf("pool %d has no active proxies", ps.poolID)
 	}
 
+	host, _ := ctx.Value(TargetHostContextKey).(string)
+
 	switch ps.method {
 	case "random":
 		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(ps.proxies))))
 		if err != nil {
 			return nil, fmt.Errorf("random selection failed: %w", err)
 		}
-		return ps.proxies[n.Int64()], nil
+		p := ps.proxies[n.Int64()]
+		if !ps.cooledForHost(p.ID, host) {
+			return p, nil
+		}
+		// Re-draw among the proxies still eligible for this host.
+		var eligible []*models.Proxy
+		for _, c := range ps.proxies {
+			if !ps.cooledForHost(c.ID, host) {
+				eligible = append(eligible, c)
+			}
+		}
+		if len(eligible) == 0 {
+			return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
+		}
+		n, err = rand.Int(rand.Reader, big.NewInt(int64(len(eligible))))
+		if err != nil {
+			return nil, fmt.Errorf("random selection failed: %w", err)
+		}
+		return eligible[n.Int64()], nil
 
 	case "session":
 		// Bind a proxy to the client's session token and hold it until the
@@ -121,42 +146,76 @@ func (ps *PoolSelector) Select(ctx context.Context) (*models.Proxy, error) {
 		token, _ := ctx.Value(SessionTokenContextKey).(string)
 		if token == "" || ps.sessionMgr == nil {
 			// No session token supplied → behave like round-robin.
-			p := ps.proxies[ps.rrIdx]
-			ps.rrIdx = (ps.rrIdx + 1) % len(ps.proxies)
-			return p, nil
+			return ps.nextRoundRobinLocked(host)
 		}
 		if boundID, ok := ps.sessionMgr.Get(ps.poolID, token); ok {
 			for _, p := range ps.proxies {
 				if p.ID == boundID {
-					return p, nil
+					if !ps.cooledForHost(p.ID, host) {
+						return p, nil
+					}
+					// Bound proxy is on a domain cooldown for this host —
+					// rebind below; the whole session moves to a fresh proxy.
+					break
 				}
 			}
 			// Bound proxy no longer available (failed/invalidated/cooled down) —
 			// fall through to rebind to a fresh one.
 		}
-		p := ps.proxies[ps.rrIdx]
-		ps.rrIdx = (ps.rrIdx + 1) % len(ps.proxies)
+		p, err := ps.nextRoundRobinLocked(host)
+		if err != nil {
+			return nil, err
+		}
 		ps.sessionMgr.Bind(ps.poolID, token, p.ID, ps.sessionTTL)
 		return p, nil
 
 	case "stick":
-		p := ps.proxies[ps.stickIdx]
-		ps.stickServed++
 		if ps.stick <= 0 {
 			ps.stick = 10
 		}
-		if ps.stickServed >= ps.stick {
-			// advance to next proxy round-robin style
-			ps.stickIdx = (ps.stickIdx + 1) % len(ps.proxies)
-			ps.stickServed = 0
+		p := ps.proxies[ps.stickIdx]
+		if !ps.cooledForHost(p.ID, host) {
+			ps.stickServed++
+			if ps.stickServed >= ps.stick {
+				// advance to next proxy round-robin style
+				ps.stickIdx = (ps.stickIdx + 1) % len(ps.proxies)
+				ps.stickServed = 0
+			}
+			return p, nil
 		}
-		return p, nil
+		// The sticky proxy is on a domain cooldown for this host only. Serve a
+		// substitute eligible proxy for this request alone, WITHOUT touching the
+		// shared stickIdx/stickServed — other hosts keep the sticky proxy and its
+		// serve count, and this host resumes it once the cooldown expires.
+		for i := 1; i < len(ps.proxies); i++ {
+			cand := ps.proxies[(ps.stickIdx+i)%len(ps.proxies)]
+			if !ps.cooledForHost(cand.ID, host) {
+				return cand, nil
+			}
+		}
+		return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
 
 	default: // roundrobin
+		return ps.nextRoundRobinLocked(host)
+	}
+}
+
+// nextRoundRobinLocked returns the next proxy in round-robin order, skipping
+// proxies on a domain cooldown for host. Caller must hold ps.mu.
+func (ps *PoolSelector) nextRoundRobinLocked(host string) (*models.Proxy, error) {
+	for range ps.proxies {
 		p := ps.proxies[ps.rrIdx]
 		ps.rrIdx = (ps.rrIdx + 1) % len(ps.proxies)
-		return p, nil
+		if !ps.cooledForHost(p.ID, host) {
+			return p, nil
+		}
 	}
+	return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
+}
+
+// cooledForHost reports whether a proxy is on a domain cooldown covering host.
+func (ps *PoolSelector) cooledForHost(proxyID int, host string) bool {
+	return host != "" && ps.domainCD != nil && ps.domainCD.IsCooled(proxyID, host)
 }
 
 // RemoveProxy removes a specific proxy from the in-memory list (called after failure).

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
+	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
@@ -39,7 +40,13 @@ func (p *proxyRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Dispatch based on method
+	// 3. Attach the normalized target host so selection can honor
+	//    domain-scoped invalidations.
+	if host := normalizeHost(requestTargetHost(r.Method, r.URL.Host, r.Host)); host != "" {
+		r = r.WithContext(context.WithValue(r.Context(), TargetHostContextKey, host))
+	}
+
+	// 4. Dispatch based on method
 	if r.Method == http.MethodConnect {
 		p.upstream.HandleConnectRequest(w, r)
 	} else {
@@ -81,6 +88,7 @@ type Server struct {
 	proxyRepo       *repository.ProxyRepository
 	settingsRepo    *repository.SettingsRepository
 	sessionMgr      *SessionManager
+	domainCD        *DomainCooldownManager
 	refreshTicker   *time.Ticker
 	cleanupTicker   *time.Ticker
 	stopChan        chan struct{}
@@ -119,8 +127,23 @@ func New(
 	// Create usage tracker
 	tracker := NewUsageTracker(proxyRepo)
 
+	// Domain-scoped invalidations (process-wide, warmed from DB so they
+	// survive restarts)
+	domainCD := NewDomainCooldownManager()
+	if cooldowns, err := proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
+		log.Warn("failed to load domain cooldowns", "error", err)
+	} else {
+		for _, c := range cooldowns {
+			reason := ""
+			if c.Reason != nil {
+				reason = *c.Reason
+			}
+			domainCD.Set(c.ProxyID, c.Domain, c.CooldownUntil, reason)
+		}
+	}
+
 	// Create upstream proxy handler
-	handler := NewUpstreamProxyHandler(selector, tracker, &settings.Rotation, log)
+	handler := NewUpstreamProxyHandler(selector, tracker, &settings.Rotation, domainCD, log)
 
 	// Create middlewares
 	authMiddleware := NewAuthMiddleware(settings.Authentication)
@@ -130,7 +153,7 @@ func New(
 	sessionMgr := NewSessionManager()
 
 	// Create user-aware auth middleware (pool-based routing)
-	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, authMiddleware, &settings.Rotation, sessionMgr, log)
+	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, authMiddleware, &settings.Rotation, sessionMgr, domainCD, log)
 
 	// Create the proxy router
 	router := &proxyRouter{
@@ -163,6 +186,7 @@ func New(
 		proxyRepo:      proxyRepo,
 		settingsRepo:   settingsRepo,
 		sessionMgr:     sessionMgr,
+		domainCD:       domainCD,
 		stopChan:       make(chan struct{}),
 	}
 
@@ -185,6 +209,15 @@ func (s *Server) startBackgroundTasks() {
 					s.logger.Error("failed to refresh proxy list", "error", err)
 				} else {
 					s.logger.Debug("proxy list refreshed")
+				}
+				// Re-sync domain cooldowns from the DB so the in-memory view
+				// tracks expirations and cooldowns set by other instances.
+				if s.domainCD != nil {
+					if cooldowns, err := s.proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
+						s.logger.Error("failed to refresh domain cooldowns", "error", err)
+					} else {
+						s.domainCD.ReplaceAll(cooldowns)
+					}
 				}
 				cancel()
 			case <-s.stopChan:
@@ -233,6 +266,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.sessionMgr != nil {
 		s.sessionMgr.Stop()
 	}
+	if s.domainCD != nil {
+		s.domainCD.Stop()
+	}
 
 	return s.server.Shutdown(ctx)
 }
@@ -274,6 +310,42 @@ func (s *Server) EvictProxy(proxyID int) {
 	if s.userAuthMw != nil {
 		s.userAuthMw.EvictProxy(proxyID)
 	}
+}
+
+// SetDomainCooldown puts a proxy on a domain-scoped cooldown: it is skipped
+// for requests to domain (and its subdomains) until the given time, but stays
+// in rotation for every other target. Takes effect immediately.
+func (s *Server) SetDomainCooldown(proxyID int, domain string, until time.Time, reason string) {
+	if s.domainCD == nil {
+		return
+	}
+	s.domainCD.Set(proxyID, domain, until, reason)
+}
+
+// ClearDomainCooldown removes a single (proxy, domain) cooldown.
+// Returns true if one existed.
+func (s *Server) ClearDomainCooldown(proxyID int, domain string) bool {
+	if s.domainCD == nil {
+		return false
+	}
+	return s.domainCD.Clear(proxyID, domain)
+}
+
+// ClearProxyDomainCooldowns removes every domain cooldown for a proxy.
+// Returns the count removed.
+func (s *Server) ClearProxyDomainCooldowns(proxyID int) int {
+	if s.domainCD == nil {
+		return 0
+	}
+	return s.domainCD.ClearProxy(proxyID)
+}
+
+// ListDomainCooldowns returns a snapshot of all active domain cooldowns.
+func (s *Server) ListDomainCooldowns() []models.ProxyDomainCooldown {
+	if s.domainCD == nil {
+		return nil
+	}
+	return s.domainCD.List()
 }
 
 // ReloadSettings reloads settings from database and updates components

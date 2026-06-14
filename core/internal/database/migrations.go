@@ -532,6 +532,30 @@ var migrations = []Migration{
 			ALTER TABLE proxy_sources DROP COLUMN IF EXISTS last_total;
 		`,
 	},
+	{
+		Version:     23,
+		Description: "Per-domain proxy invalidation (proxy_domain_cooldowns)",
+		Up: `
+			-- domain-scoped invalidation: proxy is excluded from rotation for
+			-- requests to domain (and its subdomains) until cooldown_until,
+			-- while remaining available for all other targets
+			CREATE TABLE IF NOT EXISTS proxy_domain_cooldowns (
+				proxy_id        INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,
+				domain          VARCHAR(255) NOT NULL,
+				cooldown_until  TIMESTAMP NOT NULL,
+				reason          TEXT,
+				created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (proxy_id, domain)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_proxy_domain_cooldowns_until
+			  ON proxy_domain_cooldowns(cooldown_until);
+		`,
+		Down: `
+			DROP INDEX IF EXISTS idx_proxy_domain_cooldowns_until;
+			DROP TABLE IF EXISTS proxy_domain_cooldowns;
+		`,
+	},
 }
 
 // Migrate runs all pending migrations
