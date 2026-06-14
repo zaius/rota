@@ -73,8 +73,62 @@ import {
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api } from "@/lib/api"
-import { Proxy } from "@/lib/types"
+import { Proxy, AddProxyRequest } from "@/lib/types"
 import { toast } from "@/lib/toast"
+
+const PROXY_PROTOCOLS = ["http", "https", "socks4", "socks4a", "socks5"] as const
+
+// parseProxyLine parses a single line from a bulk-import file into a proxy
+// request. Credentials and protocol are expected to be embedded in the URL.
+// Supported formats (auth and protocol are optional):
+//
+//   host:port
+//   user:pass@host:port
+//   protocol://host:port
+//   protocol://user:pass@host:port
+//
+// Returns null for blank lines, comments (#...), and lines without a port.
+function parseProxyLine(raw: string): AddProxyRequest | null {
+  let line = raw.trim()
+  if (line === "" || line.startsWith("#")) return null
+
+  let protocol: AddProxyRequest["protocol"] = "http"
+  let username: string | undefined
+  let password: string | undefined
+
+  // Strip protocol scheme if present.
+  const schemeIdx = line.indexOf("://")
+  if (schemeIdx !== -1) {
+    const scheme = line.slice(0, schemeIdx).toLowerCase()
+    if ((PROXY_PROTOCOLS as readonly string[]).includes(scheme)) {
+      protocol = scheme as AddProxyRequest["protocol"]
+    }
+    line = line.slice(schemeIdx + 3)
+  }
+
+  // Split optional user:pass@ userinfo from the host.
+  let hostPort = line
+  const atIdx = line.lastIndexOf("@")
+  if (atIdx !== -1) {
+    const userinfo = line.slice(0, atIdx)
+    hostPort = line.slice(atIdx + 1)
+    const colonIdx = userinfo.indexOf(":")
+    if (colonIdx !== -1) {
+      username = userinfo.slice(0, colonIdx) || undefined
+      password = userinfo.slice(colonIdx + 1) || undefined
+    } else {
+      username = userinfo || undefined
+    }
+  }
+
+  // Require host:port with a numeric port.
+  const portParts = hostPort.split(":")
+  if (portParts.length < 2 || !/^\d+$/.test(portParts[portParts.length - 1])) {
+    return null
+  }
+
+  return { address: hostPort, protocol, username, password }
+}
 
 export default function ProxiesPage() {
   const [data, setData] = React.useState<Proxy[]>([])
@@ -107,10 +161,7 @@ export default function ProxiesPage() {
 
   // Import modal states
   const [importFile, setImportFile] = React.useState<File | null>(null)
-  const [importProtocol, setImportProtocol] = React.useState<"http" | "https" | "socks5">("http")
-  const [importUsername, setImportUsername] = React.useState("")
-  const [importPassword, setImportPassword] = React.useState("")
-  const [parsedProxies, setParsedProxies] = React.useState<string[]>([])
+  const [parsedProxies, setParsedProxies] = React.useState<AddProxyRequest[]>([])
   const [isImporting, setIsImporting] = React.useState(false)
   const [importProgress, setImportProgress] = React.useState({ current: 0, total: 0, success: 0, failed: 0, skipped: 0 })
   const [importResults, setImportResults] = React.useState<Array<{ address: string; status: string; error?: string }>>([])
@@ -315,16 +366,11 @@ export default function ProxiesPage() {
     const reader = new FileReader()
     reader.onload = (e) => {
       const text = e.target?.result as string
-      const lines = text.split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0)
-        .filter(line => {
-          // Basic validation: IP:PORT format
-          const parts = line.split(':')
-          return parts.length >= 2 && parts[1].match(/^\d+$/)
-        })
+      const proxies = text.split('\n')
+        .map(parseProxyLine)
+        .filter((proxy): proxy is AddProxyRequest => proxy !== null)
 
-      setParsedProxies(lines)
+      setParsedProxies(proxies)
       setImportFile(file)
     }
     reader.readAsText(file)
@@ -369,15 +415,11 @@ export default function ProxiesPage() {
     let skipped = 0
 
     for (let i = 0; i < parsedProxies.length; i++) {
-      const address = parsedProxies[i]
+      const proxy = parsedProxies[i]
+      const { address } = proxy
 
       try {
-        await api.addProxy({
-          address,
-          protocol: importProtocol,
-          username: importUsername || undefined,
-          password: importPassword || undefined,
-        })
+        await api.addProxy(proxy)
 
         success++
         results.push({ address, status: 'success' })
@@ -422,9 +464,6 @@ export default function ProxiesPage() {
   const resetImportDialog = () => {
     setImportFile(null)
     setParsedProxies([])
-    setImportProtocol("http")
-    setImportUsername("")
-    setImportPassword("")
     setIsImporting(false)
     setImportProgress({ current: 0, total: 0, success: 0, failed: 0, skipped: 0 })
     setImportResults([])
@@ -1048,7 +1087,9 @@ export default function ProxiesPage() {
           <DialogHeader>
             <DialogTitle>Import Proxies from TXT</DialogTitle>
             <DialogDescription>
-              Upload a .txt file with proxies in IP:PORT format (one per line)
+              Upload a .txt file with one proxy URL per line. Protocol and
+              credentials are read from each URL, e.g.
+              {" "}<code>http://user:pass@host:port</code>.
             </DialogDescription>
           </DialogHeader>
 
@@ -1080,7 +1121,7 @@ export default function ProxiesPage() {
                   Drop your .txt file here or click to browse
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  File format: One proxy per line (IP:PORT)
+                  One proxy URL per line (e.g. protocol://user:pass@host:port)
                 </p>
               </div>
             ) : (
@@ -1117,7 +1158,9 @@ export default function ProxiesPage() {
                         <div className="font-mono text-sm space-y-1">
                           {parsedProxies.slice(0, 10).map((proxy, idx) => (
                             <div key={idx} className="text-muted-foreground">
-                              {proxy}
+                              {proxy.protocol}://
+                              {proxy.username ? `${proxy.username}:***@` : ""}
+                              {proxy.address}
                             </div>
                           ))}
                           {parsedProxies.length > 10 && (
@@ -1127,49 +1170,6 @@ export default function ProxiesPage() {
                           )}
                         </div>
                       </div>
-                    </div>
-
-                    <div className="grid gap-2">
-                      <Label htmlFor="import-protocol">Protocol</Label>
-                      <Select
-                        value={importProtocol}
-                        onValueChange={(value: any) => setImportProtocol(value)}
-                        disabled={isImporting}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="http">HTTP</SelectItem>
-                          <SelectItem value="https">HTTPS</SelectItem>
-                          <SelectItem value="socks4">SOCKS4</SelectItem>
-                          <SelectItem value="socks4a">SOCKS4A</SelectItem>
-                          <SelectItem value="socks5">SOCKS5</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="grid gap-2">
-                      <Label htmlFor="import-username">Username (optional)</Label>
-                      <Input
-                        id="import-username"
-                        value={importUsername}
-                        onChange={(e) => setImportUsername(e.target.value)}
-                        disabled={isImporting}
-                        placeholder="Leave empty if not required"
-                      />
-                    </div>
-
-                    <div className="grid gap-2">
-                      <Label htmlFor="import-password">Password (optional)</Label>
-                      <Input
-                        id="import-password"
-                        type="password"
-                        value={importPassword}
-                        onChange={(e) => setImportPassword(e.target.value)}
-                        disabled={isImporting}
-                        placeholder="Leave empty if not required"
-                      />
                     </div>
 
                     {isImporting && (
