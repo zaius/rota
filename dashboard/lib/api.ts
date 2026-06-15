@@ -12,7 +12,6 @@ import {
   BulkProxyRequest,
   BulkDeleteRequest,
   BulkTestRequest,
-  BulkTestResult,
   ProxyFilter,
   ProxyTestResult,
   ProxySource,
@@ -24,6 +23,8 @@ import {
   GeoCityItem,
   PoolHealthCheckResult,
   HCJob,
+  Job,
+  JobStatus,
   CreatePoolRequest,
   ProxyUser,
   CreateProxyUserRequest,
@@ -227,11 +228,17 @@ class ApiClient {
     })
   }
 
-  async bulkTestProxies(request: BulkTestRequest): Promise<BulkTestResult> {
+  async bulkTestProxies(
+    request: BulkTestRequest
+  ): Promise<{ job_id: string; total: number; status: JobStatus }> {
     return this.request("/api/v1/proxies/bulk-test", {
       method: "POST",
       body: JSON.stringify(request),
     })
+  }
+
+  async getBulkTestJob(jobId: string): Promise<Job> {
+    return this.request<Job>(`/api/v1/proxies/bulk-test/${jobId}`)
   }
 
   async invalidateProxy(

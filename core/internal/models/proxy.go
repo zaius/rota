@@ -136,14 +136,6 @@ type BulkTestProxyRequest struct {
 	Filter *ProxyFilter `json:"filter,omitempty"`
 }
 
-// BulkTestResult summarises the outcome of a bulk proxy test.
-type BulkTestResult struct {
-	Tested  int `json:"tested"`
-	Active  int `json:"active"`
-	Failed  int `json:"failed"`
-	Skipped int `json:"skipped"`
-}
-
 // ProxyTestResult represents the result of testing a proxy
 type ProxyTestResult struct {
 	ID           int        `json:"id"`

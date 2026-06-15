@@ -185,13 +185,6 @@ export interface BulkTestRequest {
   filter?: ProxyFilter
 }
 
-export interface BulkTestResult {
-  tested: number
-  active: number
-  failed: number
-  skipped: number
-}
-
 export interface ProxyTestResult {
   id: number
   address: string
@@ -337,25 +330,35 @@ export interface PoolHealthCheckResult {
   finished_at: string
 }
 
-export type HCJobStatus = "pending" | "running" | "done" | "failed"
+export type JobStatus = "pending" | "running" | "done" | "failed"
+export type JobKind = "pool_health_check" | "bulk_test"
 
-export interface HCJob {
+// Job is the shape returned by the async job store, shared by pool health
+// checks and bulk proxy tests. Kind-specific fields are optional.
+export interface Job {
   id: string
-  pool_id: number
-  pool_name: string
-  status: HCJobStatus
+  kind?: JobKind
+  status: JobStatus
   progress: number
   total: number
   active: number
   failed: number
-  check_url: string
-  workers: number
+  skipped?: number
   error?: string
   started_at: string
   updated_at: string
   finished_at?: string
   results?: ProxyTestResult[]
+  // Pool health-check specific
+  pool_id?: number
+  pool_name?: string
+  check_url?: string
+  workers?: number
 }
+
+// Backwards-compatible aliases for the original health-check-only names.
+export type HCJobStatus = JobStatus
+export type HCJob = Job
 
 // ── Proxy Users ────────────────────────────────────────────────────────────
 export interface ProxyUser {

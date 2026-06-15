@@ -74,7 +74,8 @@ import {
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api } from "@/lib/api"
-import { Proxy, AddProxyRequest, ProxyFilter } from "@/lib/types"
+import { Proxy, AddProxyRequest, ProxyFilter, Job } from "@/lib/types"
+import { Progress } from "@/components/ui/progress"
 import { toast } from "@/lib/toast"
 
 const PROXY_PROTOCOLS = ["http", "https", "socks4", "socks4a", "socks5"] as const
@@ -171,7 +172,8 @@ export default function ProxiesPage() {
   const [deleteConfirm, setDeleteConfirm] = React.useState<{ open: boolean; proxyId: number | null }>({ open: false, proxyId: null })
    const [bulkDeleteConfirm, setBulkDeleteConfirm] = React.useState(false)
    const [deleteAllConfirm, setDeleteAllConfirm] = React.useState(false)
-  const [isBulkTesting, setIsBulkTesting] = React.useState(false)
+  const [bulkTestJob, setBulkTestJob] = React.useState<Job | null>(null)
+  const bulkTestPollRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
   const [selectAllMatching, setSelectAllMatching] = React.useState(false)
 
   // Debounce search query
@@ -333,31 +335,55 @@ export default function ProxiesPage() {
     }
   }
 
+  const stopBulkTestPoll = React.useCallback(() => {
+    if (bulkTestPollRef.current) {
+      clearInterval(bulkTestPollRef.current)
+      bulkTestPollRef.current = null
+    }
+  }, [])
+
   const handleBulkTest = async () => {
     const selectedIds = Object.keys(rowSelection).map(key => data[Number(key)].id)
     if (!selectAllMatching && selectedIds.length === 0) return
 
-    setIsBulkTesting(true)
+    stopBulkTestPoll()
     try {
-      const result = selectAllMatching
+      const { job_id, total, status } = selectAllMatching
         ? await api.bulkTestProxies({ all: true, filter: currentFilter() })
         : await api.bulkTestProxies({ ids: selectedIds })
 
-      const detail = [`${result.active} active`, `${result.failed} failed`]
-      if (result.skipped > 0) {
-        detail.push(`${result.skipped} skipped (1000 max per run)`)
-      }
-      if (result.failed === 0 && result.skipped === 0) {
-        toast.success(`Tested ${result.tested} proxies`, detail.join(", "))
-      } else {
-        toast.error(`Tested ${result.tested} proxies`, detail.join(", "))
-      }
-      fetchProxies()
+      // Seed an optimistic running state so the progress UI appears immediately.
+      const startedAt = new Date().toISOString()
+      setBulkTestJob({
+        id: job_id, kind: "bulk_test", status, progress: 0, total,
+        active: 0, failed: 0, started_at: startedAt, updated_at: startedAt,
+      })
+
+      bulkTestPollRef.current = setInterval(async () => {
+        try {
+          const job = await api.getBulkTestJob(job_id)
+          setBulkTestJob(job)
+          if (job.status === "done" || job.status === "failed") {
+            stopBulkTestPoll()
+            if (job.status === "done") {
+              const detail = [`${job.active} active`, `${job.failed} failed`]
+              if (job.skipped) detail.push(`${job.skipped} skipped`)
+              toast.success(`Tested ${job.progress} proxies`, detail.join(", "))
+            } else {
+              toast.error("Bulk test failed", job.error || "Unknown error")
+            }
+            fetchProxies()
+          }
+        } catch {
+          stopBulkTestPoll()
+          setBulkTestJob(null)
+          toast.error("Lost track of bulk test", "The test may still be running on the server")
+        }
+      }, 1500)
     } catch (error) {
-      console.error("Failed to test proxies:", error)
-      toast.error("Failed to test proxies", error instanceof Error ? error.message : "Unknown error")
-    } finally {
-      setIsBulkTesting(false)
+      console.error("Failed to start bulk test:", error)
+      setBulkTestJob(null)
+      toast.error("Failed to start bulk test", error instanceof Error ? error.message : "Unknown error")
     }
   }
 
@@ -727,6 +753,11 @@ export default function ProxiesPage() {
   // Effective number of proxies the bulk actions will operate on.
   const selectedCount = selectAllMatching ? pagination.total : pageSelectedCount
 
+  const isBulkTesting = bulkTestJob?.status === "pending" || bulkTestJob?.status === "running"
+
+  // Stop polling if the component unmounts mid-test.
+  React.useEffect(() => () => stopBulkTestPoll(), [stopBulkTestPoll])
+
   // The list filters currently applied, shared by every filter-based bulk op.
   const currentFilter = React.useCallback((): ProxyFilter => ({
     search: debouncedSearchQuery || undefined,
@@ -941,6 +972,38 @@ export default function ProxiesPage() {
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
+            {bulkTestJob && (
+              <div className="space-y-1.5 rounded-md border bg-muted/50 px-4 py-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-2">
+                    {isBulkTesting && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {isBulkTesting
+                      ? `Testing proxies ${bulkTestJob.progress.toLocaleString()}/${bulkTestJob.total.toLocaleString()}…`
+                      : bulkTestJob.status === "failed"
+                        ? "Bulk test failed"
+                        : `Tested ${bulkTestJob.progress.toLocaleString()} proxies`}
+                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-green-600">Active: {bulkTestJob.active.toLocaleString()}</span>
+                    <span className="text-red-600">Failed: {bulkTestJob.failed.toLocaleString()}</span>
+                    {!isBulkTesting && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto p-0 text-muted-foreground"
+                        onClick={() => setBulkTestJob(null)}
+                      >
+                        Dismiss
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                <Progress
+                  value={bulkTestJob.total > 0 ? (bulkTestJob.progress / bulkTestJob.total) * 100 : 0}
+                  className="h-1.5"
+                />
+              </div>
+            )}
             {pageAllSelected && hasMoreMatches && (
               <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-md border bg-muted/50 px-4 py-2 text-sm">
                 {selectAllMatching ? (

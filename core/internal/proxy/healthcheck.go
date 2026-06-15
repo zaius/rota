@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -204,14 +205,16 @@ func (h *HealthChecker) CheckAllProxies(ctx context.Context) ([]models.ProxyTest
 		proxies = append(proxies, &p)
 	}
 
-	return h.CheckProxies(ctx, proxies)
+	return h.CheckProxies(ctx, proxies, nil)
 }
 
 // CheckProxies tests the provided proxies concurrently using the configured
 // worker pool and returns one result per proxy (in the same order). It loads
 // health-check settings if they have not been cached yet, so it is safe to call
-// without a prior CheckAllProxies.
-func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Proxy) ([]models.ProxyTestResult, error) {
+// without a prior CheckAllProxies. If progressFn is non-nil it is invoked after
+// each proxy finishes with the running (checked, active, failed) counts; it may
+// be called concurrently-safe values from worker goroutines.
+func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Proxy, progressFn func(checked, active, failed int)) ([]models.ProxyTestResult, error) {
 	if len(proxies) == 0 {
 		return []models.ProxyTestResult{}, nil
 	}
@@ -237,6 +240,13 @@ func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Prox
 	wp := workerpool.New(workers)
 	results := make([]models.ProxyTestResult, len(proxies))
 
+	// Running counters for progress reporting (guarded; callbacks fire from
+	// worker goroutines).
+	var (
+		mu                       sync.Mutex
+		checked, active, failed  int
+	)
+
 	// Submit jobs
 	for i, proxy := range proxies {
 		idx := i
@@ -259,6 +269,19 @@ func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Prox
 				results[idx].Error = &errMsg
 			} else {
 				results[idx] = *result
+			}
+
+			if progressFn != nil {
+				mu.Lock()
+				checked++
+				if results[idx].Status == "active" {
+					active++
+				} else {
+					failed++
+				}
+				c, a, f := checked, active, failed
+				mu.Unlock()
+				progressFn(c, a, f)
 			}
 		})
 	}

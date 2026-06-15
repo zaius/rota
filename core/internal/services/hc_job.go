@@ -10,63 +10,82 @@ import (
 	"github.com/google/uuid"
 )
 
-// HCJobStatus represents the state of a health-check job
-type HCJobStatus string
+// JobStatus represents the state of an async, pollable job.
+type JobStatus string
 
 const (
-	HCJobPending  HCJobStatus = "pending"
-	HCJobRunning  HCJobStatus = "running"
-	HCJobDone     HCJobStatus = "done"
-	HCJobFailed   HCJobStatus = "failed"
+	JobPending JobStatus = "pending"
+	JobRunning JobStatus = "running"
+	JobDone    JobStatus = "done"
+	JobFailed  JobStatus = "failed"
 )
 
-// HCJob holds state for one async pool health-check run
-type HCJob struct {
-	ID        string      `json:"id"`
-	PoolID    int         `json:"pool_id"`
-	PoolName  string      `json:"pool_name"`
-	Status    HCJobStatus `json:"status"`
-	Progress  int         `json:"progress"`  // checked so far
-	Total     int         `json:"total"`     // total proxies
-	Active    int         `json:"active"`
-	Failed    int         `json:"failed"`
-	CheckURL  string      `json:"check_url"`
-	Workers   int         `json:"workers"`
-	Error     string      `json:"error,omitempty"`
-	StartedAt time.Time   `json:"started_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+// JobKind distinguishes the operations that share the job store.
+type JobKind string
+
+const (
+	JobKindPoolHealthCheck JobKind = "pool_health_check"
+	JobKindBulkTest        JobKind = "bulk_test"
+)
+
+// Backwards-compatible aliases for the original health-check-only names so the
+// existing pool code keeps compiling unchanged.
+type (
+	HCJob       = Job
+	HCJobStore  = JobStore
+	HCJobStatus = JobStatus
+)
+
+const (
+	HCJobPending = JobPending
+	HCJobRunning = JobRunning
+	HCJobDone    = JobDone
+	HCJobFailed  = JobFailed
+)
+
+// Job holds state for one async, pollable operation (a pool health check, a
+// bulk proxy test, …). Kind-specific fields are omitempty so unrelated jobs
+// stay lean in the JSON the UI polls.
+type Job struct {
+	ID         string                   `json:"id"`
+	Kind       JobKind                  `json:"kind"`
+	Status     JobStatus                `json:"status"`
+	Progress   int                      `json:"progress"` // items processed so far
+	Total      int                      `json:"total"`    // total items to process
+	Active     int                      `json:"active"`
+	Failed     int                      `json:"failed"`
+	Skipped    int                      `json:"skipped,omitempty"`
+	Error      string                   `json:"error,omitempty"`
+	StartedAt  time.Time                `json:"started_at"`
+	UpdatedAt  time.Time                `json:"updated_at"`
+	FinishedAt *time.Time               `json:"finished_at,omitempty"`
 	// Full results (populated when done)
 	Results []models.ProxyTestResult `json:"results,omitempty"`
+
+	// Pool-health-check-specific metadata.
+	PoolID   int    `json:"pool_id,omitempty"`
+	PoolName string `json:"pool_name,omitempty"`
+	CheckURL string `json:"check_url,omitempty"`
+	Workers  int    `json:"workers,omitempty"`
 }
 
-// HCJobStore keeps in-memory map of recent jobs (TTL 30 min)
-type HCJobStore struct {
+// JobStore keeps an in-memory map of recent jobs (TTL 30 min).
+type JobStore struct {
 	mu   sync.RWMutex
-	jobs map[string]*HCJob
+	jobs map[string]*Job
 }
 
-var globalJobStore = &HCJobStore{
-	jobs: make(map[string]*HCJob),
+var globalJobStore = &JobStore{
+	jobs: make(map[string]*Job),
 }
 
-// GetJobStore returns the singleton job store
-func GetJobStore() *HCJobStore {
+// GetJobStore returns the singleton job store.
+func GetJobStore() *JobStore {
 	return globalJobStore
 }
 
-// Create registers a new job and returns it
-func (s *HCJobStore) Create(poolID int, poolName, checkURL string, workers int) *HCJob {
-	job := &HCJob{
-		ID:        uuid.New().String(),
-		PoolID:    poolID,
-		PoolName:  poolName,
-		Status:    HCJobPending,
-		CheckURL:  checkURL,
-		Workers:   workers,
-		StartedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
+// add registers a job and schedules a background cleanup.
+func (s *JobStore) add(job *Job) *Job {
 	s.mu.Lock()
 	s.jobs[job.ID] = job
 	s.mu.Unlock()
@@ -76,16 +95,43 @@ func (s *HCJobStore) Create(poolID int, poolName, checkURL string, workers int) 
 	return job
 }
 
-// Get returns a job by ID
-func (s *HCJobStore) Get(id string) (*HCJob, bool) {
+// Create registers a new pool health-check job and returns it.
+func (s *JobStore) Create(poolID int, poolName, checkURL string, workers int) *Job {
+	return s.add(&Job{
+		ID:        uuid.New().String(),
+		Kind:      JobKindPoolHealthCheck,
+		PoolID:    poolID,
+		PoolName:  poolName,
+		CheckURL:  checkURL,
+		Workers:   workers,
+		Status:    JobPending,
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+}
+
+// CreateBulkTest registers a new bulk proxy-test job for `total` proxies.
+func (s *JobStore) CreateBulkTest(total int) *Job {
+	return s.add(&Job{
+		ID:        uuid.New().String(),
+		Kind:      JobKindBulkTest,
+		Total:     total,
+		Status:    JobPending,
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+}
+
+// Get returns a job by ID.
+func (s *JobStore) Get(id string) (*Job, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	j, ok := s.jobs[id]
 	return j, ok
 }
 
-// Update mutates a job (caller must hold no lock)
-func (s *HCJobStore) Update(id string, fn func(*HCJob)) {
+// Update mutates a job (caller must hold no lock).
+func (s *JobStore) Update(id string, fn func(*Job)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if j, ok := s.jobs[id]; ok {
@@ -94,8 +140,8 @@ func (s *HCJobStore) Update(id string, fn func(*HCJob)) {
 	}
 }
 
-// cleanup removes jobs older than 30 minutes
-func (s *HCJobStore) cleanup() {
+// cleanup removes jobs older than 30 minutes.
+func (s *JobStore) cleanup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cutoff := time.Now().Add(-30 * time.Minute)
@@ -106,13 +152,13 @@ func (s *HCJobStore) cleanup() {
 	}
 }
 
-// ListByPool returns all jobs for a given pool (newest first)
-func (s *HCJobStore) ListByPool(poolID int) []*HCJob {
+// ListByPool returns all pool health-check jobs for a given pool (newest first).
+func (s *JobStore) ListByPool(poolID int) []*Job {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var out []*HCJob
+	var out []*Job
 	for _, j := range s.jobs {
-		if j.PoolID == poolID {
+		if j.Kind == JobKindPoolHealthCheck && j.PoolID == poolID {
 			out = append(out, j)
 		}
 	}
@@ -135,7 +181,7 @@ func RunPoolHealthCheckAsync(
 	poolID int,
 	poolName, checkURL string,
 	workers int,
-) (*HCJob, error) {
+) (*Job, error) {
 	store := GetJobStore()
 	if poolName == "" {
 		poolName = fmt.Sprintf("Pool #%d", poolID)
@@ -148,20 +194,20 @@ func RunPoolHealthCheckAsync(
 	proxies, _ := poolSvc.poolRepo.GetProxies(ctx, poolID)
 
 	job := store.Create(poolID, poolName, checkURL, workers)
-	store.Update(job.ID, func(j *HCJob) {
+	store.Update(job.ID, func(j *Job) {
 		j.Total = len(proxies)
 	})
 
 	go func() {
-		store.Update(job.ID, func(j *HCJob) {
-			j.Status = HCJobRunning
+		store.Update(job.ID, func(j *Job) {
+			j.Status = JobRunning
 		})
 
 		result, err := poolSvc.HealthCheckPoolWithProgress(
 			context.Background(), // use background so UI disconnect doesn't kill it
 			poolID, checkURL, workers,
 			func(checked, active, failed int) {
-				store.Update(job.ID, func(j *HCJob) {
+				store.Update(job.ID, func(j *Job) {
 					j.Progress = checked
 					j.Active = active
 					j.Failed = failed
@@ -171,16 +217,16 @@ func RunPoolHealthCheckAsync(
 
 		now := time.Now()
 		if err != nil {
-			store.Update(job.ID, func(j *HCJob) {
-				j.Status = HCJobFailed
+			store.Update(job.ID, func(j *Job) {
+				j.Status = JobFailed
 				j.Error = err.Error()
 				j.FinishedAt = &now
 			})
 			return
 		}
 
-		store.Update(job.ID, func(j *HCJob) {
-			j.Status = HCJobDone
+		store.Update(job.ID, func(j *Job) {
+			j.Status = JobDone
 			j.Total = result.Checked
 			j.Active = result.Active
 			j.Failed = result.Failed

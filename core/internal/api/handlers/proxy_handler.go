@@ -11,19 +11,20 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
+	"github.com/alpkeskin/rota/core/internal/services"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/go-chi/chi/v5"
 )
 
-// maxBulkTest caps how many proxies a single bulk-test request will check, to
-// keep the (synchronous) request bounded. Larger selections are truncated and
-// the skipped count is reported back to the caller.
-const maxBulkTest = 1000
+// maxBulkTest is a safety ceiling on how many proxies a single bulk-test job
+// will load and check, guarding against pathological runs. Anything beyond this
+// is reported back as skipped. It is high enough not to constrain normal use.
+const maxBulkTest = 100000
 
 // HealthChecker interface for testing proxies
 type HealthChecker interface {
 	CheckProxy(ctx context.Context, proxy *models.Proxy) (*models.ProxyTestResult, error)
-	CheckProxies(ctx context.Context, proxies []*models.Proxy) ([]models.ProxyTestResult, error)
+	CheckProxies(ctx context.Context, proxies []*models.Proxy, progressFn func(checked, active, failed int)) ([]models.ProxyTestResult, error)
 }
 
 // ProxyHandler handles proxy management endpoints
@@ -366,14 +367,17 @@ func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 	h.jsonResponse(w, http.StatusOK, result)
 }
 
-// BulkTest handles testing multiple proxies at once
+// BulkTest starts an async job that tests multiple proxies and returns the job
+// ID immediately. The frontend polls GET /proxies/bulk-test/{job_id} for
+// progress. The target is either an explicit list of IDs or every proxy
+// matching a filter (all=true).
 //	@Summary		Bulk test proxies
-//	@Description	Test multiple proxies at once, either an explicit list of IDs or every proxy matching a filter (all=true). Capped at 1000 proxies per request.
+//	@Description	Start an async job to test multiple proxies, either an explicit list of IDs or every proxy matching a filter (all=true). Poll /proxies/bulk-test/{job_id} for progress.
 //	@Tags			proxies
 //	@Accept			json
 //	@Produce		json
 //	@Param			request	body		models.BulkTestProxyRequest	true	"Proxies to test"
-//	@Success		200		{object}	models.BulkTestResult		"Test summary"
+//	@Success		202		{object}	map[string]interface{}		"Job accepted"
 //	@Failure		400		{object}	models.ErrorResponse
 //	@Failure		500		{object}	models.ErrorResponse
 //	@Router			/proxies/bulk-test [post]
@@ -389,61 +393,135 @@ func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Detached context so a client disconnect mid-run doesn't cancel testing.
-	dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
+	filter := models.ProxyFilter{}
+	if req.Filter != nil {
+		filter = *req.Filter
+	}
 
-	// Resolve the target proxies. We over-fetch by one beyond the cap so we can
-	// tell the caller how many were skipped due to truncation.
+	// Count the target set upfront so the job can report a progress percentage.
 	var (
 		matched int
-		proxies []*models.Proxy
 		err     error
 	)
 	if req.All {
-		filter := models.ProxyFilter{}
-		if req.Filter != nil {
-			filter = *req.Filter
-		}
-		if matched, err = h.proxyRepo.CountByFilter(dbCtx, filter); err == nil {
-			proxies, err = h.proxyRepo.GetByFilter(dbCtx, filter, maxBulkTest)
+		matched, err = h.proxyRepo.CountByFilter(r.Context(), filter)
+		if err != nil {
+			h.logger.Error("failed to count proxies for bulk test", "error", err)
+			h.errorResponse(w, http.StatusInternalServerError, "Failed to count proxies")
+			return
 		}
 	} else {
 		matched = len(req.IDs)
-		proxies, err = h.proxyRepo.GetByIDs(dbCtx, req.IDs, maxBulkTest)
-	}
-	if err != nil {
-		h.logger.Error("failed to load proxies for bulk test", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to load proxies")
-		return
 	}
 
-	h.logger.Info("bulk testing proxies", "count", len(proxies), "matched", matched)
-	results, err := h.healthChecker.CheckProxies(dbCtx, proxies)
-	if err != nil {
-		h.logger.Error("failed to bulk test proxies", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to test proxies")
-		return
+	tested := matched
+	if tested > maxBulkTest {
+		tested = maxBulkTest
 	}
 
-	summary := models.BulkTestResult{Tested: len(results)}
-	for _, result := range results {
-		if result.Status == "active" {
-			summary.Active++
+	store := services.GetJobStore()
+	job := store.CreateBulkTest(tested)
+
+	// Capture request data for the detached goroutine.
+	all := req.All
+	ids := req.IDs
+
+	go func() {
+		// Detached context so a client disconnect mid-run doesn't cancel testing.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+
+		store.Update(job.ID, func(j *services.Job) { j.Status = services.JobRunning })
+
+		var proxies []*models.Proxy
+		var loadErr error
+		if all {
+			proxies, loadErr = h.proxyRepo.GetByFilter(ctx, filter, maxBulkTest)
 		} else {
-			summary.Failed++
+			proxies, loadErr = h.proxyRepo.GetByIDs(ctx, ids, maxBulkTest)
 		}
-	}
-	if matched > summary.Tested {
-		summary.Skipped = matched - summary.Tested
-	}
 
-	h.logger.Info("bulk test completed",
-		"tested", summary.Tested, "active", summary.Active,
-		"failed", summary.Failed, "skipped", summary.Skipped,
-	)
+		now := time.Now()
+		if loadErr != nil {
+			h.logger.Error("failed to load proxies for bulk test", "error", loadErr)
+			store.Update(job.ID, func(j *services.Job) {
+				j.Status = services.JobFailed
+				j.Error = "failed to load proxies"
+				j.FinishedAt = &now
+			})
+			return
+		}
 
-	h.jsonResponse(w, http.StatusOK, summary)
+		h.logger.Info("bulk testing proxies", "count", len(proxies), "matched", matched)
+		results, testErr := h.healthChecker.CheckProxies(ctx, proxies, func(checked, active, failed int) {
+			store.Update(job.ID, func(j *services.Job) {
+				j.Progress = checked
+				j.Active = active
+				j.Failed = failed
+			})
+		})
+
+		finished := time.Now()
+		if testErr != nil {
+			h.logger.Error("failed to bulk test proxies", "error", testErr)
+			store.Update(job.ID, func(j *services.Job) {
+				j.Status = services.JobFailed
+				j.Error = "failed to test proxies"
+				j.FinishedAt = &finished
+			})
+			return
+		}
+
+		active, failed := 0, 0
+		for _, result := range results {
+			if result.Status == "active" {
+				active++
+			} else {
+				failed++
+			}
+		}
+
+		store.Update(job.ID, func(j *services.Job) {
+			j.Status = services.JobDone
+			j.Progress = len(results)
+			j.Active = active
+			j.Failed = failed
+			if matched > len(results) {
+				j.Skipped = matched - len(results)
+			}
+			j.Results = results
+			j.FinishedAt = &finished
+		})
+
+		h.logger.Info("bulk test completed",
+			"tested", len(results), "active", active, "failed", failed,
+		)
+	}()
+
+	h.jsonResponse(w, http.StatusAccepted, map[string]interface{}{
+		"job_id": job.ID,
+		"total":  tested,
+		"status": job.Status,
+	})
+}
+
+// BulkTestStatus returns the current status of a bulk-test job.
+//	@Summary		Bulk test status
+//	@Description	Get the status/progress of a bulk proxy-test job.
+//	@Tags			proxies
+//	@Produce		json
+//	@Param			job_id	path		string	true	"Job ID"
+//	@Success		200		{object}	services.Job	"Job status"
+//	@Failure		404		{object}	models.ErrorResponse
+//	@Router			/proxies/bulk-test/{job_id} [get]
+func (h *ProxyHandler) BulkTestStatus(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "job_id")
+	job, ok := services.GetJobStore().Get(jobID)
+	if !ok || job.Kind != services.JobKindBulkTest {
+		h.errorResponse(w, http.StatusNotFound, "Job not found")
+		return
+	}
+	h.jsonResponse(w, http.StatusOK, job)
 }
 
 // Export handles proxy export
