@@ -21,10 +21,16 @@ import (
 // is reported back as skipped. It is high enough not to constrain normal use.
 const maxBulkTest = 100000
 
+// bulkTestTimeoutSecs is the per-proxy timeout used for interactive bulk tests.
+// It is deliberately shorter than the background health-check timeout (60s) so
+// a user watching the progress bar isn't stuck waiting on dead proxies that
+// each burn the full timeout.
+const bulkTestTimeoutSecs = 15
+
 // HealthChecker interface for testing proxies
 type HealthChecker interface {
 	CheckProxy(ctx context.Context, proxy *models.Proxy) (*models.ProxyTestResult, error)
-	CheckProxies(ctx context.Context, proxies []*models.Proxy, progressFn func(checked, active, failed int)) ([]models.ProxyTestResult, error)
+	CheckProxies(ctx context.Context, proxies []*models.Proxy, timeoutSecs int, progressFn func(checked, active, failed int)) ([]models.ProxyTestResult, error)
 }
 
 // ProxyHandler handles proxy management endpoints
@@ -453,7 +459,7 @@ func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.logger.Info("bulk testing proxies", "count", len(proxies), "matched", matched)
-		results, testErr := h.healthChecker.CheckProxies(ctx, proxies, func(checked, active, failed int) {
+		results, testErr := h.healthChecker.CheckProxies(ctx, proxies, bulkTestTimeoutSecs, func(checked, active, failed int) {
 			store.Update(job.ID, func(j *services.Job) {
 				j.Progress = checked
 				j.Active = active
@@ -522,6 +528,24 @@ func (h *ProxyHandler) BulkTestStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.jsonResponse(w, http.StatusOK, job)
+}
+
+// BulkTestLatest returns the most recent bulk-test job (or {"job": null} if
+// none is known). The UI calls this on load so an in-flight test started before
+// a page reload can be re-attached to and its progress resumed.
+//	@Summary		Latest bulk test
+//	@Description	Get the most recent bulk proxy-test job, so the UI can resume tracking after a reload.
+//	@Tags			proxies
+//	@Produce		json
+//	@Success		200	{object}	map[string]interface{}	"Latest job (or null)"
+//	@Router			/proxies/bulk-test [get]
+func (h *ProxyHandler) BulkTestLatest(w http.ResponseWriter, r *http.Request) {
+	job, ok := services.GetJobStore().LatestByKind(services.JobKindBulkTest)
+	if !ok {
+		h.jsonResponse(w, http.StatusOK, map[string]interface{}{"job": nil})
+		return
+	}
+	h.jsonResponse(w, http.StatusOK, map[string]interface{}{"job": job})
 }
 
 // Export handles proxy export

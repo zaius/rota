@@ -152,6 +152,22 @@ func (s *JobStore) cleanup() {
 	}
 }
 
+// LatestByKind returns the most recently started job of the given kind.
+func (s *JobStore) LatestByKind(kind JobKind) (*Job, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latest *Job
+	for _, j := range s.jobs {
+		if j.Kind != kind {
+			continue
+		}
+		if latest == nil || j.StartedAt.After(latest.StartedAt) {
+			latest = j
+		}
+	}
+	return latest, latest != nil
+}
+
 // ListByPool returns all pool health-check jobs for a given pool (newest first).
 func (s *JobStore) ListByPool(poolID int) []*Job {
 	s.mu.RLock()

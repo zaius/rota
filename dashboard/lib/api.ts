@@ -241,6 +241,11 @@ class ApiClient {
     return this.request<Job>(`/api/v1/proxies/bulk-test/${jobId}`)
   }
 
+  async getLatestBulkTestJob(): Promise<Job | null> {
+    const res = await this.request<{ job: Job | null }>("/api/v1/proxies/bulk-test")
+    return res.job
+  }
+
   async invalidateProxy(
     id: number,
     opts?: { minutes?: number; reason?: string }

@@ -216,6 +216,14 @@ export default function ProxiesPage() {
     fetchProxies()
   }, [fetchProxies])
 
+  // Keep a ref to the latest fetchProxies so the bulk-test poller can refresh
+  // the list on completion without being torn down/recreated when filters
+  // change (which would orphan the running interval).
+  const fetchProxiesRef = React.useRef(fetchProxies)
+  React.useEffect(() => {
+    fetchProxiesRef.current = fetchProxies
+  }, [fetchProxies])
+
   const handleAddProxy = async () => {
     try {
       await api.addProxy(newProxy)
@@ -342,6 +350,49 @@ export default function ProxiesPage() {
     }
   }, [])
 
+  // Poll a bulk-test job until it finishes. Used both when starting a new test
+  // and when re-attaching to an in-flight job after a page reload.
+  const startBulkTestPolling = React.useCallback((jobId: string) => {
+    stopBulkTestPoll()
+    bulkTestPollRef.current = setInterval(async () => {
+      try {
+        const job = await api.getBulkTestJob(jobId)
+        setBulkTestJob(job)
+        if (job.status === "done" || job.status === "failed") {
+          stopBulkTestPoll()
+          if (job.status === "done") {
+            const detail = [`${job.active} active`, `${job.failed} failed`]
+            if (job.skipped) detail.push(`${job.skipped} skipped`)
+            toast.success(`Tested ${job.progress} proxies`, detail.join(", "))
+          } else {
+            toast.error("Bulk test failed", job.error || "Unknown error")
+          }
+          fetchProxiesRef.current()
+        }
+      } catch {
+        stopBulkTestPoll()
+        setBulkTestJob(null)
+        toast.error("Lost track of bulk test", "The test may still be running on the server")
+      }
+    }, 1500)
+  }, [stopBulkTestPoll])
+
+  // On load, re-attach to any in-flight bulk-test job so a page reload doesn't
+  // orphan the progress UI (the server job keeps running regardless).
+  React.useEffect(() => {
+    let cancelled = false
+    api.getLatestBulkTestJob()
+      .then(job => {
+        if (cancelled || !job) return
+        if (job.status === "pending" || job.status === "running") {
+          setBulkTestJob(job)
+          startBulkTestPolling(job.id)
+        }
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [startBulkTestPolling])
+
   const handleBulkTest = async () => {
     const selectedIds = Object.keys(rowSelection).map(key => data[Number(key)].id)
     if (!selectAllMatching && selectedIds.length === 0) return
@@ -358,28 +409,7 @@ export default function ProxiesPage() {
         id: job_id, kind: "bulk_test", status, progress: 0, total,
         active: 0, failed: 0, started_at: startedAt, updated_at: startedAt,
       })
-
-      bulkTestPollRef.current = setInterval(async () => {
-        try {
-          const job = await api.getBulkTestJob(job_id)
-          setBulkTestJob(job)
-          if (job.status === "done" || job.status === "failed") {
-            stopBulkTestPoll()
-            if (job.status === "done") {
-              const detail = [`${job.active} active`, `${job.failed} failed`]
-              if (job.skipped) detail.push(`${job.skipped} skipped`)
-              toast.success(`Tested ${job.progress} proxies`, detail.join(", "))
-            } else {
-              toast.error("Bulk test failed", job.error || "Unknown error")
-            }
-            fetchProxies()
-          }
-        } catch {
-          stopBulkTestPoll()
-          setBulkTestJob(null)
-          toast.error("Lost track of bulk test", "The test may still be running on the server")
-        }
-      }, 1500)
+      startBulkTestPolling(job_id)
     } catch (error) {
       console.error("Failed to start bulk test:", error)
       setBulkTestJob(null)

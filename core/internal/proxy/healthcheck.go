@@ -40,8 +40,15 @@ func NewHealthChecker(
 	}
 }
 
-// CheckProxy tests a single proxy
+// CheckProxy tests a single proxy using the configured health-check timeout.
 func (h *HealthChecker) CheckProxy(ctx context.Context, proxy *models.Proxy) (*models.ProxyTestResult, error) {
+	return h.checkProxy(ctx, proxy, 0)
+}
+
+// checkProxy tests a single proxy. If timeoutSecs > 0 it overrides the
+// configured health-check timeout for this check only (used by interactive
+// bulk tests that want a snappier per-proxy timeout than the background cron).
+func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, timeoutSecs int) (*models.ProxyTestResult, error) {
 	startTime := time.Now()
 
 	// Load settings if not cached
@@ -51,6 +58,11 @@ func (h *HealthChecker) CheckProxy(ctx context.Context, proxy *models.Proxy) (*m
 			return nil, fmt.Errorf("failed to load settings: %w", err)
 		}
 		h.settings = &settings.HealthCheck
+	}
+
+	timeout := h.settings.Timeout
+	if timeoutSecs > 0 {
+		timeout = timeoutSecs
 	}
 
 	result := &models.ProxyTestResult{
@@ -84,7 +96,7 @@ func (h *HealthChecker) CheckProxy(ctx context.Context, proxy *models.Proxy) (*m
 
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   time.Duration(h.settings.Timeout) * time.Second,
+		Timeout:   time.Duration(timeout) * time.Second,
 	}
 
 	// Create request
@@ -118,7 +130,7 @@ func (h *HealthChecker) CheckProxy(ctx context.Context, proxy *models.Proxy) (*m
 		if strings.Contains(errMsg, "x509:") || strings.Contains(errMsg, "tls:") {
 			errMsg = fmt.Sprintf("TLS/SSL error: %s (Note: Certificate verification is disabled, but proxy may have issues)", err.Error())
 		} else if strings.Contains(errMsg, "timeout") {
-			errMsg = fmt.Sprintf("Connection timeout after %ds", h.settings.Timeout)
+			errMsg = fmt.Sprintf("Connection timeout after %ds", timeout)
 		} else if strings.Contains(errMsg, "connection refused") {
 			errMsg = "Connection refused - proxy may be offline"
 		}
@@ -205,16 +217,17 @@ func (h *HealthChecker) CheckAllProxies(ctx context.Context) ([]models.ProxyTest
 		proxies = append(proxies, &p)
 	}
 
-	return h.CheckProxies(ctx, proxies, nil)
+	return h.CheckProxies(ctx, proxies, 0, nil)
 }
 
 // CheckProxies tests the provided proxies concurrently using the configured
 // worker pool and returns one result per proxy (in the same order). It loads
 // health-check settings if they have not been cached yet, so it is safe to call
-// without a prior CheckAllProxies. If progressFn is non-nil it is invoked after
-// each proxy finishes with the running (checked, active, failed) counts; it may
-// be called concurrently-safe values from worker goroutines.
-func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Proxy, progressFn func(checked, active, failed int)) ([]models.ProxyTestResult, error) {
+// without a prior CheckAllProxies. If timeoutSecs > 0 it overrides the
+// per-proxy health-check timeout for this run only. If progressFn is non-nil it
+// is invoked after each proxy finishes with the running (checked, active,
+// failed) counts; the values passed are computed under a lock so they are safe.
+func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Proxy, timeoutSecs int, progressFn func(checked, active, failed int)) ([]models.ProxyTestResult, error) {
 	if len(proxies) == 0 {
 		return []models.ProxyTestResult{}, nil
 	}
@@ -252,7 +265,7 @@ func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Prox
 		idx := i
 		p := proxy
 		wp.Submit(func() {
-			result, err := h.CheckProxy(ctx, p)
+			result, err := h.checkProxy(ctx, p, timeoutSecs)
 			if err != nil {
 				h.logger.Error("health check error",
 					"proxy_id", p.ID,
