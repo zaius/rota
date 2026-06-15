@@ -111,9 +111,37 @@ type BulkCreateProxyRequest struct {
 	Proxies []CreateProxyRequest `json:"proxies" validate:"required,min=1"`
 }
 
-// BulkDeleteProxyRequest represents a request to delete multiple proxies
+// ProxyFilter narrows a bulk operation to the proxies matching the same
+// list-style filters used by the management screen. An empty filter matches
+// every proxy.
+type ProxyFilter struct {
+	Search   string `json:"search,omitempty"`
+	Status   string `json:"status,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// BulkDeleteProxyRequest represents a request to delete multiple proxies,
+// either an explicit list of IDs or every proxy matching a filter (All=true).
 type BulkDeleteProxyRequest struct {
-	IDs []int `json:"ids" validate:"required,min=1"`
+	IDs    []int        `json:"ids,omitempty"`
+	All    bool         `json:"all,omitempty"`
+	Filter *ProxyFilter `json:"filter,omitempty"`
+}
+
+// BulkTestProxyRequest represents a request to test multiple proxies, either an
+// explicit list of IDs or every proxy matching a filter (All=true).
+type BulkTestProxyRequest struct {
+	IDs    []int        `json:"ids,omitempty"`
+	All    bool         `json:"all,omitempty"`
+	Filter *ProxyFilter `json:"filter,omitempty"`
+}
+
+// BulkTestResult summarises the outcome of a bulk proxy test.
+type BulkTestResult struct {
+	Tested  int `json:"tested"`
+	Active  int `json:"active"`
+	Failed  int `json:"failed"`
+	Skipped int `json:"skipped"`
 }
 
 // ProxyTestResult represents the result of testing a proxy

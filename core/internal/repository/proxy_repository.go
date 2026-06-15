@@ -28,12 +28,12 @@ func (r *ProxyRepository) GetDB() *database.DB {
 	return r.db
 }
 
-// List retrieves proxies with pagination and filters
-func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, status, protocol, sortField, sortOrder string) ([]models.ProxyWithStats, int, error) {
-	// Build WHERE clause
+// buildProxyWhere builds a WHERE clause (and its arguments) for the list-style
+// filters shared by List and the bulk-by-filter operations. argPos is the next
+// positional placeholder to use, so callers can append further args afterwards.
+func buildProxyWhere(search, status, protocol string, argPos int) (string, []interface{}) {
 	whereClauses := []string{}
 	args := []interface{}{}
-	argPos := 1
 
 	if search != "" {
 		// Use both ILIKE for simple search and to_tsvector for full-text search
@@ -58,6 +58,13 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 	if len(whereClauses) > 0 {
 		whereClause = "WHERE " + strings.Join(whereClauses, " AND ")
 	}
+	return whereClause, args
+}
+
+// List retrieves proxies with pagination and filters
+func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, status, protocol, sortField, sortOrder string) ([]models.ProxyWithStats, int, error) {
+	whereClause, args := buildProxyWhere(search, status, protocol, 1)
+	argPos := len(args) + 1
 
 	// Validate and set sort field
 	validSortFields := map[string]bool{
@@ -504,6 +511,88 @@ func (r *ProxyRepository) BulkDelete(ctx context.Context, ids []int) (int, error
 		return 0, fmt.Errorf("failed to bulk delete proxies: %w", err)
 	}
 	return int(result.RowsAffected()), nil
+}
+
+// BulkDeleteByFilter deletes every proxy matching the given list-style filter
+// and returns the number of rows removed. An empty filter deletes all proxies.
+func (r *ProxyRepository) BulkDeleteByFilter(ctx context.Context, filter models.ProxyFilter) (int, error) {
+	whereClause, args := buildProxyWhere(filter.Search, filter.Status, filter.Protocol, 1)
+	query := fmt.Sprintf("DELETE FROM proxies %s", whereClause)
+	result, err := r.db.Pool.Exec(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("failed to bulk delete proxies by filter: %w", err)
+	}
+	return int(result.RowsAffected()), nil
+}
+
+// scanProxies scans rows selecting the full proxy columns (including password)
+// needed to build a transport for testing.
+func scanProxies(rows pgx.Rows) ([]*models.Proxy, error) {
+	defer rows.Close()
+	proxies := []*models.Proxy{}
+	for rows.Next() {
+		var p models.Proxy
+		err := rows.Scan(
+			&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status,
+			&p.Requests, &p.SuccessfulRequests, &p.FailedRequests,
+			&p.AvgResponseTime, &p.LastCheck, &p.LastError,
+			&p.CountryCode, &p.CountryName, &p.RegionName, &p.CityName, &p.ISP,
+			&p.Tags,
+			&p.CreatedAt, &p.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan proxy: %w", err)
+		}
+		if p.Tags == nil {
+			p.Tags = []string{}
+		}
+		proxies = append(proxies, &p)
+	}
+	return proxies, nil
+}
+
+const proxyFullColumns = `
+	id, address, protocol, username, password, status,
+	requests, successful_requests, failed_requests,
+	avg_response_time, last_check, last_error,
+	country_code, country_name, region_name, city_name, isp,
+	COALESCE(tags, '{}') AS tags,
+	created_at, updated_at`
+
+// GetByIDs returns the full proxy records (including credentials) for the given
+// IDs, ordered by address. The limit caps how many are returned.
+func (r *ProxyRepository) GetByIDs(ctx context.Context, ids []int, limit int) ([]*models.Proxy, error) {
+	query := fmt.Sprintf("SELECT %s FROM proxies WHERE id = ANY($1) ORDER BY address LIMIT $2", proxyFullColumns)
+	rows, err := r.db.Pool.Query(ctx, query, ids, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get proxies by ids: %w", err)
+	}
+	return scanProxies(rows)
+}
+
+// GetByFilter returns the full proxy records (including credentials) matching
+// the given list-style filter, ordered by address. The limit caps how many are
+// returned. An empty filter matches every proxy.
+func (r *ProxyRepository) GetByFilter(ctx context.Context, filter models.ProxyFilter, limit int) ([]*models.Proxy, error) {
+	whereClause, args := buildProxyWhere(filter.Search, filter.Status, filter.Protocol, 1)
+	args = append(args, limit)
+	query := fmt.Sprintf("SELECT %s FROM proxies %s ORDER BY address LIMIT $%d", proxyFullColumns, whereClause, len(args))
+	rows, err := r.db.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get proxies by filter: %w", err)
+	}
+	return scanProxies(rows)
+}
+
+// CountByFilter returns how many proxies match the given list-style filter.
+func (r *ProxyRepository) CountByFilter(ctx context.Context, filter models.ProxyFilter) (int, error) {
+	whereClause, args := buildProxyWhere(filter.Search, filter.Status, filter.Protocol, 1)
+	query := fmt.Sprintf("SELECT COUNT(*) FROM proxies %s", whereClause)
+	var total int
+	if err := r.db.Pool.QueryRow(ctx, query, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("failed to count proxies by filter: %w", err)
+	}
+	return total, nil
 }
 
 // GetStats retrieves overall proxy statistics

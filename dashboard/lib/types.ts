@@ -165,8 +165,31 @@ export interface BulkProxyRequest {
   proxies: AddProxyRequest[]
 }
 
+// Narrows a bulk operation to the proxies matching the current list filters.
+// An empty/omitted filter matches every proxy.
+export interface ProxyFilter {
+  search?: string
+  status?: string
+  protocol?: string
+}
+
 export interface BulkDeleteRequest {
-  ids: number[]
+  ids?: number[]
+  all?: boolean
+  filter?: ProxyFilter
+}
+
+export interface BulkTestRequest {
+  ids?: number[]
+  all?: boolean
+  filter?: ProxyFilter
+}
+
+export interface BulkTestResult {
+  tested: number
+  active: number
+  failed: number
+  skipped: number
 }
 
 export interface ProxyTestResult {

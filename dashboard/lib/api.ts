@@ -11,6 +11,9 @@ import {
   UpdateProxyRequest,
   BulkProxyRequest,
   BulkDeleteRequest,
+  BulkTestRequest,
+  BulkTestResult,
+  ProxyFilter,
   ProxyTestResult,
   ProxySource,
   CreateSourceRequest,
@@ -224,6 +227,13 @@ class ApiClient {
     })
   }
 
+  async bulkTestProxies(request: BulkTestRequest): Promise<BulkTestResult> {
+    return this.request("/api/v1/proxies/bulk-test", {
+      method: "POST",
+      body: JSON.stringify(request),
+    })
+  }
+
   async invalidateProxy(
     id: number,
     opts?: { minutes?: number; reason?: string }
@@ -251,9 +261,14 @@ class ApiClient {
     })
   }
 
-  async exportProxies(format: "txt" | "json" | "csv" = "txt", status?: string): Promise<Blob> {
+  async exportProxies(
+    format: "txt" | "json" | "csv" = "txt",
+    filter?: ProxyFilter
+  ): Promise<Blob> {
     const params = new URLSearchParams({ format })
-    if (status) params.append("status", status)
+    if (filter?.status) params.append("status", filter.status)
+    if (filter?.search) params.append("search", filter.search)
+    if (filter?.protocol) params.append("protocol", filter.protocol)
 
     const response = await fetch(
       `${this.baseUrl}/api/v1/proxies/export?${params.toString()}`,

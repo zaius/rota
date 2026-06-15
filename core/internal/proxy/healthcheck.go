@@ -204,14 +204,37 @@ func (h *HealthChecker) CheckAllProxies(ctx context.Context) ([]models.ProxyTest
 		proxies = append(proxies, &p)
 	}
 
+	return h.CheckProxies(ctx, proxies)
+}
+
+// CheckProxies tests the provided proxies concurrently using the configured
+// worker pool and returns one result per proxy (in the same order). It loads
+// health-check settings if they have not been cached yet, so it is safe to call
+// without a prior CheckAllProxies.
+func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Proxy) ([]models.ProxyTestResult, error) {
 	if len(proxies) == 0 {
 		return []models.ProxyTestResult{}, nil
 	}
 
-	h.logger.Info("starting health check", "proxy_count", len(proxies), "workers", h.settings.Workers)
+	// Ensure settings are loaded (CheckProxy also lazy-loads, but we read
+	// Workers here to size the pool).
+	if h.settings == nil {
+		settings, err := h.settingsRepo.GetAll(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load settings: %w", err)
+		}
+		h.settings = &settings.HealthCheck
+	}
+
+	workers := h.settings.Workers
+	if workers < 1 {
+		workers = 1
+	}
+
+	h.logger.Info("starting health check", "proxy_count", len(proxies), "workers", workers)
 
 	// Create worker pool
-	wp := workerpool.New(h.settings.Workers)
+	wp := workerpool.New(workers)
 	results := make([]models.ProxyTestResult, len(proxies))
 
 	// Submit jobs

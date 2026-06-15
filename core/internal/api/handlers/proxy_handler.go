@@ -15,9 +15,15 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// maxBulkTest caps how many proxies a single bulk-test request will check, to
+// keep the (synchronous) request bounded. Larger selections are truncated and
+// the skipped count is reported back to the caller.
+const maxBulkTest = 1000
+
 // HealthChecker interface for testing proxies
 type HealthChecker interface {
 	CheckProxy(ctx context.Context, proxy *models.Proxy) (*models.ProxyTestResult, error)
+	CheckProxies(ctx context.Context, proxies []*models.Proxy) ([]models.ProxyTestResult, error)
 }
 
 // ProxyHandler handles proxy management endpoints
@@ -271,7 +277,7 @@ func (h *ProxyHandler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.IDs) == 0 {
+	if !req.All && len(req.IDs) == 0 {
 		h.errorResponse(w, http.StatusBadRequest, "At least one proxy ID is required")
 		return
 	}
@@ -282,7 +288,20 @@ func (h *ProxyHandler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 	dbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	deleted, err := h.proxyRepo.BulkDelete(dbCtx, req.IDs)
+	var (
+		deleted int
+		err     error
+	)
+	if req.All {
+		// Delete every proxy matching the supplied filter (empty filter = all).
+		filter := models.ProxyFilter{}
+		if req.Filter != nil {
+			filter = *req.Filter
+		}
+		deleted, err = h.proxyRepo.BulkDeleteByFilter(dbCtx, filter)
+	} else {
+		deleted, err = h.proxyRepo.BulkDelete(dbCtx, req.IDs)
+	}
 	if err != nil {
 		h.logger.Error("failed to bulk delete proxies", "error", err)
 		h.errorResponse(w, http.StatusInternalServerError, "Failed to delete proxies")
@@ -347,6 +366,86 @@ func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 	h.jsonResponse(w, http.StatusOK, result)
 }
 
+// BulkTest handles testing multiple proxies at once
+//	@Summary		Bulk test proxies
+//	@Description	Test multiple proxies at once, either an explicit list of IDs or every proxy matching a filter (all=true). Capped at 1000 proxies per request.
+//	@Tags			proxies
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		models.BulkTestProxyRequest	true	"Proxies to test"
+//	@Success		200		{object}	models.BulkTestResult		"Test summary"
+//	@Failure		400		{object}	models.ErrorResponse
+//	@Failure		500		{object}	models.ErrorResponse
+//	@Router			/proxies/bulk-test [post]
+func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
+	var req models.BulkTestProxyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if !req.All && len(req.IDs) == 0 {
+		h.errorResponse(w, http.StatusBadRequest, "At least one proxy ID is required")
+		return
+	}
+
+	// Detached context so a client disconnect mid-run doesn't cancel testing.
+	dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	// Resolve the target proxies. We over-fetch by one beyond the cap so we can
+	// tell the caller how many were skipped due to truncation.
+	var (
+		matched int
+		proxies []*models.Proxy
+		err     error
+	)
+	if req.All {
+		filter := models.ProxyFilter{}
+		if req.Filter != nil {
+			filter = *req.Filter
+		}
+		if matched, err = h.proxyRepo.CountByFilter(dbCtx, filter); err == nil {
+			proxies, err = h.proxyRepo.GetByFilter(dbCtx, filter, maxBulkTest)
+		}
+	} else {
+		matched = len(req.IDs)
+		proxies, err = h.proxyRepo.GetByIDs(dbCtx, req.IDs, maxBulkTest)
+	}
+	if err != nil {
+		h.logger.Error("failed to load proxies for bulk test", "error", err)
+		h.errorResponse(w, http.StatusInternalServerError, "Failed to load proxies")
+		return
+	}
+
+	h.logger.Info("bulk testing proxies", "count", len(proxies), "matched", matched)
+	results, err := h.healthChecker.CheckProxies(dbCtx, proxies)
+	if err != nil {
+		h.logger.Error("failed to bulk test proxies", "error", err)
+		h.errorResponse(w, http.StatusInternalServerError, "Failed to test proxies")
+		return
+	}
+
+	summary := models.BulkTestResult{Tested: len(results)}
+	for _, result := range results {
+		if result.Status == "active" {
+			summary.Active++
+		} else {
+			summary.Failed++
+		}
+	}
+	if matched > summary.Tested {
+		summary.Skipped = matched - summary.Tested
+	}
+
+	h.logger.Info("bulk test completed",
+		"tested", summary.Tested, "active", summary.Active,
+		"failed", summary.Failed, "skipped", summary.Skipped,
+	)
+
+	h.jsonResponse(w, http.StatusOK, summary)
+}
+
 // Export handles proxy export
 //	@Summary		Export proxies
 //	@Description	Export proxy list in various formats (txt, json, csv)
@@ -354,8 +453,10 @@ func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 //	@Produce		plain
 //	@Produce		json
 //	@Produce		text/csv
-//	@Param			format	query	string	false	"Export format (txt/json/csv)"	default(txt)
-//	@Param			status	query	string	false	"Filter by status"
+//	@Param			format		query	string	false	"Export format (txt/json/csv)"	default(txt)
+//	@Param			status		query	string	false	"Filter by status"
+//	@Param			search		query	string	false	"Filter by search term"
+//	@Param			protocol	query	string	false	"Filter by protocol"
 //	@Success		200		{file}	file	"Exported file"
 //	@Failure		400		{object}	models.ErrorResponse
 //	@Failure		500		{object}	models.ErrorResponse
@@ -367,9 +468,11 @@ func (h *ProxyHandler) Export(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := r.URL.Query().Get("status")
+	search := r.URL.Query().Get("search")
+	protocol := r.URL.Query().Get("protocol")
 
-	// Get all proxies
-	proxies, _, err := h.proxyRepo.List(r.Context(), 1, 10000, "", status, "", "created_at", "asc")
+	// Get all proxies matching the supplied filters
+	proxies, _, err := h.proxyRepo.List(r.Context(), 1, 10000, search, status, protocol, "created_at", "asc")
 	if err != nil {
 		h.logger.Error("failed to get proxies for export", "error", err)
 		h.errorResponse(w, http.StatusInternalServerError, "Failed to export proxies")

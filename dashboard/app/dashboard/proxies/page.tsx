@@ -27,6 +27,7 @@ import {
   XCircle,
   AlertCircle,
   Filter,
+  Activity,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -73,7 +74,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api } from "@/lib/api"
-import { Proxy, AddProxyRequest } from "@/lib/types"
+import { Proxy, AddProxyRequest, ProxyFilter } from "@/lib/types"
 import { toast } from "@/lib/toast"
 
 const PROXY_PROTOCOLS = ["http", "https", "socks4", "socks4a", "socks5"] as const
@@ -170,6 +171,8 @@ export default function ProxiesPage() {
   const [deleteConfirm, setDeleteConfirm] = React.useState<{ open: boolean; proxyId: number | null }>({ open: false, proxyId: null })
    const [bulkDeleteConfirm, setBulkDeleteConfirm] = React.useState(false)
    const [deleteAllConfirm, setDeleteAllConfirm] = React.useState(false)
+  const [isBulkTesting, setIsBulkTesting] = React.useState(false)
+  const [selectAllMatching, setSelectAllMatching] = React.useState(false)
 
   // Debounce search query
   React.useEffect(() => {
@@ -307,24 +310,54 @@ export default function ProxiesPage() {
   }
 
   const handleBulkDelete = async () => {
-    const selectedIds = Object.keys(rowSelection).map(key => data[Number(key)].id)
-    if (selectedIds.length === 0) return
+    if (selectedCount === 0) return
     setBulkDeleteConfirm(true)
   }
 
   const confirmBulkDelete = async () => {
-    const selectedIds = Object.keys(rowSelection).map(key => data[Number(key)].id)
-
     try {
-      await api.bulkDeleteProxies({ ids: selectedIds })
+      const res = selectAllMatching
+        ? await api.bulkDeleteProxies({ all: true, filter: currentFilter() })
+        : await api.bulkDeleteProxies({
+            ids: Object.keys(rowSelection).map(key => data[Number(key)].id),
+          })
       setRowSelection({})
-      toast.success(`${selectedIds.length} proxies deleted successfully`)
+      setSelectAllMatching(false)
+      toast.success(`${res.deleted} proxies deleted successfully`)
       fetchProxies()
     } catch (error) {
       console.error("Failed to delete proxies:", error)
       toast.error("Failed to delete proxies", error instanceof Error ? error.message : "Unknown error")
     } finally {
       setBulkDeleteConfirm(false)
+    }
+  }
+
+  const handleBulkTest = async () => {
+    const selectedIds = Object.keys(rowSelection).map(key => data[Number(key)].id)
+    if (!selectAllMatching && selectedIds.length === 0) return
+
+    setIsBulkTesting(true)
+    try {
+      const result = selectAllMatching
+        ? await api.bulkTestProxies({ all: true, filter: currentFilter() })
+        : await api.bulkTestProxies({ ids: selectedIds })
+
+      const detail = [`${result.active} active`, `${result.failed} failed`]
+      if (result.skipped > 0) {
+        detail.push(`${result.skipped} skipped (1000 max per run)`)
+      }
+      if (result.failed === 0 && result.skipped === 0) {
+        toast.success(`Tested ${result.tested} proxies`, detail.join(", "))
+      } else {
+        toast.error(`Tested ${result.tested} proxies`, detail.join(", "))
+      }
+      fetchProxies()
+    } catch (error) {
+      console.error("Failed to test proxies:", error)
+      toast.error("Failed to test proxies", error instanceof Error ? error.message : "Unknown error")
+    } finally {
+      setIsBulkTesting(false)
     }
   }
 
@@ -343,7 +376,7 @@ export default function ProxiesPage() {
 
   const handleExport = async (format: "txt" | "json" | "csv") => {
     try {
-      const blob = await api.exportProxies(format)
+      const blob = await api.exportProxies(format, currentFilter())
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
@@ -687,6 +720,34 @@ export default function ProxiesPage() {
     },
   })
 
+  // Selection helpers for the Gmail-style "select all that match" behaviour.
+  const pageSelectedCount = Object.keys(rowSelection).length
+  const pageAllSelected = data.length > 0 && pageSelectedCount === data.length
+  const hasMoreMatches = pagination.total > data.length
+  // Effective number of proxies the bulk actions will operate on.
+  const selectedCount = selectAllMatching ? pagination.total : pageSelectedCount
+
+  // The list filters currently applied, shared by every filter-based bulk op.
+  const currentFilter = React.useCallback((): ProxyFilter => ({
+    search: debouncedSearchQuery || undefined,
+    status: statusFilter === "all" ? undefined : statusFilter,
+    protocol: protocolFilter === "all" ? undefined : protocolFilter,
+  }), [debouncedSearchQuery, statusFilter, protocolFilter])
+
+  // "Select all matching" only makes sense while the whole page is selected; if
+  // the user deselects a row, fall back to the explicit selection.
+  React.useEffect(() => {
+    if (selectAllMatching && !pageAllSelected) {
+      setSelectAllMatching(false)
+    }
+  }, [selectAllMatching, pageAllSelected])
+
+  // Reset the cross-page selection whenever the result set changes underneath
+  // it, so it can never apply to a filter/page the user is no longer viewing.
+  React.useEffect(() => {
+    setSelectAllMatching(false)
+  }, [debouncedSearchQuery, statusFilter, protocolFilter, pagination.page, pagination.limit])
+
   if (isLoading && data.length === 0) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -755,12 +816,24 @@ export default function ProxiesPage() {
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
+                    onClick={handleBulkTest}
+                    disabled={selectedCount === 0 || isBulkTesting}
+                  >
+                    {isBulkTesting ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Activity className="mr-2 h-4 w-4" />
+                    )}
+                    Test selected ({selectedCount.toLocaleString()})
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
                     className="text-red-600"
                     onClick={handleBulkDelete}
-                    disabled={Object.keys(rowSelection).length === 0}
+                    disabled={selectedCount === 0}
                   >
                     <Trash2 className="mr-2 h-4 w-4" />
-                    Delete selected ({Object.keys(rowSelection).length})
+                    Delete selected ({selectedCount.toLocaleString()})
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
@@ -868,6 +941,40 @@ export default function ProxiesPage() {
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
+            {pageAllSelected && hasMoreMatches && (
+              <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-md border bg-muted/50 px-4 py-2 text-sm">
+                {selectAllMatching ? (
+                  <>
+                    <span>
+                      All <strong>{pagination.total.toLocaleString()}</strong> proxies that match this search are selected.
+                    </span>
+                    <Button
+                      variant="link"
+                      className="h-auto p-0"
+                      onClick={() => {
+                        setSelectAllMatching(false)
+                        setRowSelection({})
+                      }}
+                    >
+                      Clear selection
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <span>
+                      All <strong>{data.length}</strong> proxies on this page are selected.
+                    </span>
+                    <Button
+                      variant="link"
+                      className="h-auto p-0"
+                      onClick={() => setSelectAllMatching(true)}
+                    >
+                      Select all {pagination.total.toLocaleString()} proxies that match this search
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
             <div className="rounded-md border">
               <Table>
                 <TableHeader>
@@ -920,8 +1027,9 @@ export default function ProxiesPage() {
             </div>
             <div className="flex items-center justify-between space-x-2">
               <div className="flex-1 text-sm text-muted-foreground">
-                {table.getFilteredSelectedRowModel().rows.length} of{" "}
-                {table.getFilteredRowModel().rows.length} row(s) selected.
+                {selectAllMatching
+                  ? `All ${pagination.total.toLocaleString()} matching proxies selected.`
+                  : `${pageSelectedCount} of ${data.length} row(s) selected.`}
               </div>
               <div className="flex items-center gap-4">
                 <div className="text-sm text-muted-foreground">
@@ -1324,9 +1432,12 @@ export default function ProxiesPage() {
        <AlertDialog open={bulkDeleteConfirm} onOpenChange={setBulkDeleteConfirm}>
          <AlertDialogContent>
            <AlertDialogHeader>
-             <AlertDialogTitle>Delete {Object.keys(rowSelection).length} proxies?</AlertDialogTitle>
+             <AlertDialogTitle>Delete {selectedCount.toLocaleString()} proxies?</AlertDialogTitle>
              <AlertDialogDescription>
-               This action cannot be undone. This will permanently delete the selected proxies.
+               This action cannot be undone. This will permanently delete{" "}
+               {selectAllMatching
+                 ? "every proxy that matches the current search and filters"
+                 : "the selected proxies"}.
              </AlertDialogDescription>
            </AlertDialogHeader>
            <AlertDialogFooter>
