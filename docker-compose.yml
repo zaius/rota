@@ -44,14 +44,16 @@ services:
     build:
       context: ./dashboard
       dockerfile: Dockerfile
-      args:
-        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8001}
     container_name: rota-dashboard
     restart: unless-stopped
     ports:
       - "${DASHBOARD_PORT:-3000}:3000"
+    # API_URL is injected into the browser bundle at container start, so one
+    # prebuilt image works on any host. Set it to the URL the *browser* uses to
+    # reach the core API (must be reachable from the user's machine, not just
+    # from inside the Docker network).
     environment:
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8001}
+      - API_URL=${API_URL:-http://localhost:8001}
     networks:
       - rota-network
     depends_on:

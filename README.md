@@ -124,7 +124,7 @@ cd rota
 # 2. Create your environment file
 cp .env.example .env
 # For local development the defaults work as-is.
-# For production: set NEXT_PUBLIC_API_URL to your public API URL.
+# For production: set API_URL to your public API URL.
 
 # 3. Start all services
 docker compose up -d
@@ -149,7 +149,7 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 
 | Variable | Default | Description |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8001` | Public URL of the API — used by the browser |
+| `API_URL` | `http://localhost:8001` | Public URL of the API — used by the browser; injected into the dashboard at container start |
 | `PROXY_PORT` | `8000` | Host port for the proxy server |
 | `API_PORT` | `8001` | Host port for the REST API |
 | `DASHBOARD_PORT` | `3000` | Host port for the web dashboard |
@@ -171,26 +171,27 @@ For production, set at minimum:
 
 ```bash
 # .env
-NEXT_PUBLIC_API_URL=https://api.yourdomain.com
+API_URL=https://api.yourdomain.com
 DB_PASSWORD=a-strong-random-password
 ROTA_ADMIN_PASSWORD=a-strong-password
 ```
 
-Then rebuild the dashboard (required when changing `NEXT_PUBLIC_API_URL`, as it is baked into the Next.js bundle at build time):
+`API_URL` is injected into the dashboard bundle when the container starts, so changing it only needs a restart — no rebuild:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 ### Using Docker
 
-Pull and run the core service:
+Prebuilt multi-arch images (linux/amd64 + linux/arm64) are published to the
+GitHub Container Registry:
+
+- `ghcr.io/zaius/rota-core` — Go proxy (`:8000`) + REST API (`:8001`)
+- `ghcr.io/zaius/rota-dashboard` — Next.js web dashboard (`:3000`)
 
 ```bash
-# Pull from GitHub Container Registry
-docker pull ghcr.io/alpkeskin/rota:latest
-
-# Run with basic configuration
+# Core: proxy + API
 docker run -d \
   --name rota-core \
   -p 8000:8000 \
@@ -198,8 +199,18 @@ docker run -d \
   -e DB_HOST=your-db-host \
   -e DB_USER=rota \
   -e DB_PASSWORD=your-password \
-  ghcr.io/alpkeskin/rota:latest
+  ghcr.io/zaius/rota-core:latest
+
+# Dashboard: set API_URL to the URL the browser uses to reach the core API.
+# The same image works on any host — the value is injected at container start.
+docker run -d \
+  --name rota-dashboard \
+  -p 3000:3000 \
+  -e API_URL=https://api.yourdomain.com \
+  ghcr.io/zaius/rota-dashboard:latest
 ```
+
+Or run the whole stack (core + dashboard + TimescaleDB) with `docker compose up -d`.
 
 ### From Source
 

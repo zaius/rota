@@ -1,5 +1,6 @@
-# Build stage
-FROM golang:1.25.3-alpine AS builder
+# Build stage — runs natively on the build host and cross-compiles to the
+# target arch (Go makes this cheap; avoids emulating the toolchain under QEMU).
+FROM --platform=$BUILDPLATFORM golang:1.25.3-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
@@ -16,8 +17,9 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+# Build the application for the requested target platform (set by buildx)
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
     -ldflags='-w -s -extldflags "-static"' \
     -a -installsuffix cgo \
     -o /app/bin/server \

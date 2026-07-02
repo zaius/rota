@@ -1,0 +1,10 @@
+.git
+Dockerfile
+docker-compose.yml
+static
+dashboard/node_modules
+dashboard/.next
+dashboard/tsconfig.tsbuildinfo
+core/bin
+**/.env
+**/.env.*
