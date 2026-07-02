@@ -36,8 +36,18 @@ var migrations = []Migration{
 	{
 		Version:     2,
 		Description: "Enable TimescaleDB extension",
+		// On managed Postgres (e.g. Azure Flexible Server) CREATE EXTENSION is
+		// admin-only, and the permission check fires before IF NOT EXISTS gets
+		// a chance to skip — so only issue it when the extension is actually
+		// missing (an admin pre-creates it there).
 		Up: `
-			CREATE EXTENSION IF NOT EXISTS timescaledb;
+			DO $do$
+			BEGIN
+				IF NOT EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb') THEN
+					CREATE EXTENSION timescaledb;
+				END IF;
+			END
+			$do$;
 		`,
 		Down: `
 			DROP EXTENSION IF EXISTS timescaledb;
