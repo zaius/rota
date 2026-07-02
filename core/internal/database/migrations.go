@@ -129,15 +129,23 @@ var migrations = []Migration{
 			CREATE INDEX idx_logs_level ON logs(level, timestamp DESC);
 			CREATE INDEX idx_logs_timestamp ON logs(timestamp DESC);
 
-			-- Add retention policy (keep logs for 30 days)
-			SELECT add_retention_policy('logs', INTERVAL '30 days', if_not_exists => TRUE);
+			-- Retention/compression policies are TSL-licensed and unavailable on
+			-- Apache-only builds (e.g. Azure Flexible Server) — skip them there.
+			DO $ts$
+			BEGIN
+				IF current_setting('timescaledb.license', true) = 'timescale' THEN
+					-- Add retention policy (keep logs for 30 days)
+					PERFORM add_retention_policy('logs', INTERVAL '30 days', if_not_exists => TRUE);
 
-			-- Add compression policy (compress data older than 7 days)
-			ALTER TABLE logs SET (
-				timescaledb.compress,
-				timescaledb.compress_segmentby = 'level'
-			);
-			SELECT add_compression_policy('logs', INTERVAL '7 days', if_not_exists => TRUE);
+					-- Add compression policy (compress data older than 7 days)
+					ALTER TABLE logs SET (
+						timescaledb.compress,
+						timescaledb.compress_segmentby = 'level'
+					);
+					PERFORM add_compression_policy('logs', INTERVAL '7 days', if_not_exists => TRUE);
+				END IF;
+			END
+			$ts$;
 		`,
 		Down: `
 			DROP TABLE IF EXISTS logs;
@@ -168,15 +176,23 @@ var migrations = []Migration{
 			CREATE INDEX idx_proxy_requests_success ON proxy_requests(success, timestamp DESC);
 			CREATE INDEX idx_proxy_requests_timestamp ON proxy_requests(timestamp DESC);
 
-			-- Add retention policy (keep request logs for 90 days)
-			SELECT add_retention_policy('proxy_requests', INTERVAL '90 days', if_not_exists => TRUE);
+			-- Retention/compression policies are TSL-licensed and unavailable on
+			-- Apache-only builds (e.g. Azure Flexible Server) — skip them there.
+			DO $ts$
+			BEGIN
+				IF current_setting('timescaledb.license', true) = 'timescale' THEN
+					-- Add retention policy (keep request logs for 90 days)
+					PERFORM add_retention_policy('proxy_requests', INTERVAL '90 days', if_not_exists => TRUE);
 
-			-- Add compression policy (compress data older than 14 days)
-			ALTER TABLE proxy_requests SET (
-				timescaledb.compress,
-				timescaledb.compress_segmentby = 'proxy_id'
-			);
-			SELECT add_compression_policy('proxy_requests', INTERVAL '14 days', if_not_exists => TRUE);
+					-- Add compression policy (compress data older than 14 days)
+					ALTER TABLE proxy_requests SET (
+						timescaledb.compress,
+						timescaledb.compress_segmentby = 'proxy_id'
+					);
+					PERFORM add_compression_policy('proxy_requests', INTERVAL '14 days', if_not_exists => TRUE);
+				END IF;
+			END
+			$ts$;
 		`,
 		Down: `
 			DROP TABLE IF EXISTS proxy_requests;
