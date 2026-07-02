@@ -139,18 +139,6 @@ func (t *UsageTracker) updateProxyStats(ctx context.Context, record RequestRecor
 	return err
 }
 
-// UpdateProxyStatus updates only the status of a proxy
-func (t *UsageTracker) UpdateProxyStatus(ctx context.Context, proxyID int, status string) error {
-	query := `
-		UPDATE proxies
-		SET status = $1, updated_at = NOW()
-		WHERE id = $2
-	`
-
-	_, err := t.repo.GetDB().Pool.Exec(ctx, query, status, proxyID)
-	return err
-}
-
 // RecordHealthCheck records a health check result
 func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, success bool, responseTime int, errorMsg string) error {
 	now := time.Now()
@@ -187,47 +175,4 @@ func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, succe
 
 	_, err := t.repo.GetDB().Pool.Exec(ctx, query, now, lastError, status, proxyID)
 	return err
-}
-
-// GetRecentRequests retrieves recent requests for a proxy
-func (t *UsageTracker) GetRecentRequests(ctx context.Context, proxyID int, limit int) ([]RequestRecord, error) {
-	query := `
-		SELECT
-			proxy_id, method, url, status, response_time,
-			COALESCE(error_message, '') as error_message, timestamp
-		FROM proxy_requests
-		WHERE proxy_id = $1
-		ORDER BY timestamp DESC
-		LIMIT $2
-	`
-
-	rows, err := t.repo.GetDB().Pool.Query(ctx, query, proxyID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	records := make([]RequestRecord, 0, limit)
-	for rows.Next() {
-		var record RequestRecord
-		var status string
-
-		err := rows.Scan(
-			&record.ProxyID,
-			&record.Method,
-			&record.RequestedURL,
-			&status,
-			&record.ResponseTime,
-			&record.ErrorMessage,
-			&record.Timestamp,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		record.Success = (status == "success")
-		records = append(records, record)
-	}
-
-	return records, nil
 }

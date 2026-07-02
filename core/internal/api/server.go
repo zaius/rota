@@ -96,10 +96,10 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB) *Server {
 	// GeoIP + source + pool services
 	geoSvc := services.NewGeoIPService(log)
 	sourceSvc := services.NewSourceService(sourceRepo, proxyRepo, poolRepo, geoSvc, log)
-	// NOTE: Intentionally NOT wiring healthChecker into sourceSvc or starting a
-	// global periodic health check. The global HealthChecker uses a lenient
-	// 60s timeout and was flapping pool-marked 'failed' proxies back to 'active',
-	// putting dead proxies back into rotation. Pool-level health checks (cron-
+	// NOTE: healthChecker backs only the on-demand proxy-test endpoint. It is
+	// deliberately not wired into sourceSvc or any global periodic check: a
+	// global check (since removed) flapped pool-marked 'failed' proxies back to
+	// 'active' with its lenient 60s timeout. Pool-level health checks (cron-
 	// scheduled per pool in PoolService) are the single source of truth.
 	poolSvc := services.NewPoolService(poolRepo, proxyRepo, log)
 
@@ -168,12 +168,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB) *Server {
 	sourceSvc.Start(context.Background())
 	poolSvc.Start(context.Background())
 	alertWatcher.Start(context.Background())
-
-	// NOTE: global StartPeriodicHealthCheck is intentionally NOT started.
-	// Its 60s timeout was too lenient and kept flapping pool-marked 'failed'
-	// proxies back to 'active', returning dead proxies to rotation.
-	// Pool-level health checks (PoolService cron) are authoritative.
-
 	cleanupSvc.Start(context.Background())
 
 	s.setupMiddleware()
@@ -346,6 +340,7 @@ func (s *Server) SetProxyServer(ps ProxyServer) {
 }
 
 // ReloadProxyPool reloads the proxy pool from database
+//
 //	@Summary		Reload proxy pool
 //	@Description	Reload proxy pool from database
 //	@Tags			proxies

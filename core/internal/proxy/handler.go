@@ -19,12 +19,11 @@ import (
 
 // UpstreamProxyHandler handles requests with upstream proxy rotation
 type UpstreamProxyHandler struct {
-	selector        ProxySelector
-	tracker         *UsageTracker
-	settings        *models.RotationSettings
-	domainCD        *DomainCooldownManager
-	logger          *logger.Logger
-	removeUnhealthy bool
+	selector ProxySelector
+	tracker  *UsageTracker
+	settings *models.RotationSettings
+	domainCD *DomainCooldownManager
+	logger   *logger.Logger
 }
 
 // NewUpstreamProxyHandler creates a new upstream proxy handler
@@ -36,12 +35,11 @@ func NewUpstreamProxyHandler(
 	log *logger.Logger,
 ) *UpstreamProxyHandler {
 	return &UpstreamProxyHandler{
-		selector:        selector,
-		tracker:         tracker,
-		settings:        settings,
-		domainCD:        domainCD,
-		logger:          log,
-		removeUnhealthy: settings.RemoveUnhealthy,
+		selector: selector,
+		tracker:  tracker,
+		settings: settings,
+		domainCD: domainCD,
+		logger:   log,
 	}
 }
 
@@ -332,9 +330,10 @@ func (h *UpstreamProxyHandler) sendWithRetry(req *http.Request, ctx context.Cont
 					ErrorMessage: err.Error(),
 					Timestamp:    time.Now(),
 				}
-				// RecordRequest → updateProxyStats handles the 3-consecutive-failures
-				// threshold naturally. Do NOT call UpdateProxyStatus("failed") here —
-				// that bypasses the threshold and kills the proxy on first failure.
+				// RecordRequest → updateProxyStats applies the 3-consecutive-failures
+				// threshold naturally. Deliberately not force-setting status to
+				// "failed" here — that bypasses the threshold and kills the proxy on
+				// its first failure.
 				if recordErr := h.tracker.RecordRequest(recordCtx, record); recordErr != nil {
 					h.logger.Error("failed to record failed request", "error", recordErr)
 				}

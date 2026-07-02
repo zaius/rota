@@ -331,17 +331,6 @@ export interface GeoFilter {
   city_name?: string
 }
 
-export interface PoolHealthCheckResult {
-  pool_id: number
-  pool_name: string
-  checked: number
-  active: number
-  failed: number
-  results: ProxyTestResult[]
-  started_at: string
-  finished_at: string
-}
-
 export type JobStatus = "pending" | "running" | "done" | "failed"
 export type JobKind = "pool_health_check" | "bulk_test"
 
@@ -423,25 +412,4 @@ export interface CreatePoolRequest {
   auto_sync: boolean
   sync_mode?: "auto" | "manual"
   enabled: boolean
-}
-
-export interface SessionInfo {
-  pool_id: number
-  token: string
-  proxy_id: number
-  created_at: string
-  last_used: string
-  expires_at: string
-}
-
-export interface ProxyWithTags {
-  id: number
-  address: string
-  protocol: string
-  status: string
-  tags: string[]
-  country_code?: string
-  country_name?: string
-  city_name?: string
-  isp?: string
 }

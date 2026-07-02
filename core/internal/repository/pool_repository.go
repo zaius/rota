@@ -344,69 +344,6 @@ func (r *PoolRepository) SetGeoFilters(ctx context.Context, poolID int, filters 
 	return nil
 }
 
-// SyncPoolByGeo rebuilds pool membership based on geo filters (pool_geo_filters table + legacy single filter)
-func (r *PoolRepository) SyncPoolByGeo(ctx context.Context, pool models.ProxyPool) (int, error) {
-	// Prefer multi-filters from pool_geo_filters table
-	filters, err := r.GetGeoFilters(ctx, pool.ID)
-	if err != nil {
-		return 0, err
-	}
-
-	// Fall back to legacy single country/city on pool row
-	if len(filters) == 0 && pool.CountryCode != nil && *pool.CountryCode != "" {
-		filters = []models.GeoFilter{{CountryCode: *pool.CountryCode}}
-		if pool.CityName != nil {
-			filters[0].CityName = *pool.CityName
-		}
-	}
-
-	if len(filters) == 0 {
-		// No geo filters — nothing to sync
-		return 0, nil
-	}
-
-	// Collect proxy IDs matching ANY of the filters (OR logic)
-	idSet := make(map[int]bool)
-	for _, f := range filters {
-		var rows interface{ Next() bool; Scan(...interface{}) error; Close() }
-		var qerr error
-		if f.CityName != "" {
-			rows, qerr = r.db.Pool.Query(ctx,
-				`SELECT id FROM proxies WHERE country_code=$1 AND city_name ILIKE $2`,
-				f.CountryCode, "%"+f.CityName+"%")
-		} else {
-			rows, qerr = r.db.Pool.Query(ctx,
-				`SELECT id FROM proxies WHERE country_code=$1`,
-				f.CountryCode)
-		}
-		if qerr != nil {
-			return 0, fmt.Errorf("geo query failed: %w", qerr)
-		}
-		for rows.Next() {
-			var id int
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return 0, err
-			}
-			idSet[id] = true
-		}
-		rows.Close()
-	}
-
-	ids := make([]int, 0, len(idSet))
-	for id := range idSet {
-		ids = append(ids, id)
-	}
-
-	if err := r.ClearProxies(ctx, pool.ID); err != nil {
-		return 0, err
-	}
-	if err := r.AddProxies(ctx, pool.ID, ids); err != nil {
-		return 0, err
-	}
-	return len(ids), nil
-}
-
 // GetCitiesByCountry returns city-level breakdown for a given country code
 func (r *PoolRepository) GetCitiesByCountry(ctx context.Context, countryCode string) ([]models.GeoCitySummary, error) {
 	query := `

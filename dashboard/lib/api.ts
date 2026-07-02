@@ -21,7 +21,6 @@ import {
   PoolProxy,
   GeoSummaryItem,
   GeoCityItem,
-  PoolHealthCheckResult,
   HCJob,
   Job,
   JobStatus,
@@ -31,7 +30,6 @@ import {
   UpdateProxyUserRequest,
   PoolAlertRule,
   CreatePoolAlertRuleRequest,
-  SessionInfo,
 } from "./types"
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001"
@@ -262,17 +260,6 @@ class ApiClient {
     })
   }
 
-  async listSessions(): Promise<{ sessions: SessionInfo[] }> {
-    return this.request("/api/v1/sessions")
-  }
-
-  async releaseSession(token: string, poolId?: number): Promise<{ status: string; count: number }> {
-    return this.request("/api/v1/sessions/release", {
-      method: "POST",
-      body: JSON.stringify({ token, pool_id: poolId }),
-    })
-  }
-
   async exportProxies(
     format: "txt" | "json" | "csv" = "txt",
     filter?: ProxyFilter
@@ -412,10 +399,6 @@ class ApiClient {
     return this.request("/api/v1/pools")
   }
 
-  async getPool(id: number): Promise<ProxyPool> {
-    return this.request(`/api/v1/pools/${id}`)
-  }
-
   async createPool(req: CreatePoolRequest): Promise<ProxyPool> {
     return this.request("/api/v1/pools", { method: "POST", body: JSON.stringify(req) })
   }
@@ -465,14 +448,6 @@ class ApiClient {
     return this.request(`/api/v1/pools/${poolId}/health-check/${jobId}`)
   }
 
-  async getHealthCheckJobs(poolId: number): Promise<{ jobs: HCJob[] }> {
-    return this.request(`/api/v1/pools/${poolId}/health-check/jobs`)
-  }
-
-  async getGeoSummary(): Promise<{ geo: GeoSummaryItem[] }> {
-    return this.request("/api/v1/pools/geo-summary")
-  }
-
   async getGeoByCountry(): Promise<{ geo: GeoSummaryItem[] }> {
     return this.request("/api/v1/pools/geo-countries")
   }
@@ -484,10 +459,6 @@ class ApiClient {
   // ── Proxy Users ───────────────────────────────────────────────────────────
   async getProxyUsers(): Promise<{ users: ProxyUser[] }> {
     return this.request("/api/v1/proxy-users")
-  }
-
-  async getProxyUser(id: number): Promise<ProxyUser> {
-    return this.request(`/api/v1/proxy-users/${id}`)
   }
 
   async createProxyUser(req: CreateProxyUserRequest): Promise<ProxyUser> {
@@ -531,18 +502,6 @@ class ApiClient {
 
   async deleteAlertRule(poolId: number, ruleId: number): Promise<void> {
     return this.request(`/api/v1/pools/${poolId}/alert-rules/${ruleId}`, { method: "DELETE" })
-  }
-
-  // ── ISP / Tag lists ──────────────────────────────────────────────────────
-  async getISPList(q?: string): Promise<string[]> {
-    const qs = q ? `?q=${encodeURIComponent(q)}` : ""
-    const data = await this.request<{ isps: string[] }>(`/api/v1/pools/isp-list${qs}`)
-    return data.isps
-  }
-
-  async getTagList(): Promise<string[]> {
-    const data = await this.request<{ tags: string[] }>("/api/v1/pools/tag-list")
-    return data.tags
   }
 
   // WebSocket connections
