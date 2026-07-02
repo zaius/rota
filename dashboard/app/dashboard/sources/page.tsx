@@ -7,7 +7,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
-import { ProxySource, CreateSourceRequest } from "@/lib/types"
+import { ProxySource, CreateSourceRequest, SourceFormat } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -25,10 +25,17 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 
 const PROTOCOLS = ["http", "https", "socks4", "socks4a", "socks5"] as const
+const FORMATS: { value: SourceFormat; label: string; hint: string }[] = [
+  { value: "auto", label: "Auto-detect", hint: "host:port, user:pass@host:port, scheme://…" },
+  { value: "host:port:user:pass", label: "host:port:user:pass", hint: "e.g. Webshare downloads" },
+  { value: "user:pass:host:port", label: "user:pass:host:port", hint: "credentials first" },
+  { value: "host:port@user:pass", label: "host:port@user:pass", hint: "reversed @ notation" },
+]
 const DEFAULT_FORM: CreateSourceRequest = {
   name: "",
   url: "",
   protocol: "http",
+  format: "auto",
   enabled: true,
   interval_minutes: 60,
   cleanup_enabled: false,
@@ -71,6 +78,7 @@ export default function SourcesPage() {
       name: s.name,
       url: s.url,
       protocol: s.protocol,
+      format: s.format || "auto",
       enabled: s.enabled,
       interval_minutes: s.interval_minutes,
       cleanup_enabled: s.cleanup_enabled,
@@ -267,7 +275,14 @@ export default function SourcesPage() {
                       </span>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline">{s.protocol.toUpperCase()}</Badge>
+                      <div className="flex flex-col items-start gap-1">
+                        <Badge variant="outline">{s.protocol.toUpperCase()}</Badge>
+                        {s.format && s.format !== "auto" && (
+                          <span className="text-[10px] text-muted-foreground" title="Line format of the source list">
+                            {s.format}
+                          </span>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <span className="flex items-center gap-1 text-sm">
@@ -373,8 +388,30 @@ export default function SourcesPage() {
                 value={form.url}
                 onChange={e => setForm({ ...form, url: e.target.value })}
               />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Line format</Label>
+              <Select
+                value={form.format ?? "auto"}
+                onValueChange={v => setForm({ ...form, format: v as SourceFormat })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {FORMATS.map(f => (
+                    <SelectItem key={f.value} value={f.value}>
+                      <span className="flex items-baseline gap-2">
+                        <code className="text-xs">{f.label}</code>
+                        <span className="text-xs text-muted-foreground">{f.hint}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <p className="text-xs text-muted-foreground">
-                Format: <code>ip:port</code> one per line. e.g. <code>185.220.101.5:9051</code>
+                How each line of the file is parsed. Pick an explicit format when the
+                list puts credentials after the address, e.g. <code>ip:port:user:pass</code>.
               </p>
             </div>
             <div className="flex flex-col gap-1.5">

@@ -2,12 +2,32 @@ package models
 
 import "time"
 
+// Line formats a proxy source file can use. Auto covers host:port,
+// user:pass@host:port and scheme://… lines; the explicit formats exist for
+// lists that put credentials in positions auto-detection can't distinguish
+// (e.g. Webshare downloads use host:port:user:pass).
+const (
+	SourceFormatAuto             = "auto"
+	SourceFormatHostPortUserPass = "host:port:user:pass"
+	SourceFormatUserPassHostPort = "user:pass:host:port"
+	SourceFormatHostPortAtAuth   = "host:port@user:pass"
+)
+
+// ValidSourceFormats is the set of accepted values for ProxySource.Format.
+var ValidSourceFormats = map[string]bool{
+	SourceFormatAuto:             true,
+	SourceFormatHostPortUserPass: true,
+	SourceFormatUserPassHostPort: true,
+	SourceFormatHostPortAtAuth:   true,
+}
+
 // ProxySource represents a remote URL that provides a list of proxies
 type ProxySource struct {
 	ID              int        `json:"id"`
 	Name            string     `json:"name"`
 	URL             string     `json:"url"`
 	Protocol        string     `json:"protocol"`
+	Format          string     `json:"format"`
 	Enabled         bool       `json:"enabled"`
 	IntervalMinutes int        `json:"interval_minutes"`
 	LastFetchedAt   *time.Time `json:"last_fetched_at,omitempty"`
@@ -25,6 +45,7 @@ type CreateProxySourceRequest struct {
 	Name            string `json:"name"     validate:"required"`
 	URL             string `json:"url"      validate:"required,url"`
 	Protocol        string `json:"protocol" validate:"required,oneof=http https socks4 socks4a socks5"`
+	Format          string `json:"format"   validate:"omitempty,oneof=auto host:port:user:pass user:pass:host:port host:port@user:pass"`
 	Enabled         bool   `json:"enabled"`
 	IntervalMinutes int    `json:"interval_minutes" validate:"min=1"`
 	CleanupEnabled  bool   `json:"cleanup_enabled"`
@@ -36,6 +57,7 @@ type UpdateProxySourceRequest struct {
 	Name            string `json:"name"`
 	URL             string `json:"url"`
 	Protocol        string `json:"protocol" validate:"omitempty,oneof=http https socks4 socks4a socks5"`
+	Format          string `json:"format"   validate:"omitempty,oneof=auto host:port:user:pass user:pass:host:port host:port@user:pass"`
 	Enabled         *bool  `json:"enabled"`
 	IntervalMinutes int    `json:"interval_minutes" validate:"omitempty,min=1"`
 	CleanupEnabled  *bool  `json:"cleanup_enabled"`

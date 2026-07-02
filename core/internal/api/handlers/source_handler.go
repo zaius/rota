@@ -54,6 +54,13 @@ func (h *SourceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"name, url and protocol are required"}`, http.StatusBadRequest)
 		return
 	}
+	if req.Format == "" {
+		req.Format = models.SourceFormatAuto
+	}
+	if !models.ValidSourceFormats[req.Format] {
+		http.Error(w, `{"error":"invalid format"}`, http.StatusBadRequest)
+		return
+	}
 	if req.IntervalMinutes <= 0 {
 		req.IntervalMinutes = 60
 	}
@@ -87,6 +94,10 @@ func (h *SourceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var req models.UpdateProxySourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Format != "" && !models.ValidSourceFormats[req.Format] {
+		http.Error(w, `{"error":"invalid format"}`, http.StatusBadRequest)
 		return
 	}
 	// cleanup_days bounds

@@ -582,6 +582,17 @@ var migrations = []Migration{
 			DROP TABLE IF EXISTS proxy_domain_cooldowns;
 		`,
 	},
+	{
+		Version:     24,
+		Description: "proxy_sources.format — line format of the fetched list",
+		Up: `
+			ALTER TABLE proxy_sources
+			  ADD COLUMN IF NOT EXISTS format VARCHAR(30) NOT NULL DEFAULT 'auto';
+		`,
+		Down: `
+			ALTER TABLE proxy_sources DROP COLUMN IF EXISTS format;
+		`,
+	},
 }
 
 // Migrate runs all pending migrations

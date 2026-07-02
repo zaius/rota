@@ -196,11 +196,21 @@ export interface ProxyTestResult {
 }
 
 // ── Proxy Sources ──────────────────────────────────────────────────────────
+// Line format of the source file. "auto" detects host:port /
+// user:pass@host:port / scheme://… — the explicit ones cover lists whose
+// field order can't be auto-detected (e.g. Webshare's host:port:user:pass).
+export type SourceFormat =
+  | "auto"
+  | "host:port:user:pass"
+  | "user:pass:host:port"
+  | "host:port@user:pass"
+
 export interface ProxySource {
   id: number
   name: string
   url: string
   protocol: "http" | "https" | "socks4" | "socks4a" | "socks5"
+  format: SourceFormat
   enabled: boolean
   interval_minutes: number
   last_fetched_at?: string
@@ -217,6 +227,7 @@ export interface CreateSourceRequest {
   name: string
   url: string
   protocol: "http" | "https" | "socks4" | "socks4a" | "socks5"
+  format?: SourceFormat
   enabled: boolean
   interval_minutes: number
   cleanup_enabled?: boolean
@@ -227,6 +238,7 @@ export interface UpdateSourceRequest {
   name?: string
   url?: string
   protocol?: string
+  format?: SourceFormat
   enabled?: boolean
   interval_minutes?: number
   cleanup_enabled?: boolean

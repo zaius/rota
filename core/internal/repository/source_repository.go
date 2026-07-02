@@ -22,7 +22,7 @@ func NewSourceRepository(db *database.DB) *SourceRepository {
 
 // columns returned by every SELECT — keep in lock-step with scanSource().
 const sourceColumns = `
-	id, name, url, protocol, enabled, interval_minutes,
+	id, name, url, protocol, format, enabled, interval_minutes,
 	last_fetched_at, last_count, last_total, last_error,
 	cleanup_enabled, cleanup_days,
 	created_at, updated_at
@@ -35,7 +35,7 @@ type rowScanner interface {
 
 func scanSource(r rowScanner, s *models.ProxySource) error {
 	return r.Scan(
-		&s.ID, &s.Name, &s.URL, &s.Protocol, &s.Enabled,
+		&s.ID, &s.Name, &s.URL, &s.Protocol, &s.Format, &s.Enabled,
 		&s.IntervalMinutes, &s.LastFetchedAt, &s.LastCount, &s.LastTotal, &s.LastError,
 		&s.CleanupEnabled, &s.CleanupDays,
 		&s.CreatedAt, &s.UpdatedAt,
@@ -86,16 +86,20 @@ func (r *SourceRepository) Create(ctx context.Context, req models.CreateProxySou
 	if cleanupDays <= 0 {
 		cleanupDays = 7
 	}
+	format := req.Format
+	if format == "" {
+		format = models.SourceFormatAuto
+	}
 	query := `
 		INSERT INTO proxy_sources (
-			name, url, protocol, enabled, interval_minutes,
+			name, url, protocol, format, enabled, interval_minutes,
 			cleanup_enabled, cleanup_days
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING ` + sourceColumns
 	var s models.ProxySource
 	err := scanSource(r.db.Pool.QueryRow(ctx, query,
-		req.Name, req.URL, req.Protocol, req.Enabled, req.IntervalMinutes,
+		req.Name, req.URL, req.Protocol, format, req.Enabled, req.IntervalMinutes,
 		req.CleanupEnabled, cleanupDays,
 	), &s)
 	if err != nil {
@@ -111,16 +115,17 @@ func (r *SourceRepository) Update(ctx context.Context, id int, req models.Update
 			name             = CASE WHEN $1 <> '' THEN $1 ELSE name END,
 			url              = CASE WHEN $2 <> '' THEN $2 ELSE url END,
 			protocol         = CASE WHEN $3 <> '' THEN $3 ELSE protocol END,
-			enabled          = COALESCE($4, enabled),
-			interval_minutes = CASE WHEN $5 > 0 THEN $5 ELSE interval_minutes END,
-			cleanup_enabled  = COALESCE($6, cleanup_enabled),
-			cleanup_days     = CASE WHEN $7 > 0 THEN $7 ELSE cleanup_days END,
+			format           = CASE WHEN $4 <> '' THEN $4 ELSE format END,
+			enabled          = COALESCE($5, enabled),
+			interval_minutes = CASE WHEN $6 > 0 THEN $6 ELSE interval_minutes END,
+			cleanup_enabled  = COALESCE($7, cleanup_enabled),
+			cleanup_days     = CASE WHEN $8 > 0 THEN $8 ELSE cleanup_days END,
 			updated_at       = NOW()
-		WHERE id = $8
+		WHERE id = $9
 		RETURNING ` + sourceColumns
 	var s models.ProxySource
 	err := scanSource(r.db.Pool.QueryRow(ctx, query,
-		req.Name, req.URL, req.Protocol, req.Enabled, req.IntervalMinutes,
+		req.Name, req.URL, req.Protocol, req.Format, req.Enabled, req.IntervalMinutes,
 		req.CleanupEnabled, req.CleanupDays, id,
 	), &s)
 	if err == pgx.ErrNoRows {
