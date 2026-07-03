@@ -198,22 +198,21 @@ func (s *SourceService) SetHealthChecker(t ProxyTester) {
 	s.tester = t
 }
 
-// Start runs a background goroutine that checks for due sources every minute.
-func (s *SourceService) Start(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		s.logger.Info("source service started")
-		for {
-			select {
-			case <-ticker.C:
-				s.fetchDueSources(ctx)
-			case <-ctx.Done():
-				s.logger.Info("source service stopped")
-				return
-			}
+// Name identifies the service for the lifecycle manager.
+func (s *SourceService) Name() string { return "source-fetcher" }
+
+// Run checks for due sources every minute until ctx is cancelled.
+func (s *SourceService) Run(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.fetchDueSources(ctx)
+		case <-ctx.Done():
+			return
 		}
-	}()
+	}
 }
 
 // FetchNow fetches a single source immediately (called from API handler).

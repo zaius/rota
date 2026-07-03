@@ -49,23 +49,23 @@ func NewPoolService(
 	}
 }
 
-// Start launches background cron-like goroutine for pool health checks and auto-sync
-func (ps *PoolService) Start(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		ps.logger.Info("pool service started")
-		for {
-			select {
-			case <-ticker.C:
-				ps.runScheduledHealthChecks(ctx)
-				ps.runAutoSync(ctx)
-			case <-ctx.Done():
-				ps.logger.Info("pool service stopped")
-				return
-			}
+// Name identifies the service for the lifecycle manager.
+func (ps *PoolService) Name() string { return "pool-scheduler" }
+
+// Run fires due pool health checks and auto-sync every minute until ctx is
+// cancelled.
+func (ps *PoolService) Run(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			ps.runScheduledHealthChecks(ctx)
+			ps.runAutoSync(ctx)
+		case <-ctx.Done():
+			return
 		}
-	}()
+	}
 }
 
 // runScheduledHealthChecks fires health checks for pools whose cron is due

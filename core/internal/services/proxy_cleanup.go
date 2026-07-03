@@ -33,21 +33,22 @@ func NewProxyCleanupService(
 	}
 }
 
-// Start launches the background cleanup loop.
-func (s *ProxyCleanupService) Start(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(s.interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				s.run(ctx)
-			}
+// Name identifies the service for the lifecycle manager.
+func (s *ProxyCleanupService) Name() string { return "proxy-cleanup" }
+
+// Run deletes dead/low-quality proxies on the cleanup interval until ctx is
+// cancelled.
+func (s *ProxyCleanupService) Run(ctx context.Context) {
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.run(ctx)
 		}
-	}()
-	s.log.Info("proxy cleanup service started")
+	}
 }
 
 func (s *ProxyCleanupService) run(ctx context.Context) {
