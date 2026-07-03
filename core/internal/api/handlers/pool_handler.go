@@ -40,7 +40,7 @@ func (h *PoolHandler) List(w http.ResponseWriter, r *http.Request) {
 	pools, err := h.poolRepo.List(r.Context())
 	if err != nil {
 		h.logger.Error("failed to list pools", "error", err)
-		http.Error(w, `{"error":"failed to list pools"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to list pools")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"pools": pools})
@@ -50,12 +50,12 @@ func (h *PoolHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	pool, err := h.poolRepo.GetByID(r.Context(), id)
 	if err != nil || pool == nil {
-		http.Error(w, `{"error":"pool not found"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "pool not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, pool)
@@ -65,11 +65,15 @@ func (h *PoolHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreatePoolRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.Name == "" {
-		http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	if req.RotationMethod == "" {
@@ -82,7 +86,7 @@ func (h *PoolHandler) Create(w http.ResponseWriter, r *http.Request) {
 	pool, err := h.poolRepo.Create(r.Context(), req)
 	if err != nil {
 		h.logger.Error("failed to create pool", "error", err)
-		http.Error(w, `{"error":"failed to create pool"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to create pool")
 		return
 	}
 
@@ -135,17 +139,21 @@ func (h *PoolHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var req models.UpdatePoolRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	pool, err := h.poolRepo.Update(r.Context(), id, req)
 	if err != nil || pool == nil {
-		http.Error(w, `{"error":"pool not found or update failed"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "pool not found or update failed")
 		return
 	}
 
@@ -196,11 +204,11 @@ func (h *PoolHandler) Update(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	if err := h.poolRepo.Delete(r.Context(), id); err != nil {
-		http.Error(w, `{"error":"failed to delete pool"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to delete pool")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -210,12 +218,12 @@ func (h *PoolHandler) Delete(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) GetProxies(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	proxies, err := h.poolRepo.GetProxies(r.Context(), id)
 	if err != nil {
-		http.Error(w, `{"error":"failed to get pool proxies"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to get pool proxies")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"proxies": proxies})
@@ -225,18 +233,18 @@ func (h *PoolHandler) GetProxies(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) AddProxies(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var body struct {
 		ProxyIDs []int `json:"proxy_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := h.poolRepo.AddProxies(r.Context(), id, body.ProxyIDs); err != nil {
-		http.Error(w, `{"error":"failed to add proxies"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to add proxies")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"added": len(body.ProxyIDs)})
@@ -246,18 +254,18 @@ func (h *PoolHandler) AddProxies(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) RemoveProxies(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var body struct {
 		ProxyIDs []int `json:"proxy_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := h.poolRepo.RemoveProxies(r.Context(), id, body.ProxyIDs); err != nil {
-		http.Error(w, `{"error":"failed to remove proxies"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to remove proxies")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"removed": len(body.ProxyIDs)})
@@ -267,7 +275,7 @@ func (h *PoolHandler) RemoveProxies(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) Sync(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	count, err := h.poolSvc.SyncPool(r.Context(), id)
@@ -283,7 +291,7 @@ func (h *PoolHandler) Sync(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var body struct {
@@ -294,7 +302,7 @@ func (h *PoolHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 	pool, err := h.poolRepo.GetByID(r.Context(), id)
 	if err != nil || pool == nil {
-		http.Error(w, `{"error":"pool not found"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "pool not found")
 		return
 	}
 
@@ -304,10 +312,10 @@ func (h *PoolHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
-		"job_id":   job.ID,
-		"pool_id":  id,
-		"total":    job.Total,
-		"status":   job.Status,
+		"job_id":  job.ID,
+		"pool_id": id,
+		"total":   job.Total,
+		"status":  job.Status,
 	})
 }
 
@@ -317,7 +325,7 @@ func (h *PoolHandler) HealthCheckStatus(w http.ResponseWriter, r *http.Request) 
 	store := services.GetJobStore()
 	job, ok := store.Get(jobID)
 	if !ok {
-		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "job not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -327,7 +335,7 @@ func (h *PoolHandler) HealthCheckStatus(w http.ResponseWriter, r *http.Request) 
 func (h *PoolHandler) HealthCheckJobs(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	jobs := services.GetJobStore().ListByPool(id)
@@ -338,7 +346,7 @@ func (h *PoolHandler) HealthCheckJobs(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) GeoSummary(w http.ResponseWriter, r *http.Request) {
 	summary, err := h.poolRepo.GetGeoSummary(r.Context())
 	if err != nil {
-		http.Error(w, `{"error":"failed to get geo summary"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to get geo summary")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"geo": summary})
@@ -348,7 +356,7 @@ func (h *PoolHandler) GeoSummary(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) GeoByCountry(w http.ResponseWriter, r *http.Request) {
 	summary, err := h.poolRepo.GetGeoByCountry(r.Context())
 	if err != nil {
-		http.Error(w, `{"error":"failed to get geo by country"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to get geo by country")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"geo": summary})
@@ -358,12 +366,12 @@ func (h *PoolHandler) GeoByCountry(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) GeoCitiesByCountry(w http.ResponseWriter, r *http.Request) {
 	cc := chi.URLParam(r, "country_code")
 	if cc == "" {
-		http.Error(w, `{"error":"country_code required"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "country_code required")
 		return
 	}
 	cities, err := h.poolRepo.GetCitiesByCountry(r.Context(), cc)
 	if err != nil {
-		http.Error(w, `{"error":"failed to get cities"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to get cities")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"cities": cities})
@@ -383,7 +391,7 @@ func (h *PoolHandler) GeoCitiesByCountry(w http.ResponseWriter, r *http.Request)
 func (h *PoolHandler) Export(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	format := r.URL.Query().Get("format")
@@ -393,14 +401,14 @@ func (h *PoolHandler) Export(w http.ResponseWriter, r *http.Request) {
 
 	pool, err := h.poolRepo.GetByID(r.Context(), id)
 	if err != nil || pool == nil {
-		http.Error(w, `{"error":"pool not found"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "pool not found")
 		return
 	}
 
 	proxies, err := h.poolRepo.ExportProxies(r.Context(), id)
 	if err != nil {
 		h.logger.Error("failed to export pool proxies", "error", err)
-		http.Error(w, `{"error":"failed to export proxies"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to export proxies")
 		return
 	}
 
@@ -460,12 +468,12 @@ func (h *PoolHandler) exportPoolCSV(w http.ResponseWriter, poolName string, prox
 func (h *PoolHandler) ListAlertRules(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	rules, err := h.poolRepo.GetAlertRules(r.Context(), id)
 	if err != nil {
-		http.Error(w, `{"error":"failed to get alert rules"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to get alert rules")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"rules": rules})
@@ -484,22 +492,26 @@ func (h *PoolHandler) ListAlertRules(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) CreateAlertRule(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var req models.CreatePoolAlertRuleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.WebhookURL == "" {
-		http.Error(w, `{"error":"webhook_url is required"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "webhook_url is required")
 		return
 	}
 	rule, err := h.poolRepo.CreateAlertRule(r.Context(), id, req)
 	if err != nil {
 		h.logger.Error("failed to create alert rule", "error", err)
-		http.Error(w, `{"error":"failed to create alert rule"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to create alert rule")
 		return
 	}
 	writeJSON(w, http.StatusCreated, rule)
@@ -519,17 +531,21 @@ func (h *PoolHandler) CreateAlertRule(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) UpdateAlertRule(w http.ResponseWriter, r *http.Request) {
 	ruleID, err := strconv.Atoi(chi.URLParam(r, "rule_id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid rule_id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid rule_id")
 		return
 	}
 	var req models.CreatePoolAlertRuleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	rule, err := h.poolRepo.UpdateAlertRule(r.Context(), ruleID, req)
 	if err != nil || rule == nil {
-		http.Error(w, `{"error":"rule not found or update failed"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "rule not found or update failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, rule)
@@ -547,11 +563,11 @@ func (h *PoolHandler) UpdateAlertRule(w http.ResponseWriter, r *http.Request) {
 func (h *PoolHandler) DeleteAlertRule(w http.ResponseWriter, r *http.Request) {
 	ruleID, err := strconv.Atoi(chi.URLParam(r, "rule_id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid rule_id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid rule_id")
 		return
 	}
 	if err := h.poolRepo.DeleteAlertRule(r.Context(), ruleID); err != nil {
-		http.Error(w, `{"error":"failed to delete alert rule"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to delete alert rule")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -573,7 +589,7 @@ func (h *PoolHandler) GetISPList(w http.ResponseWriter, r *http.Request) {
 		`SELECT DISTINCT isp FROM proxies WHERE isp IS NOT NULL AND isp ILIKE $1 ORDER BY isp LIMIT 50`,
 		"%"+q+"%")
 	if err != nil {
-		http.Error(w, `{"error":"failed to get ISPs"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to get ISPs")
 		return
 	}
 	defer rows.Close()
@@ -602,7 +618,7 @@ func (h *PoolHandler) GetTagList(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.poolRepo.GetDB().Pool.Query(r.Context(),
 		`SELECT DISTINCT unnest(tags) AS tag FROM proxies WHERE array_length(tags,1) > 0 ORDER BY tag LIMIT 100`)
 	if err != nil {
-		http.Error(w, `{"error":"failed to get tags"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to get tags")
 		return
 	}
 	defer rows.Close()

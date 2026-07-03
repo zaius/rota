@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -26,6 +25,7 @@ func NewDashboardHandler(dashboardRepo *repository.DashboardRepository, proxyRep
 }
 
 // GetStats handles dashboard statistics requests
+//
 //	@Summary		Dashboard statistics
 //	@Description	Get dashboard statistics including proxy and request metrics
 //	@Tags			dashboard
@@ -37,14 +37,15 @@ func (h *DashboardHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.dashboardRepo.GetStats(r.Context())
 	if err != nil {
 		h.logger.Error("failed to get dashboard stats", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to get dashboard stats")
+		writeError(w, http.StatusInternalServerError, "Failed to get dashboard stats")
 		return
 	}
 
-	h.jsonResponse(w, http.StatusOK, stats)
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // GetResponseTimeChart handles response time chart requests
+//
 //	@Summary		Response time chart
 //	@Description	Get response time chart data for visualization
 //	@Tags			dashboard
@@ -62,7 +63,7 @@ func (h *DashboardHandler) GetResponseTimeChart(w http.ResponseWriter, r *http.R
 	data, err := h.dashboardRepo.GetResponseTimeChart(r.Context(), interval)
 	if err != nil {
 		h.logger.Error("failed to get response time chart", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to get response time chart")
+		writeError(w, http.StatusInternalServerError, "Failed to get response time chart")
 		return
 	}
 
@@ -70,10 +71,11 @@ func (h *DashboardHandler) GetResponseTimeChart(w http.ResponseWriter, r *http.R
 		Data: data,
 	}
 
-	h.jsonResponse(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // GetSuccessRateChart handles success rate chart requests
+//
 //	@Summary		Success rate chart
 //	@Description	Get success rate chart data for visualization
 //	@Tags			dashboard
@@ -91,7 +93,7 @@ func (h *DashboardHandler) GetSuccessRateChart(w http.ResponseWriter, r *http.Re
 	data, err := h.dashboardRepo.GetSuccessRateChart(r.Context(), interval)
 	if err != nil {
 		h.logger.Error("failed to get success rate chart", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to get success rate chart")
+		writeError(w, http.StatusInternalServerError, "Failed to get success rate chart")
 		return
 	}
 
@@ -99,20 +101,5 @@ func (h *DashboardHandler) GetSuccessRateChart(w http.ResponseWriter, r *http.Re
 		Data: data,
 	}
 
-	h.jsonResponse(w, http.StatusOK, response)
-}
-
-// jsonResponse sends a JSON response
-func (h *DashboardHandler) jsonResponse(w http.ResponseWriter, statusCode int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-// errorResponse sends an error JSON response
-func (h *DashboardHandler) errorResponse(w http.ResponseWriter, statusCode int, message string) {
-	response := models.ErrorResponse{
-		Error: message,
-	}
-	h.jsonResponse(w, statusCode, response)
+	writeJSON(w, http.StatusOK, response)
 }

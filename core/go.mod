@@ -19,7 +19,17 @@ require (
 	h12.io/socks v1.0.3
 )
 
-require github.com/robfig/cron/v3 v3.0.1
+require (
+	github.com/go-playground/validator/v10 v10.22.1
+	github.com/robfig/cron/v3 v3.0.1
+)
+
+require (
+	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/leodido/go-urn v1.4.0 // indirect
+)
 
 require (
 	github.com/KyleBanks/depth v1.2.1 // indirect

@@ -14,9 +14,9 @@ import (
 
 // SourceHandler handles proxy source CRUD + manual fetch
 type SourceHandler struct {
-	sourceRepo  *repository.SourceRepository
-	sourceSvc   *services.SourceService
-	logger      *logger.Logger
+	sourceRepo *repository.SourceRepository
+	sourceSvc  *services.SourceService
+	logger     *logger.Logger
 }
 
 // NewSourceHandler creates a new SourceHandler
@@ -37,7 +37,7 @@ func (h *SourceHandler) List(w http.ResponseWriter, r *http.Request) {
 	sources, err := h.sourceRepo.List(r.Context())
 	if err != nil {
 		h.logger.Error("failed to list sources", "error", err)
-		http.Error(w, `{"error":"failed to list sources"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to list sources")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"sources": sources})
@@ -47,18 +47,22 @@ func (h *SourceHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *SourceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateProxySourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.Name == "" || req.URL == "" || req.Protocol == "" {
-		http.Error(w, `{"error":"name, url and protocol are required"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "name, url and protocol are required")
 		return
 	}
 	if req.Format == "" {
 		req.Format = models.SourceFormatAuto
 	}
 	if !models.ValidSourceFormats[req.Format] {
-		http.Error(w, `{"error":"invalid format"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid format")
 		return
 	}
 	if req.IntervalMinutes <= 0 {
@@ -78,7 +82,7 @@ func (h *SourceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	src, err := h.sourceRepo.Create(r.Context(), req)
 	if err != nil {
 		h.logger.Error("failed to create source", "error", err)
-		http.Error(w, `{"error":"failed to create source"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to create source")
 		return
 	}
 	writeJSON(w, http.StatusCreated, src)
@@ -88,16 +92,20 @@ func (h *SourceHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *SourceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var req models.UpdateProxySourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.Format != "" && !models.ValidSourceFormats[req.Format] {
-		http.Error(w, `{"error":"invalid format"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid format")
 		return
 	}
 	// cleanup_days bounds
@@ -109,7 +117,7 @@ func (h *SourceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	src, err := h.sourceRepo.Update(r.Context(), id, req)
 	if err != nil || src == nil {
-		http.Error(w, `{"error":"source not found or update failed"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "source not found or update failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, src)
@@ -119,11 +127,11 @@ func (h *SourceHandler) Update(w http.ResponseWriter, r *http.Request) {
 func (h *SourceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	if err := h.sourceRepo.Delete(r.Context(), id); err != nil {
-		http.Error(w, `{"error":"failed to delete source"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to delete source")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -133,7 +141,7 @@ func (h *SourceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 func (h *SourceHandler) FetchNow(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	src, count, err := h.sourceSvc.FetchNow(r.Context(), id)
@@ -143,7 +151,7 @@ func (h *SourceHandler) FetchNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"source":  src,
+		"source":   src,
 		"imported": count,
 	})
 }
@@ -156,18 +164,4 @@ func (h *SourceHandler) EnrichGeo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"enriched": count})
-}
-
-// writeJSON is a helper to encode JSON responses
-func writeJSON(w http.ResponseWriter, status int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-// writeError writes a JSON error response. The message is JSON-encoded rather
-// than string-interpolated, so error text containing quotes or newlines can't
-// produce a malformed body.
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
 }

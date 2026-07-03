@@ -68,7 +68,7 @@ func (h *ProxyControlHandler) ReloadProxyPool(w http.ResponseWriter, r *http.Req
 
 	if h.proxyServer == nil {
 		h.logger.Error("proxy server not initialized")
-		http.Error(w, "proxy server not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "proxy server not available")
 		return
 	}
 
@@ -76,7 +76,7 @@ func (h *ProxyControlHandler) ReloadProxyPool(w http.ResponseWriter, r *http.Req
 
 	if err := h.proxyServer.ReloadSettings(ctx); err != nil {
 		h.logger.Error("failed to reload proxy pool", "error", err)
-		http.Error(w, fmt.Sprintf("failed to reload proxy pool: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to reload proxy pool: %v", err))
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *ProxyControlHandler) ReloadProxyPool(w http.ResponseWriter, r *http.Req
 func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
@@ -123,7 +123,7 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 	if body.Domain != "" {
 		domain := proxy.NormalizeCooldownDomain(body.Domain)
 		if domain == "" {
-			http.Error(w, `{"error":"invalid domain"}`, http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "invalid domain")
 			return
 		}
 		if d <= 0 {
@@ -134,11 +134,11 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 		proxyObj, err := h.proxyRepo.SetDomainCooldown(r.Context(), id, domain, until, body.Reason)
 		if err != nil {
 			h.logger.Error("failed to invalidate proxy for domain", "id", id, "domain", domain, "error", err)
-			http.Error(w, `{"error":"failed to invalidate proxy"}`, http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "failed to invalidate proxy")
 			return
 		}
 		if proxyObj == nil {
-			http.Error(w, `{"error":"proxy not found"}`, http.StatusNotFound)
+			writeError(w, http.StatusNotFound, "proxy not found")
 			return
 		}
 
@@ -165,11 +165,11 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 	proxyObj, err := h.proxyRepo.SetCooldown(r.Context(), id, d, body.Reason)
 	if err != nil {
 		h.logger.Error("failed to invalidate proxy", "id", id, "error", err)
-		http.Error(w, `{"error":"failed to invalidate proxy"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to invalidate proxy")
 		return
 	}
 	if proxyObj == nil {
-		http.Error(w, `{"error":"proxy not found"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "proxy not found")
 		return
 	}
 
@@ -204,7 +204,7 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 func (h *ProxyControlHandler) ReactivateProxy(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
@@ -218,13 +218,13 @@ func (h *ProxyControlHandler) ReactivateProxy(w http.ResponseWriter, r *http.Req
 	if body.Domain != "" {
 		domain := proxy.NormalizeCooldownDomain(body.Domain)
 		if domain == "" {
-			http.Error(w, `{"error":"invalid domain"}`, http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "invalid domain")
 			return
 		}
 		cleared, err := h.proxyRepo.ClearDomainCooldown(r.Context(), id, domain)
 		if err != nil {
 			h.logger.Error("failed to reactivate proxy for domain", "id", id, "domain", domain, "error", err)
-			http.Error(w, `{"error":"failed to reactivate proxy"}`, http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "failed to reactivate proxy")
 			return
 		}
 		if h.proxyServer != nil {
@@ -245,11 +245,11 @@ func (h *ProxyControlHandler) ReactivateProxy(w http.ResponseWriter, r *http.Req
 	proxyObj, err := h.proxyRepo.ClearCooldown(r.Context(), id)
 	if err != nil {
 		h.logger.Error("failed to reactivate proxy", "id", id, "error", err)
-		http.Error(w, `{"error":"failed to reactivate proxy"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to reactivate proxy")
 		return
 	}
 	if proxyObj == nil {
-		http.Error(w, `{"error":"proxy not found"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "proxy not found")
 		return
 	}
 
@@ -322,11 +322,11 @@ func (h *ProxyControlHandler) ReleaseSession(w http.ResponseWriter, r *http.Requ
 		PoolID *int   `json:"pool_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
-		http.Error(w, `{"error":"token is required"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "token is required")
 		return
 	}
 	if h.proxyServer == nil {
-		http.Error(w, `{"error":"proxy server not available"}`, http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "proxy server not available")
 		return
 	}
 

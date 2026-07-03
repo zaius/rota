@@ -47,7 +47,7 @@ type CreateProxySourceRequest struct {
 	Protocol        string `json:"protocol" validate:"required,oneof=http https socks4 socks4a socks5"`
 	Format          string `json:"format"   validate:"omitempty,oneof=auto host:port:user:pass user:pass:host:port host:port@user:pass"`
 	Enabled         bool   `json:"enabled"`
-	IntervalMinutes int    `json:"interval_minutes" validate:"min=1"`
+	IntervalMinutes int    `json:"interval_minutes" validate:"omitempty,min=1"`
 	CleanupEnabled  bool   `json:"cleanup_enabled"`
 	CleanupDays     int    `json:"cleanup_days" validate:"omitempty,min=1,max=365"`
 }

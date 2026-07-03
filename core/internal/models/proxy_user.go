@@ -34,7 +34,7 @@ type CreateProxyUserRequest struct {
 	Enabled           bool   `json:"enabled"`
 	MainPoolID        *int   `json:"main_pool_id,omitempty"`
 	FallbackPoolIDs   []int  `json:"fallback_pool_ids"`
-	MaxRetries        int    `json:"max_retries"           validate:"min=1,max=50"`
+	MaxRetries        int    `json:"max_retries"           validate:"omitempty,min=1,max=50"`
 	RequestsPerMinute int    `json:"requests_per_minute"` // 0 = no limit
 }
 

@@ -34,6 +34,7 @@ func (h *SettingsHandler) SetOnUpdate(fn func(ctx context.Context)) {
 }
 
 // Get handles getting current configuration
+//
 //	@Summary		Get settings
 //	@Description	Get current system configuration
 //	@Tags			settings
@@ -45,17 +46,18 @@ func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	settings, err := h.settingsRepo.GetAll(r.Context())
 	if err != nil {
 		h.logger.Error("failed to get settings", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to get settings")
+		writeError(w, http.StatusInternalServerError, "Failed to get settings")
 		return
 	}
 
 	// Never expose proxy authentication password in response
 	settings.Authentication.Password = ""
 
-	h.jsonResponse(w, http.StatusOK, settings)
+	writeJSON(w, http.StatusOK, settings)
 }
 
 // Update handles updating configuration
+//
 //	@Summary		Update settings
 //	@Description	Update system configuration
 //	@Tags			settings
@@ -69,13 +71,13 @@ func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var settings models.Settings
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Validate settings
 	if err := h.validateSettings(&settings); err != nil {
-		h.errorResponse(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -84,7 +86,7 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// Dashboard/API authentication uses ROTA_ADMIN_USER/ROTA_ADMIN_PASSWORD (environment)
 	if err := h.settingsRepo.UpdateAll(r.Context(), &settings); err != nil {
 		h.logger.Error("failed to update settings", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to update settings")
+		writeError(w, http.StatusInternalServerError, "Failed to update settings")
 		return
 	}
 
@@ -92,7 +94,7 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	updatedSettings, err := h.settingsRepo.GetAll(r.Context())
 	if err != nil {
 		h.logger.Error("failed to get updated settings", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to get updated settings")
+		writeError(w, http.StatusInternalServerError, "Failed to get updated settings")
 		return
 	}
 
@@ -111,10 +113,11 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		h.onSettingsUpdate(r.Context())
 	}
 
-	h.jsonResponse(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // Reset handles resetting configuration to defaults
+//
 //	@Summary		Reset settings
 //	@Description	Reset configuration to default values
 //	@Tags			settings
@@ -125,14 +128,14 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 func (h *SettingsHandler) Reset(w http.ResponseWriter, r *http.Request) {
 	if err := h.settingsRepo.Reset(r.Context()); err != nil {
 		h.logger.Error("failed to reset settings", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to reset settings")
+		writeError(w, http.StatusInternalServerError, "Failed to reset settings")
 		return
 	}
 
 	settings, err := h.settingsRepo.GetAll(r.Context())
 	if err != nil {
 		h.logger.Error("failed to get settings after reset", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to get settings")
+		writeError(w, http.StatusInternalServerError, "Failed to get settings")
 		return
 	}
 
@@ -141,7 +144,7 @@ func (h *SettingsHandler) Reset(w http.ResponseWriter, r *http.Request) {
 		"config":  settings,
 	}
 
-	h.jsonResponse(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // validateSettings validates settings configuration
@@ -167,19 +170,4 @@ func (h *SettingsHandler) validateSettings(s *models.Settings) error {
 	}
 
 	return nil
-}
-
-// jsonResponse sends a JSON response
-func (h *SettingsHandler) jsonResponse(w http.ResponseWriter, statusCode int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-// errorResponse sends an error JSON response
-func (h *SettingsHandler) errorResponse(w http.ResponseWriter, statusCode int, message string) {
-	response := models.ErrorResponse{
-		Error: message,
-	}
-	h.jsonResponse(w, statusCode, response)
 }
