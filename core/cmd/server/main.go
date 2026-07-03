@@ -84,6 +84,12 @@ func run() error {
 	sourceRepo := repository.NewSourceRepository(db)
 	adminRepo := repository.NewAdminRepository(db)
 
+	// Seed any missing default settings from the single Go-defined source of
+	// truth (migrations no longer seed settings). No-op for keys already set.
+	if err := settingsRepo.SeedDefaults(ctx); err != nil {
+		return fmt.Errorf("failed to seed default settings: %w", err)
+	}
+
 	// Add database logging hook for proxy logs
 	log.AddHook(func(level, message string, attrs map[string]any) {
 		// Only log proxy-related messages to database

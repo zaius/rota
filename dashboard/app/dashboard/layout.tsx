@@ -11,7 +11,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
-import { Outlet, useLocation, useNavigate } from "react-router-dom"
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom"
 
 export default function DashboardLayout() {
   const { pathname } = useLocation()
@@ -67,7 +67,9 @@ export default function DashboardLayout() {
                   <React.Fragment key={segment}>
                     <BreadcrumbItem>
                       {!isLast ? (
-                        <BreadcrumbLink href={href}>{title}</BreadcrumbLink>
+                        <BreadcrumbLink asChild>
+                          <Link to={href}>{title}</Link>
+                        </BreadcrumbLink>
                       ) : (
                         <BreadcrumbPage>{title}</BreadcrumbPage>
                       )}

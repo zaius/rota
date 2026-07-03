@@ -94,16 +94,8 @@ var migrations = []Migration{
 				value JSONB NOT NULL,
 				updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 			);
-
-			-- Insert default settings
-			-- Note: authentication settings are for PROXY server (port 8000), not dashboard/API
-			INSERT INTO settings (key, value) VALUES
-			('authentication', '{"enabled": false, "username": "", "password": ""}'::jsonb),
-			('rotation', '{"method": "random", "time_based": {"interval": 120}, "remove_unhealthy": true, "fallback": true, "fallback_max_retries": 10, "follow_redirect": false, "timeout": 90, "retries": 3}'::jsonb),
-			('rate_limit', '{"enabled": false, "interval": 1, "max_requests": 100}'::jsonb),
-			('healthcheck', '{"timeout": 60, "workers": 20, "url": "https://api.ipify.org", "status": 200, "headers": ["User-Agent: Rota-HealthCheck/1.0"]}'::jsonb),
-			('log_retention', '{"enabled": true, "retention_days": 30, "compression_after_days": 7, "cleanup_interval_hours": 24}'::jsonb)
-			ON CONFLICT (key) DO NOTHING;
+			-- Default values are seeded by the app on startup (SettingsRepository.
+			-- SeedDefaults) from a single Go-defined source, not here.
 		`,
 		Down: `
 			DROP TABLE IF EXISTS settings;
@@ -200,14 +192,13 @@ var migrations = []Migration{
 	},
 	{
 		Version:     7,
-		Description: "Add log retention settings",
+		Description: "Add log retention settings (now seeded by the app)",
 		Up: `
-			INSERT INTO settings (key, value) VALUES
-			('log_retention', '{"enabled": true, "retention_days": 30, "compression_after_days": 7, "cleanup_interval_hours": 24}'::jsonb)
-			ON CONFLICT (key) DO NOTHING;
+			-- log_retention defaults are seeded by SettingsRepository.SeedDefaults.
+			SELECT 1;
 		`,
 		Down: `
-			DELETE FROM settings WHERE key = 'log_retention';
+			SELECT 1;
 		`,
 	},
 	{
@@ -463,11 +454,7 @@ var migrations = []Migration{
 		Version:     19,
 		Description: "Add proxy cleanup settings and rate limit to proxy_users",
 		Up: `
-			-- Dead proxy cleanup settings
-			INSERT INTO settings (key, value) VALUES
-			('proxy_cleanup', '{"enabled": false, "max_failed_days": 7, "min_success_rate": 0, "cleanup_interval_hours": 24}'::jsonb)
-			ON CONFLICT (key) DO NOTHING;
-
+			-- proxy_cleanup defaults are seeded by SettingsRepository.SeedDefaults.
 			-- Per-user rate limiting
 			ALTER TABLE proxy_users ADD COLUMN IF NOT EXISTS requests_per_minute INTEGER NOT NULL DEFAULT 0;
 		`,

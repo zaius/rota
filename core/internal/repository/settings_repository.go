@@ -120,9 +120,13 @@ func (r *SettingsRepository) UpdateAll(ctx context.Context, settings *models.Set
 	})
 }
 
-// Reset resets all settings to defaults
-func (r *SettingsRepository) Reset(ctx context.Context) error {
-	defaults := map[string]map[string]any{
+// defaultSettings is the single source of truth for default settings values.
+// Both SeedDefaults (fresh install) and Reset use it, so the two can't drift —
+// previously the migration seed and Reset defined defaults separately and
+// disagreed (the migration omitted rotation's protocol/response-time/success
+// filters; Reset omitted proxy_cleanup entirely).
+func defaultSettings() map[string]map[string]any {
+	return map[string]map[string]any{
 		"authentication": {
 			"enabled":  false,
 			"username": "",
@@ -139,7 +143,7 @@ func (r *SettingsRepository) Reset(ctx context.Context) error {
 			"follow_redirect":      false,
 			"timeout":              90,
 			"retries":              3,
-			"allowed_protocols":    []string{"http", "https", "socks5"}, // All protocols allowed by default
+			"allowed_protocols":    []string{"http", "https", "socks5"}, // empty/all allowed by default
 			"max_response_time":    0,                                   // 0 means no limit
 			"min_success_rate":     0.0,                                 // 0 means no minimum
 		},
@@ -161,21 +165,44 @@ func (r *SettingsRepository) Reset(ctx context.Context) error {
 			"compression_after_days": 7,
 			"cleanup_interval_hours": 24,
 		},
+		"proxy_cleanup": {
+			"enabled":                false,
+			"max_failed_days":        7,
+			"min_success_rate":       0,
+			"cleanup_interval_hours": 24,
+		},
 	}
+}
+
+// SeedDefaults inserts any default settings keys that don't exist yet. It is
+// called once on startup (after migrations) and never overwrites existing
+// values, so it is safe to run every boot.
+func (r *SettingsRepository) SeedDefaults(ctx context.Context) error {
+	return r.writeSettings(ctx, defaultSettings(), false)
+}
+
+// Reset resets all settings to their defaults, overwriting existing values.
+func (r *SettingsRepository) Reset(ctx context.Context) error {
+	return r.writeSettings(ctx, defaultSettings(), true)
+}
+
+// writeSettings upserts each key atomically. When overwrite is false, existing
+// keys are left untouched (seed); when true, they are replaced (reset).
+func (r *SettingsRepository) writeSettings(ctx context.Context, values map[string]map[string]any, overwrite bool) error {
+	onConflict := "DO NOTHING"
+	if overwrite {
+		onConflict = "DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()"
+	}
+	query := `INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) ` + onConflict
 
 	return pgx.BeginFunc(ctx, r.db.Pool, func(tx pgx.Tx) error {
-		for key, value := range defaults {
+		for key, value := range values {
 			valueJSON, err := json.Marshal(value)
 			if err != nil {
 				return fmt.Errorf("failed to marshal default for %q: %w", key, err)
 			}
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO settings (key, value, updated_at)
-				 VALUES ($1, $2, NOW())
-				 ON CONFLICT (key) DO UPDATE
-				 SET value = EXCLUDED.value, updated_at = NOW()`,
-				key, valueJSON); err != nil {
-				return fmt.Errorf("failed to reset setting %q: %w", key, err)
+			if _, err := tx.Exec(ctx, query, key, valueJSON); err != nil {
+				return fmt.Errorf("failed to write setting %q: %w", key, err)
 			}
 		}
 		return nil
