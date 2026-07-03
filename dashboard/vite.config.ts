@@ -6,6 +6,10 @@ import tsconfigPaths from "vite-tsconfig-paths"
 // the "@/..." path alias comes from tsconfig via vite-tsconfig-paths.
 export default defineConfig({
   plugins: [react(), tsconfigPaths()],
+  // Ensure a single React instance (react-query/react-router must share it).
+  resolve: {
+    dedupe: ["react", "react-dom"],
+  },
   server: {
     port: 3000,
     host: true,

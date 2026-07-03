@@ -1,5 +1,5 @@
 
-import { useEffect, useState, useCallback } from "react"
+import { useState } from "react"
 import {
   Plus, Trash2, RefreshCw, Globe, Clock, CheckCircle2,
   XCircle, Pencil, Download, Loader2, AlertCircle,
@@ -7,6 +7,10 @@ import {
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { ProxySource, CreateSourceRequest, SourceFormat } from "@/lib/types"
+import { useResourceQuery } from "@/hooks/use-resource-query"
+import { StatCard } from "@/components/crud/stat-card"
+import { EmptyState } from "@/components/crud/empty-state"
+import { PageSpinner } from "@/components/crud/page-spinner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -42,8 +46,11 @@ const DEFAULT_FORM: CreateSourceRequest = {
 }
 
 export default function SourcesPage() {
-  const [sources, setSources] = useState<ProxySource[]>([])
-  const [loading, setLoading] = useState(true)
+  const sourcesQuery = useResourceQuery(["sources"], () => api.getSources().then(r => r.sources))
+  const sources = sourcesQuery.data ?? []
+  const loading = sourcesQuery.isLoading
+  const reload = sourcesQuery.invalidate
+
   const [fetchingId, setFetchingId] = useState<number | null>(null)
   const [enriching, setEnriching] = useState(false)
 
@@ -51,19 +58,6 @@ export default function SourcesPage() {
   const [editSource, setEditSource] = useState<ProxySource | null>(null)
   const [form, setForm] = useState<CreateSourceRequest>(DEFAULT_FORM)
   const [saving, setSaving] = useState(false)
-
-  const load = useCallback(async () => {
-    try {
-      const res = await api.getSources()
-      setSources(res.sources)
-    } catch {
-      toast.error("Failed to load sources")
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { load() }, [load])
 
   const openCreate = () => {
     setEditSource(null)
@@ -101,7 +95,7 @@ export default function SourcesPage() {
         toast.success("Source created")
       }
       setDialogOpen(false)
-      load()
+      reload()
     } catch (e: any) {
       toast.error(e.message || "Failed to save source")
     } finally {
@@ -114,7 +108,7 @@ export default function SourcesPage() {
     try {
       await api.deleteSource(id)
       toast.success("Source deleted")
-      load()
+      reload()
     } catch {
       toast.error("Failed to delete source")
     }
@@ -125,7 +119,7 @@ export default function SourcesPage() {
     try {
       const res = await api.fetchSourceNow(id)
       toast.success(`Fetched ${res.imported} proxies from source`)
-      load()
+      reload()
     } catch (e: any) {
       toast.error(e.message || "Fetch failed")
     } finally {
@@ -148,7 +142,7 @@ export default function SourcesPage() {
   const toggleEnabled = async (s: ProxySource) => {
     try {
       await api.updateSource(s.id, { enabled: !s.enabled })
-      load()
+      reload()
     } catch {
       toast.error("Failed to toggle source")
     }
@@ -158,11 +152,7 @@ export default function SourcesPage() {
     d ? new Date(d).toLocaleString() : "Never"
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    )
+    return <PageSpinner />
   }
 
   return (
@@ -196,55 +186,19 @@ export default function SourcesPage() {
 
       {/* Stats cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Sources</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{sources.length}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Enabled</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-500">
-              {sources.filter(s => s.enabled).length}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Imported</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {sources.reduce((s, x) => s + x.last_count, 0)}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">With Errors</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-red-500">
-              {sources.filter(s => s.last_error).length}
-            </div>
-          </CardContent>
-        </Card>
+        <StatCard label="Total Sources" value={sources.length} />
+        <StatCard label="Enabled" value={sources.filter(s => s.enabled).length} valueClassName="text-green-500" />
+        <StatCard label="Total Imported" value={sources.reduce((s, x) => s + x.last_count, 0)} />
+        <StatCard label="With Errors" value={sources.filter(s => s.last_error).length} valueClassName="text-red-500" />
       </div>
 
       {/* Table */}
       {sources.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-16 gap-3">
-            <Download className="h-10 w-10 text-muted-foreground" />
-            <p className="text-muted-foreground">No proxy sources yet. Add one to get started.</p>
-            <Button onClick={openCreate}><Plus className="h-4 w-4 mr-2" />Add Source</Button>
-          </CardContent>
-        </Card>
+        <EmptyState
+          icon={Download}
+          message="No proxy sources yet. Add one to get started."
+          action={<Button onClick={openCreate}><Plus className="h-4 w-4 mr-2" />Add Source</Button>}
+        />
       ) : (
         <Card>
           <CardContent className="p-0">

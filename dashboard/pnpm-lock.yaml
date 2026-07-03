@@ -47,6 +47,9 @@ importers:
       '@radix-ui/react-tooltip':
         specifier: ^1.2.8
         version: 1.2.8(@types/react-dom@19.2.2(@types/react@19.2.2))(@types/react@19.2.2)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+      '@tanstack/react-query':
+        specifier: ^5.101.2
+        version: 5.101.2(react@19.2.0)
       '@tanstack/react-table':
         specifier: ^8.21.3
         version: 8.21.3(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
@@ -1112,6 +1115,14 @@ packages:
 
   '@tailwindcss/postcss@4.1.15':
     resolution: {integrity: sha512-IZh8IT76KujRz6d15wZw4eoeViT4TqmzVWNNfpuNCTKiaZUwgr5vtPqO4HjuYDyx3MgGR5qgPt1HMzTeLJyA3g==}
+
+  '@tanstack/query-core@5.101.2':
+    resolution: {integrity: sha512-hH5MLoJhF7KaIGd7q3xTXGXvslI+GYlM1Z/35aSHHWaCJWB7XvTSHYuV3eM7tw+aE0mT/xMro4M4Q9rCGHT0lw==}
+
+  '@tanstack/react-query@5.101.2':
+    resolution: {integrity: sha512-seDkr6kzGzX1okaaTtZPtgA688CDPlXUz1C6xSg0ESqn04Vuc8tlrYms1s3de+znBqhPVxFRfpAfUf+6XvfPWg==}
+    peerDependencies:
+      react: ^18 || ^19
 
   '@tanstack/react-table@8.21.3':
     resolution: {integrity: sha512-5nNMTSETP4ykGegmVkhjcS8tTLW6Vl4axfEGQN3v0zdHYbK4UfoqfPChclTrJ4EoK9QynqAu9oUf8VEmrpZ5Ww==}
@@ -2996,6 +3007,13 @@ snapshots:
       '@tailwindcss/oxide': 4.1.15
       postcss: 8.5.6
       tailwindcss: 4.1.15
+
+  '@tanstack/query-core@5.101.2': {}
+
+  '@tanstack/react-query@5.101.2(react@19.2.0)':
+    dependencies:
+      '@tanstack/query-core': 5.101.2
+      react: 19.2.0
 
   '@tanstack/react-table@8.21.3(react-dom@19.2.0(react@19.2.0))(react@19.2.0)':
     dependencies:
