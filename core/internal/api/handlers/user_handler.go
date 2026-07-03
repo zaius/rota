@@ -16,6 +16,10 @@ type UserHandler struct {
 	userRepo *repository.UserRepository
 	poolRepo *repository.PoolRepository
 	logger   *logger.Logger
+
+	// onUserChanged, if set, is invoked with the affected username after a user
+	// is updated or deleted so the proxy server can drop its cached auth entry.
+	onUserChanged func(username string)
 }
 
 // NewUserHandler creates a new UserHandler
@@ -25,6 +29,19 @@ func NewUserHandler(
 	log *logger.Logger,
 ) *UserHandler {
 	return &UserHandler{userRepo: userRepo, poolRepo: poolRepo, logger: log}
+}
+
+// SetOnUserChanged registers a callback invoked after a user is updated or
+// deleted, so cached proxy auth can be invalidated promptly.
+func (h *UserHandler) SetOnUserChanged(fn func(username string)) {
+	h.onUserChanged = fn
+}
+
+// notifyUserChanged invokes the change callback if one is registered.
+func (h *UserHandler) notifyUserChanged(username string) {
+	if h.onUserChanged != nil && username != "" {
+		h.onUserChanged(username)
+	}
 }
 
 // List returns all proxy users
@@ -71,7 +88,7 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	u, err := h.userRepo.Create(r.Context(), req)
 	if err != nil {
 		h.logger.Error("create user failed", "error", err)
-		http.Error(w, `{"error":"failed to create user: `+err.Error()+`"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to create user: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, u)
@@ -94,6 +111,7 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"user not found or update failed"}`, http.StatusNotFound)
 		return
 	}
+	h.notifyUserChanged(u.Username)
 	writeJSON(w, http.StatusOK, u)
 }
 
@@ -104,11 +122,16 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
 		return
 	}
+	// Resolve the username before deleting so the cached proxy auth entry can be
+	// invalidated (the cache is keyed by username, not id).
+	var username string
+	if existing, err := h.userRepo.GetByID(r.Context(), id); err == nil && existing != nil {
+		username = existing.Username
+	}
 	if err := h.userRepo.Delete(r.Context(), id); err != nil {
 		http.Error(w, `{"error":"failed to delete user"}`, http.StatusInternalServerError)
 		return
 	}
+	h.notifyUserChanged(username)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
-
-

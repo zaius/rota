@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -17,13 +18,24 @@ import (
 	proxyDialer "golang.org/x/net/proxy"
 )
 
-// UpstreamProxyHandler handles requests with upstream proxy rotation
+// UpstreamProxyHandler handles requests with upstream proxy rotation.
+//
+// settings and selector are swapped by ReloadSettings concurrently with
+// hot-path request goroutines, so both are held in atomic pointers and must be
+// accessed only through the get/set helpers below. Reads take a stable snapshot
+// per method rather than dereferencing the field repeatedly.
 type UpstreamProxyHandler struct {
-	selector ProxySelector
+	selector atomic.Pointer[selectorHolder]
 	tracker  *UsageTracker
-	settings *models.RotationSettings
+	settings atomic.Pointer[models.RotationSettings]
 	domainCD *DomainCooldownManager
 	logger   *logger.Logger
+}
+
+// selectorHolder wraps the ProxySelector interface so it can be stored in an
+// atomic.Pointer, which requires a concrete element type.
+type selectorHolder struct {
+	sel ProxySelector
 }
 
 // NewUpstreamProxyHandler creates a new upstream proxy handler
@@ -34,13 +46,37 @@ func NewUpstreamProxyHandler(
 	domainCD *DomainCooldownManager,
 	log *logger.Logger,
 ) *UpstreamProxyHandler {
-	return &UpstreamProxyHandler{
-		selector: selector,
+	h := &UpstreamProxyHandler{
 		tracker:  tracker,
-		settings: settings,
 		domainCD: domainCD,
 		logger:   log,
 	}
+	h.setSelector(selector)
+	h.setSettings(settings)
+	return h
+}
+
+// getSettings returns the current rotation settings snapshot.
+func (h *UpstreamProxyHandler) getSettings() *models.RotationSettings {
+	return h.settings.Load()
+}
+
+// setSettings atomically publishes new rotation settings.
+func (h *UpstreamProxyHandler) setSettings(s *models.RotationSettings) {
+	h.settings.Store(s)
+}
+
+// getSelector returns the current legacy global selector (may be nil).
+func (h *UpstreamProxyHandler) getSelector() ProxySelector {
+	if hs := h.selector.Load(); hs != nil {
+		return hs.sel
+	}
+	return nil
+}
+
+// setSelector atomically publishes a new legacy global selector.
+func (h *UpstreamProxyHandler) setSelector(s ProxySelector) {
+	h.selector.Store(&selectorHolder{sel: s})
 }
 
 // HandleHTTPRequest handles HTTP requests (non-CONNECT) with upstream proxy rotation.
@@ -62,7 +98,7 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 	// --- Pool-aware path: if a PoolChain was attached by UserAuthMiddleware, use it ---
 	reqCtx := r.Context()
 	if chain, ok := reqCtx.Value(UserChainContextKey).(*PoolChain); ok && chain != nil {
-		resp, proxyID, err := chain.SendWithRetry(r, reqCtx, h.settings, h.logger)
+		resp, proxyID, err := chain.SendWithRetry(r, reqCtx, h.getSettings(), h.logger)
 		duration := int(time.Since(startTime).Milliseconds())
 		if proxyID > 0 {
 			h.recordAsync(proxyID, "", r.URL.String(), r.Method, resp, err, duration, startTime)
@@ -146,7 +182,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 
 	reqCtx := r.Context()
 	if chain, ok := reqCtx.Value(UserChainContextKey).(*PoolChain); ok && chain != nil {
-		upstreamConn, proxyID, err = chain.ConnectWithRetry(host, reqCtx, h.settings, h.logger)
+		upstreamConn, proxyID, err = chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
 	} else {
 		upstreamConn, proxyID, err = h.connectThroughProxy(host, reqCtx)
 	}
@@ -248,8 +284,9 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 // selector that only ever yields ineligible proxies still terminates.
 func (h *UpstreamProxyHandler) selectEligibleProxy(ctx context.Context, tried map[int]bool, targetHost string) (*models.Proxy, error) {
 	const maxScan = 1000
+	selector := h.getSelector()
 	for i := 0; i < maxScan; i++ {
-		selectedProxy, err := h.selector.Select(ctx)
+		selectedProxy, err := selector.Select(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -271,12 +308,13 @@ func (h *UpstreamProxyHandler) selectEligibleProxy(ctx context.Context, tried ma
 
 // sendWithRetry attempts to send the request with retry and fallback logic
 func (h *UpstreamProxyHandler) sendWithRetry(req *http.Request, ctx context.Context) (*http.Response, int, error) {
-	maxFallbackRetries := h.settings.FallbackMaxRetries
-	if !h.settings.Fallback {
+	st := h.getSettings()
+	maxFallbackRetries := st.FallbackMaxRetries
+	if !st.Fallback {
 		maxFallbackRetries = 1
 	}
 
-	perProxyRetries := h.settings.Retries
+	perProxyRetries := st.Retries
 	if perProxyRetries <= 0 {
 		perProxyRetries = 1
 	}
@@ -359,11 +397,12 @@ func (h *UpstreamProxyHandler) tryProxyWithRetries(req *http.Request, ctx contex
 			continue
 		}
 
+		st := h.getSettings()
 		client := &http.Client{
 			Transport: transport,
-			Timeout:   time.Duration(h.settings.Timeout) * time.Second,
+			Timeout:   time.Duration(st.Timeout) * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if !h.settings.FollowRedirect {
+				if !st.FollowRedirect {
 					return http.ErrUseLastResponse
 				}
 				if len(via) >= 10 {
@@ -394,12 +433,13 @@ func (h *UpstreamProxyHandler) tryProxyWithRetries(req *http.Request, ctx contex
 func (h *UpstreamProxyHandler) connectThroughProxy(host string, ctx context.Context) (net.Conn, int, error) {
 	startTime := time.Now()
 
-	maxFallbackRetries := h.settings.FallbackMaxRetries
-	if !h.settings.Fallback {
+	st := h.getSettings()
+	maxFallbackRetries := st.FallbackMaxRetries
+	if !st.Fallback {
 		maxFallbackRetries = 1
 	}
 
-	perProxyRetries := h.settings.Retries
+	perProxyRetries := st.Retries
 	if perProxyRetries <= 0 {
 		perProxyRetries = 1
 	}
@@ -510,7 +550,7 @@ func (h *UpstreamProxyHandler) connectViaProxy(proxy *models.Proxy, host string)
 
 // connectViaHTTPProxy establishes a connection through HTTP proxy using CONNECT method
 func (h *UpstreamProxyHandler) connectViaHTTPProxy(proxy *models.Proxy, host string) (net.Conn, error) {
-	timeout := time.Duration(h.settings.Timeout) * time.Second
+	timeout := time.Duration(h.getSettings().Timeout) * time.Second
 	if timeout < 60*time.Second {
 		timeout = 60 * time.Second
 	}

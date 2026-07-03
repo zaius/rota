@@ -207,10 +207,20 @@ export default function PoolsPage() {
     }
   }
 
-  const handleExport = (format: "txt" | "csv") => {
+  const handleExport = async (format: "txt" | "csv") => {
     if (!selectedPool) return
-    const url = api.getPoolExportUrl(selectedPool.id, format)
-    window.open(url, "_blank")
+    try {
+      const blob = await api.exportPool(selectedPool.id, format)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `${selectedPool.name}.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error("Failed to export pool:", error)
+      toast.error(error instanceof Error ? error.message : "Failed to export pool")
+    }
   }
 
   const openCreateAlertRule = () => {

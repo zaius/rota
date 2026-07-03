@@ -139,7 +139,7 @@ func (h *SourceHandler) FetchNow(w http.ResponseWriter, r *http.Request) {
 	src, count, err := h.sourceSvc.FetchNow(r.Context(), id)
 	if err != nil {
 		h.logger.Error("fetch now failed", "source_id", id, "error", err)
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -152,7 +152,7 @@ func (h *SourceHandler) FetchNow(w http.ResponseWriter, r *http.Request) {
 func (h *SourceHandler) EnrichGeo(w http.ResponseWriter, r *http.Request) {
 	count, err := h.sourceSvc.EnrichAll(r.Context())
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"enriched": count})
@@ -163,4 +163,11 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// writeError writes a JSON error response. The message is JSON-encoded rather
+// than string-interpolated, so error text containing quotes or newlines can't
+// produce a malformed body.
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
 }

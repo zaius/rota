@@ -27,6 +27,7 @@ import (
 type ProxyServer interface {
 	ReloadSettings(ctx context.Context) error
 	EvictProxy(proxyID int)
+	InvalidateUser(username string)
 	ListSessions() []proxy.SessionInfo
 	ReleaseSession(poolID int, token string) bool
 	ReleaseSessionToken(token string) int
@@ -38,14 +39,15 @@ type ProxyServer interface {
 
 // Server represents the API server
 type Server struct {
-	router    *chi.Mux
-	server    *http.Server
-	logger    *logger.Logger
-	db        *database.DB
-	port      int
-	jwtSecret string
-	authRL    *authRateLimiter
-	proxyRepo *repository.ProxyRepository
+	router      *chi.Mux
+	server      *http.Server
+	logger      *logger.Logger
+	db          *database.DB
+	port        int
+	jwtSecret   string
+	corsOrigins []string
+	authRL      *authRateLimiter
+	proxyRepo   *repository.ProxyRepository
 
 	// Proxy server reference for reloading
 	proxyServer ProxyServer
@@ -82,10 +84,14 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB) *Server {
 		log.Warn("failed to seed admin credentials", "error", err)
 	}
 
-	// Generate random JWT secret on startup
-	// This ensures all previous tokens become invalid on restart
-	jwtSecret := generateJWTSecret()
-	log.Info("generated new JWT secret for this session", "length", len(jwtSecret))
+	// Prefer a configured JWT secret so tokens survive restarts and work across
+	// replicas. Falling back to a per-boot random secret keeps single-node dev
+	// zero-config, at the cost of logging everyone out on every restart.
+	jwtSecret := cfg.JWTSecret
+	if jwtSecret == "" {
+		jwtSecret = generateJWTSecret()
+		log.Warn("JWT_SECRET not set: generated an ephemeral secret; all sessions will be invalidated on restart and multi-replica deployments will not share sessions")
+	}
 
 	// Create usage tracker for health checks
 	tracker := proxy.NewUsageTracker(proxyRepo)
@@ -133,6 +139,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB) *Server {
 		db:                   db,
 		port:                 cfg.APIPort,
 		jwtSecret:            jwtSecret,
+		corsOrigins:          cfg.CORSAllowedOrigins,
 		authRL:               authRL,
 		proxyRepo:            proxyRepo,
 		authHandler:          authHandler,
@@ -157,6 +164,16 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB) *Server {
 			} else {
 				log.Info("proxy settings reloaded after update")
 			}
+		}
+	})
+
+	// Wire user invalidation: when a proxy user is updated or deleted, drop the
+	// proxy server's cached auth entry for that user so disables, password
+	// changes and pool reassignments take effect immediately rather than after
+	// the auth cache TTL.
+	userHandler.SetOnUserChanged(func(username string) {
+		if s.proxyServer != nil {
+			s.proxyServer.InvalidateUser(username)
 		}
 	})
 
@@ -189,13 +206,24 @@ func (s *Server) setupMiddleware() {
 	// Handle OPTIONS requests first (for CORS preflight)
 	s.router.Use(OptionsMiddleware())
 
-	// CORS middleware
+	// CORS middleware. Credentialed CORS with a wildcard origin is invalid per
+	// the Fetch spec and is rejected by browsers, so only enable credentials
+	// when explicit origins are configured. The dashboard authenticates with a
+	// Bearer token (not cookies), so the wildcard dev default needs no
+	// credentials anyway.
+	allowWildcard := false
+	for _, o := range s.corsOrigins {
+		if o == "*" {
+			allowWildcard = true
+			break
+		}
+	}
 	s.router.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   s.corsOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: true,
+		AllowCredentials: !allowWildcard,
 		MaxAge:           300,
 	}))
 

@@ -272,7 +272,7 @@ func (h *PoolHandler) Sync(w http.ResponseWriter, r *http.Request) {
 	}
 	count, err := h.poolSvc.SyncPool(r.Context(), id)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"synced": count})
@@ -300,7 +300,7 @@ func (h *PoolHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 	job, err := services.RunPoolHealthCheckAsync(r.Context(), h.poolSvc, id, pool.Name, body.URL, body.Workers)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{

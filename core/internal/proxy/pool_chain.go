@@ -19,21 +19,53 @@ import (
 // SendWithRetry / ConnectWithRetry methods used by the proxy handler.
 type PoolChain struct {
 	selectors []*PoolSelector
+	tracker   *UsageTracker
 	logger    *logger.Logger
 	maxRetry  int // total upstream attempts across all pools
 }
 
 // NewPoolChain builds a PoolChain from an ordered list of ProxyPool objects.
-func NewPoolChain(db *database.DB, pools []models.ProxyPool, maxRetry int, sessionMgr *SessionManager, domainCD *DomainCooldownManager, log *logger.Logger) *PoolChain {
+func NewPoolChain(db *database.DB, pools []models.ProxyPool, maxRetry int, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
 	selectors := make([]*PoolSelector, 0, len(pools))
 	for _, p := range pools {
 		selectors = append(selectors, NewPoolSelector(db, p, sessionMgr, domainCD))
 	}
 	return &PoolChain{
 		selectors: selectors,
+		tracker:   tracker,
 		logger:    log,
 		maxRetry:  maxRetry,
 	}
+}
+
+// recordFailure asynchronously records a failed upstream attempt. Without this
+// the pool path only ever persists successes, so proxy failure stats and the
+// consecutive-failure auto-disable threshold (see updateProxyStats) never
+// advance for pooled proxies — a dead proxy would be retried forever. This
+// mirrors the per-attempt recording the legacy path does in the handler.
+func (c *PoolChain) recordFailure(proxyID int, address, url, method string, attemptStart time.Time, cause error) {
+	if c.tracker == nil || proxyID <= 0 {
+		return
+	}
+	record := RequestRecord{
+		ProxyID:      proxyID,
+		ProxyAddress: address,
+		RequestedURL: url,
+		Method:       method,
+		Success:      false,
+		ResponseTime: int(time.Since(attemptStart).Milliseconds()),
+		Timestamp:    attemptStart,
+	}
+	if cause != nil {
+		record.ErrorMessage = cause.Error()
+	}
+	go func() {
+		recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := c.tracker.RecordRequest(recordCtx, record); err != nil {
+			c.logger.Error("failed to record pool-chain failure", "error", err)
+		}
+	}()
 }
 
 // Refresh reloads all pool selectors (non-blocking goroutine).
@@ -110,6 +142,7 @@ func (c *PoolChain) SendWithRetry(
 			return nil, 0, fmt.Errorf("no proxy available: %w", lastErr)
 		}
 		tried[selectedProxy.ID] = true
+		attemptStart := time.Now()
 
 		log.Info("pool chain: trying proxy",
 			"attempt", attempt+1,
@@ -121,6 +154,7 @@ func (c *PoolChain) SendWithRetry(
 		transport, err := CreateProxyTransport(selectedProxy)
 		if err != nil {
 			lastErr = err
+			c.recordFailure(selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
 			c.markFailed(selIdx, selectedProxy.ID)
 			continue
 		}
@@ -149,6 +183,7 @@ func (c *PoolChain) SendWithRetry(
 
 		resp, err := client.Do(cloned)
 		if err != nil {
+			c.recordFailure(selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
 			lastErr = fmt.Errorf("proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)
 			log.Warn("pool chain: proxy failed", "proxy", selectedProxy.Address, "err", err)
 			c.markFailed(selIdx, selectedProxy.ID)
@@ -185,6 +220,7 @@ func (c *PoolChain) ConnectWithRetry(
 			return nil, 0, fmt.Errorf("no proxy available: %w", lastErr)
 		}
 		tried[selectedProxy.ID] = true
+		attemptStart := time.Now()
 
 		log.Info("pool chain CONNECT: trying proxy",
 			"attempt", attempt+1,
@@ -195,6 +231,7 @@ func (c *PoolChain) ConnectWithRetry(
 		// Reuse the existing connectViaProxy logic via a temporary handler
 		conn, err := connectViaProxyStandalone(selectedProxy, host, rotationSettings)
 		if err != nil {
+			c.recordFailure(selectedProxy.ID, selectedProxy.Address, "CONNECT://"+host, "CONNECT", attemptStart, err)
 			lastErr = fmt.Errorf("CONNECT proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)
 			log.Warn("pool chain CONNECT: failed", "proxy", selectedProxy.Address, "err", err)
 			c.markFailed(selIdx, selectedProxy.ID)

@@ -70,6 +70,7 @@ type UserAuthMiddleware struct {
 	rotSettings *models.RotationSettings
 	sessionMgr  *SessionManager
 	domainCD    *DomainCooldownManager
+	tracker     *UsageTracker
 
 	// legacy fallback (original single-user auth)
 	legacy *AuthMiddleware
@@ -88,6 +89,7 @@ func NewUserAuthMiddleware(
 	rotSettings *models.RotationSettings,
 	sessionMgr *SessionManager,
 	domainCD *DomainCooldownManager,
+	tracker *UsageTracker,
 	log *logger.Logger,
 ) *UserAuthMiddleware {
 	m := &UserAuthMiddleware{
@@ -98,6 +100,7 @@ func NewUserAuthMiddleware(
 		rotSettings: rotSettings,
 		sessionMgr:  sessionMgr,
 		domainCD:    domainCD,
+		tracker:     tracker,
 		logger:      log,
 		cache:       make(map[string]userEntry),
 	}
@@ -225,7 +228,7 @@ func (m *UserAuthMiddleware) buildChain(ctx context.Context, user *models.ProxyU
 		maxRetry = 5
 	}
 
-	chain := NewPoolChain(m.db, pools, maxRetry, m.sessionMgr, m.domainCD, m.logger)
+	chain := NewPoolChain(m.db, pools, maxRetry, m.sessionMgr, m.domainCD, m.tracker, m.logger)
 	chain.Refresh(ctx)
 	return chain, nil
 }

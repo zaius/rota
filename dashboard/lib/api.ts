@@ -474,10 +474,19 @@ class ApiClient {
   }
 
   // ── Pool Export ──────────────────────────────────────────────────────────
-  getPoolExportUrl(poolId: number, format: "txt" | "csv" = "txt"): string {
-    const base = typeof window !== "undefined" ? window.location.origin : API_BASE_URL
-    const token = this.token
-    return `${base}/api/v1/pools/${poolId}/export?format=${format}${token ? `&token=${token}` : ""}`
+  async exportPool(poolId: number, format: "txt" | "csv" = "txt"): Promise<Blob> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/pools/${poolId}/export?format=${format}`,
+      {
+        headers: this.getHeaders(),
+      }
+    )
+
+    if (!response.ok) {
+      throw new Error("Export failed")
+    }
+
+    return response.blob()
   }
 
   // ── Alert Rules ──────────────────────────────────────────────────────────

@@ -13,7 +13,12 @@ import (
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/gammazero/workerpool"
+	"github.com/robfig/cron/v3"
 )
+
+// cronParser parses standard 5-field cron expressions (minute-resolution),
+// matching the scheduler's 1-minute tick in runScheduledHealthChecks.
+var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
 // PoolService manages proxy pools: auto-sync by geo, health checks, rotation state
 type PoolService struct {
@@ -22,10 +27,10 @@ type PoolService struct {
 	logger    *logger.Logger
 
 	// per-pool rotation state (roundrobin index, stick counters)
-	mu          sync.Mutex
-	rrIndex     map[int]int   // pool_id -> current roundrobin index
-	stickCur    map[int]int   // pool_id -> current proxy index in stick mode
-	stickCount  map[int]int   // pool_id -> requests served on current proxy
+	mu         sync.Mutex
+	rrIndex    map[int]int // pool_id -> current roundrobin index
+	stickCur   map[int]int // pool_id -> current proxy index in stick mode
+	stickCount map[int]int // pool_id -> requests served on current proxy
 }
 
 // NewPoolService creates a new PoolService
@@ -406,23 +411,31 @@ func (ps *PoolService) HealthCheckPoolWithProgress(
 	return result, nil
 }
 
-// isCronDue is a simple every-N-minutes checker.
-// Supports "*/N * * * *" (every N minutes) and "@every Nm" style.
-// For more complex cron expressions just returns false.
-func isCronDue(cron string) bool {
-	cron = strings.TrimSpace(cron)
-	if strings.HasPrefix(cron, "*/") {
-		parts := strings.Fields(cron)
-		if len(parts) == 5 {
-			var n int
-			fmt.Sscanf(parts[0][2:], "%d", &n)
-			if n <= 0 {
-				n = 30
-			}
-			now := time.Now()
-			return now.Minute()%n == 0 && now.Second() < 60
-		}
+// isCronDue reports whether a standard 5-field cron expression is due in the
+// current minute. It is called once per minute by the scheduler, so "due" means
+// the expression's next activation lands within the current minute window.
+//
+// Unlike the previous implementation, arbitrary expressions (e.g. "0 */6 * * *")
+// are honoured exactly; an empty or invalid expression is treated as never due
+// rather than silently falling back to every 30 minutes.
+func isCronDue(expr string) bool {
+	return cronDueAt(expr, time.Now())
+}
+
+// cronDueAt is the testable core of isCronDue: it reports whether expr is due in
+// the minute containing now.
+func cronDueAt(expr string, now time.Time) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return false
 	}
-	// Default: every 30 minutes
-	return time.Now().Minute()%30 == 0
+	sched, err := cronParser.Parse(expr)
+	if err != nil {
+		return false
+	}
+	minuteStart := now.Truncate(time.Minute)
+	// Next activation strictly after the instant just before this minute; due if
+	// that activation falls inside [minuteStart, minuteStart+1m).
+	next := sched.Next(minuteStart.Add(-time.Second))
+	return !next.Before(minuteStart) && next.Before(minuteStart.Add(time.Minute))
 }

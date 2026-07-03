@@ -19,6 +19,8 @@ require (
 	h12.io/socks v1.0.3
 )
 
+require github.com/robfig/cron/v3 v3.0.1
+
 require (
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/ebitengine/purego v0.8.1 // indirect
