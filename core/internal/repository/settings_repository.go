@@ -96,19 +96,28 @@ func (r *SettingsRepository) Set(ctx context.Context, key string, value map[stri
 	return nil
 }
 
-// UpdateAll updates multiple settings
+// UpdateAll updates multiple settings atomically, so a mid-write failure can't
+// leave the settings half-applied.
 func (r *SettingsRepository) UpdateAll(ctx context.Context, settings *models.Settings) error {
-	// Convert settings to map
 	settingsMap := r.settingsToMap(settings)
 
-	// Update each setting
-	for key, value := range settingsMap {
-		if err := r.Set(ctx, key, value); err != nil {
-			return err
+	return pgx.BeginFunc(ctx, r.db.Pool, func(tx pgx.Tx) error {
+		for key, value := range settingsMap {
+			valueJSON, err := json.Marshal(value)
+			if err != nil {
+				return fmt.Errorf("failed to marshal value for %q: %w", key, err)
+			}
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO settings (key, value, updated_at)
+				 VALUES ($1, $2, NOW())
+				 ON CONFLICT (key) DO UPDATE
+				 SET value = EXCLUDED.value, updated_at = NOW()`,
+				key, valueJSON); err != nil {
+				return fmt.Errorf("failed to set setting %q: %w", key, err)
+			}
 		}
-	}
-
-	return nil
+		return nil
+	})
 }
 
 // Reset resets all settings to defaults
@@ -131,8 +140,8 @@ func (r *SettingsRepository) Reset(ctx context.Context) error {
 			"timeout":              90,
 			"retries":              3,
 			"allowed_protocols":    []string{"http", "https", "socks5"}, // All protocols allowed by default
-			"max_response_time":    0,          // 0 means no limit
-			"min_success_rate":     0.0,        // 0 means no minimum
+			"max_response_time":    0,                                   // 0 means no limit
+			"min_success_rate":     0.0,                                 // 0 means no minimum
 		},
 		"rate_limit": {
 			"enabled":      false,
@@ -154,13 +163,23 @@ func (r *SettingsRepository) Reset(ctx context.Context) error {
 		},
 	}
 
-	for key, value := range defaults {
-		if err := r.Set(ctx, key, value); err != nil {
-			return err
+	return pgx.BeginFunc(ctx, r.db.Pool, func(tx pgx.Tx) error {
+		for key, value := range defaults {
+			valueJSON, err := json.Marshal(value)
+			if err != nil {
+				return fmt.Errorf("failed to marshal default for %q: %w", key, err)
+			}
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO settings (key, value, updated_at)
+				 VALUES ($1, $2, NOW())
+				 ON CONFLICT (key) DO UPDATE
+				 SET value = EXCLUDED.value, updated_at = NOW()`,
+				key, valueJSON); err != nil {
+				return fmt.Errorf("failed to reset setting %q: %w", key, err)
+			}
 		}
-	}
-
-	return nil
+		return nil
+	})
 }
 
 // Helper functions to convert between Settings struct and map

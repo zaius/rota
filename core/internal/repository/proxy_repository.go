@@ -236,49 +236,37 @@ func (r *ProxyRepository) Create(ctx context.Context, req models.CreateProxyRequ
 	return &p, nil
 }
 
-// Upsert creates or updates a proxy, returning the result status
+// Upsert creates or updates a proxy, returning the result status. It is a single
+// statement keyed on the (address, protocol) unique constraint — the previous
+// implementation issued a SELECT then a separate INSERT/UPDATE (two round-trips
+// per proxy, ~20k queries for a 10k-line import). The `xmax = 0` check
+// distinguishes a fresh insert from a conflict update.
 func (r *ProxyRepository) Upsert(ctx context.Context, req models.CreateProxyRequest) (id int, status string, err error) {
 	tags := req.Tags
 	if tags == nil {
 		tags = []string{}
 	}
-	// Check if proxy exists
-	var existingID int
-	checkErr := r.db.Pool.QueryRow(ctx,
-		`SELECT id FROM proxies WHERE address=$1 AND protocol=$2`, req.Address, req.Protocol,
-	).Scan(&existingID)
 
-	if checkErr == pgx.ErrNoRows {
-		// Insert new
-		insErr := r.db.Pool.QueryRow(ctx,
-			`INSERT INTO proxies (address, protocol, username, password, tags, source_id)
-			 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-			req.Address, req.Protocol, req.Username, req.Password, tags, req.SourceID,
-		).Scan(&id)
-		if insErr != nil {
-			return 0, "failed", insErr
-		}
+	var inserted bool
+	err = r.db.Pool.QueryRow(ctx,
+		`INSERT INTO proxies (address, protocol, username, password, tags, source_id)
+		 VALUES ($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (address, protocol) DO UPDATE SET
+			username   = COALESCE(EXCLUDED.username, proxies.username),
+			password   = COALESCE(EXCLUDED.password, proxies.password),
+			tags       = CASE WHEN array_length(EXCLUDED.tags, 1) > 0 THEN EXCLUDED.tags ELSE proxies.tags END,
+			source_id  = COALESCE(EXCLUDED.source_id, proxies.source_id),
+			updated_at = NOW()
+		 RETURNING id, (xmax = 0) AS inserted`,
+		req.Address, req.Protocol, req.Username, req.Password, tags, req.SourceID,
+	).Scan(&id, &inserted)
+	if err != nil {
+		return 0, "failed", err
+	}
+	if inserted {
 		return id, "created", nil
 	}
-	if checkErr != nil {
-		return 0, "failed", checkErr
-	}
-
-	// Update existing — update tags/auth/source_id if provided
-	_, updErr := r.db.Pool.Exec(ctx,
-		`UPDATE proxies SET
-			username   = COALESCE($1, username),
-			password   = COALESCE($2, password),
-			tags       = CASE WHEN array_length($3::text[], 1) > 0 THEN $3::text[] ELSE tags END,
-			source_id  = COALESCE($4, source_id),
-			updated_at = NOW()
-		WHERE id = $5`,
-		req.Username, req.Password, tags, req.SourceID, existingID,
-	)
-	if updErr != nil {
-		return existingID, "failed", updErr
-	}
-	return existingID, "updated", nil
+	return id, "updated", nil
 }
 
 // DeleteAll removes all proxies from the database. Returns count deleted.

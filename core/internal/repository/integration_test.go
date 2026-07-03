@@ -1,0 +1,241 @@
+package repository
+
+import (
+	"context"
+	"os"
+	"strconv"
+	"testing"
+
+	"github.com/alpkeskin/rota/core/internal/config"
+	"github.com/alpkeskin/rota/core/internal/database"
+	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/alpkeskin/rota/core/pkg/logger"
+)
+
+// These tests exercise the real SQL against a Postgres/TimescaleDB instance.
+// They are skipped unless ROTA_TEST_DB is set, so `go test ./...` stays
+// hermetic. To run them locally:
+//
+//	docker run -d --name pg -e POSTGRES_USER=rota -e POSTGRES_PASSWORD=rota_password \
+//	  -e POSTGRES_DB=rota_test -p 55432:5432 timescale/timescaledb:2.22.1-pg17
+//	ROTA_TEST_DB=1 TEST_DB_PORT=55432 go test ./internal/repository/ -run Integration -v
+
+func getenv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func testDB(t *testing.T) *database.DB {
+	t.Helper()
+	if os.Getenv("ROTA_TEST_DB") == "" {
+		t.Skip("set ROTA_TEST_DB=1 (with a running Postgres) to run repository integration tests")
+	}
+	port, _ := strconv.Atoi(getenv("TEST_DB_PORT", "55432"))
+	cfg := &config.DatabaseConfig{
+		Host:     getenv("TEST_DB_HOST", "localhost"),
+		Port:     port,
+		User:     getenv("TEST_DB_USER", "rota"),
+		Password: getenv("TEST_DB_PASSWORD", "rota_password"),
+		Name:     getenv("TEST_DB_NAME", "rota_test"),
+		SSLMode:  "disable",
+	}
+	db, err := database.New(context.Background(), cfg, database.DefaultConfig(), logger.New("error"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := db.Migrate(context.Background()); err != nil {
+		db.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// cleanTables wipes the tables the repository tests touch.
+func cleanTables(t *testing.T, db *database.DB) {
+	t.Helper()
+	_, err := db.Pool.Exec(context.Background(),
+		`TRUNCATE pool_proxies, pool_geo_filters, pool_isp_filters, pool_tag_filters, proxy_pools, proxies RESTART IDENTITY CASCADE`)
+	if err != nil {
+		t.Fatalf("clean: %v", err)
+	}
+}
+
+func TestIntegration_Upsert_CreatesThenUpdates(t *testing.T) {
+	db := testDB(t)
+	cleanTables(t, db)
+	repo := NewProxyRepository(db)
+	ctx := context.Background()
+
+	user := "alice"
+	id, status, err := repo.Upsert(ctx, models.CreateProxyRequest{Address: "1.2.3.4:8080", Protocol: "http", Username: &user})
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if status != "created" || id == 0 {
+		t.Fatalf("expected created with id, got status=%q id=%d", status, id)
+	}
+
+	user2 := "bob"
+	id2, status2, err := repo.Upsert(ctx, models.CreateProxyRequest{Address: "1.2.3.4:8080", Protocol: "http", Username: &user2})
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if status2 != "updated" {
+		t.Fatalf("expected updated, got %q", status2)
+	}
+	if id2 != id {
+		t.Fatalf("expected same id on update, got %d != %d", id2, id)
+	}
+
+	var got string
+	if err := db.Pool.QueryRow(ctx, `SELECT username FROM proxies WHERE id=$1`, id).Scan(&got); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got != "bob" {
+		t.Fatalf("expected username updated to bob, got %q", got)
+	}
+}
+
+func TestIntegration_AddProxies_BatchDedupes(t *testing.T) {
+	db := testDB(t)
+	cleanTables(t, db)
+	proxyRepo := NewProxyRepository(db)
+	poolRepo := NewPoolRepository(db)
+	ctx := context.Background()
+
+	pool, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "p1", RotationMethod: "roundrobin", StickCount: 1})
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+
+	var ids []int
+	for i := 0; i < 4; i++ {
+		p, err := proxyRepo.Create(ctx, models.CreateProxyRequest{Address: "10.0.0." + strconv.Itoa(i) + ":80", Protocol: "http"})
+		if err != nil {
+			t.Fatalf("create proxy %d: %v", i, err)
+		}
+		ids = append(ids, p.ID)
+	}
+
+	if err := poolRepo.AddProxies(ctx, pool.ID, ids[:3]); err != nil {
+		t.Fatalf("add first batch: %v", err)
+	}
+	// Overlapping batch must not error (ON CONFLICT DO NOTHING) and must dedupe.
+	if err := poolRepo.AddProxies(ctx, pool.ID, ids[1:]); err != nil {
+		t.Fatalf("add overlapping batch: %v", err)
+	}
+
+	var count int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pool_proxies WHERE pool_id=$1`, pool.ID).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("expected 4 members after dedupe, got %d", count)
+	}
+}
+
+func TestIntegration_SyncPoolByFilters_RebuildsMembership(t *testing.T) {
+	db := testDB(t)
+	cleanTables(t, db)
+	poolRepo := NewPoolRepository(db)
+	ctx := context.Background()
+
+	// Two US proxies, one DE proxy.
+	mustProxy(t, db, "us1:80", "US")
+	mustProxy(t, db, "us2:80", "US")
+	deID := mustProxy(t, db, "de1:80", "DE")
+
+	pool, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "us-pool", RotationMethod: "roundrobin", StickCount: 1, SyncMode: "auto"})
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	if err := poolRepo.SetGeoFilters(ctx, pool.ID, []models.GeoFilter{{CountryCode: "US"}}); err != nil {
+		t.Fatalf("set geo filters: %v", err)
+	}
+
+	total, newIDs, err := poolRepo.SyncPoolByFilters(ctx, *pool)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if total != 2 || len(newIDs) != 2 {
+		t.Fatalf("expected 2 members (both new), got total=%d new=%d", total, len(newIDs))
+	}
+
+	// The DE proxy must not be a member.
+	var isMember bool
+	if err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pool_proxies WHERE pool_id=$1 AND proxy_id=$2)`, pool.ID, deID).Scan(&isMember); err != nil {
+		t.Fatalf("member check: %v", err)
+	}
+	if isMember {
+		t.Fatal("DE proxy should not be in the US pool")
+	}
+
+	// Re-sync is idempotent: same membership, and nothing reported as newly added.
+	total2, newIDs2, err := poolRepo.SyncPoolByFilters(ctx, *pool)
+	if err != nil {
+		t.Fatalf("re-sync: %v", err)
+	}
+	if total2 != 2 || len(newIDs2) != 0 {
+		t.Fatalf("re-sync should be idempotent, got total=%d new=%d", total2, len(newIDs2))
+	}
+}
+
+func TestIntegration_SetGeoFilters_ReplacesAtomically(t *testing.T) {
+	db := testDB(t)
+	cleanTables(t, db)
+	poolRepo := NewPoolRepository(db)
+	ctx := context.Background()
+
+	pool, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "p", RotationMethod: "roundrobin", StickCount: 1})
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+
+	if err := poolRepo.SetGeoFilters(ctx, pool.ID, []models.GeoFilter{{CountryCode: "US"}, {CountryCode: "DE"}}); err != nil {
+		t.Fatalf("set 1: %v", err)
+	}
+	if err := poolRepo.SetGeoFilters(ctx, pool.ID, []models.GeoFilter{{CountryCode: "FR"}}); err != nil {
+		t.Fatalf("set 2: %v", err)
+	}
+
+	got, err := poolRepo.GetGeoFilters(ctx, pool.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got) != 1 || got[0].CountryCode != "FR" {
+		t.Fatalf("expected only FR after replace, got %+v", got)
+	}
+}
+
+func TestIntegration_Migrate_Idempotent(t *testing.T) {
+	db := testDB(t)
+	// testDB already migrated once; a second run must be a clean no-op.
+	if err := db.Migrate(context.Background()); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	status, err := db.GetMigrationStatus(context.Background())
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	for _, s := range status {
+		if applied, _ := s["applied"].(bool); !applied {
+			t.Fatalf("migration %v reported not applied after Migrate", s["version"])
+		}
+	}
+}
+
+// mustProxy inserts a proxy row with a country code and returns its id.
+func mustProxy(t *testing.T, db *database.DB, address, country string) int {
+	t.Helper()
+	var id int
+	err := db.Pool.QueryRow(context.Background(),
+		`INSERT INTO proxies (address, protocol, status, country_code) VALUES ($1,'http','active',$2) RETURNING id`,
+		address, country).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert proxy %s: %v", address, err)
+	}
+	return id
+}
