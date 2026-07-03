@@ -52,19 +52,18 @@ type Server struct {
 	proxyServer handlers.ProxyServer
 
 	// Handlers
-	authHandler          *handlers.AuthHandler
-	healthHandler        *handlers.HealthHandler
-	dashboardHandler     *handlers.DashboardHandler
-	proxyHandler         *handlers.ProxyHandler
-	logsHandler          *handlers.LogsHandler
-	settingsHandler      *handlers.SettingsHandler
-	websocketHandler     *handlers.WebSocketHandler
-	metricsHandler       *handlers.MetricsHandler
-	documentationHandler *handlers.DocumentationHandler
-	sourceHandler        *handlers.SourceHandler
-	poolHandler          *handlers.PoolHandler
-	userHandler          *handlers.UserHandler
-	proxyControlHandler  *handlers.ProxyControlHandler
+	authHandler         *handlers.AuthHandler
+	healthHandler       *handlers.HealthHandler
+	dashboardHandler    *handlers.DashboardHandler
+	proxyHandler        *handlers.ProxyHandler
+	logsHandler         *handlers.LogsHandler
+	settingsHandler     *handlers.SettingsHandler
+	websocketHandler    *handlers.WebSocketHandler
+	metricsHandler      *handlers.MetricsHandler
+	sourceHandler       *handlers.SourceHandler
+	poolHandler         *handlers.PoolHandler
+	userHandler         *handlers.UserHandler
+	proxyControlHandler *handlers.ProxyControlHandler
 }
 
 // New creates a new API server instance from injected dependencies. It builds
@@ -98,7 +97,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	settingsHandler := handlers.NewSettingsHandler(deps.SettingsRepo, log, nil) // onUpdate set below
 	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, deps.ProxyRepo, deps.LogRepo, log)
 	metricsHandler := handlers.NewMetricsHandler(log)
-	documentationHandler := handlers.NewDocumentationHandler()
 	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.SourceSvc, log)
 	poolHandler := handlers.NewPoolHandler(deps.PoolRepo, deps.PoolSvc, log)
 	userHandler := handlers.NewUserHandler(deps.UserRepo, deps.PoolRepo, log)
@@ -115,26 +113,25 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	)
 
 	s := &Server{
-		router:               chi.NewRouter(),
-		logger:               log,
-		db:                   db,
-		port:                 cfg.APIPort,
-		jwtSecret:            jwtSecret,
-		corsOrigins:          cfg.CORSAllowedOrigins,
-		authRL:               authRL,
-		authHandler:          authHandler,
-		healthHandler:        healthHandler,
-		dashboardHandler:     dashboardHandler,
-		proxyHandler:         proxyHandler,
-		logsHandler:          logsHandler,
-		settingsHandler:      settingsHandler,
-		websocketHandler:     websocketHandler,
-		metricsHandler:       metricsHandler,
-		documentationHandler: documentationHandler,
-		sourceHandler:        sourceHandler,
-		poolHandler:          poolHandler,
-		userHandler:          userHandler,
-		proxyControlHandler:  proxyControlHandler,
+		router:              chi.NewRouter(),
+		logger:              log,
+		db:                  db,
+		port:                cfg.APIPort,
+		jwtSecret:           jwtSecret,
+		corsOrigins:         cfg.CORSAllowedOrigins,
+		authRL:              authRL,
+		authHandler:         authHandler,
+		healthHandler:       healthHandler,
+		dashboardHandler:    dashboardHandler,
+		proxyHandler:        proxyHandler,
+		logsHandler:         logsHandler,
+		settingsHandler:     settingsHandler,
+		websocketHandler:    websocketHandler,
+		metricsHandler:      metricsHandler,
+		sourceHandler:       sourceHandler,
+		poolHandler:         poolHandler,
+		userHandler:         userHandler,
+		proxyControlHandler: proxyControlHandler,
 	}
 
 	// Wire settings reload: when settings are updated via API, reload proxy server
@@ -209,10 +206,6 @@ func (s *Server) setupMiddleware() {
 func (s *Server) setupRoutes() {
 	// ── Fully public routes ────────────────────────────────────────────────
 	s.router.Get("/health", s.healthHandler.Health)
-
-	// API Documentation (public — read-only reference)
-	s.router.Get("/docs", s.documentationHandler.ServeDocumentation)
-	s.router.Get("/api/v1/swagger.json", s.serveSwaggerJSON)
 
 	// Auth: only login is public; everything else requires a valid JWT
 	// Auth rate limiter wraps the login handler — per-IP block + global lockout
@@ -339,13 +332,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) SetProxyServer(ps handlers.ProxyServer) {
 	s.proxyServer = ps
 	s.proxyControlHandler.SetProxyServer(ps)
-}
-
-// serveSwaggerJSON serves the swagger.json file
-func (s *Server) serveSwaggerJSON(w http.ResponseWriter, r *http.Request) {
-	// Serve from the docs directory in the project root
-	swaggerPath := "docs/swagger.json"
-	http.ServeFile(w, r, swaggerPath)
 }
 
 // generateJWTSecret generates a cryptographically secure random JWT secret
