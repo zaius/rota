@@ -1,7 +1,6 @@
-"use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from "react-router-dom"
 import {
   CommandDialog,
   CommandEmpty,
@@ -21,7 +20,7 @@ import {
 
 export function CommandPalette() {
   const [open, setOpen] = React.useState(false)
-  const router = useRouter()
+  const navigate = useNavigate()
 
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -47,31 +46,31 @@ export function CommandPalette() {
         <CommandEmpty>No results found.</CommandEmpty>
         <CommandGroup heading="Navigation">
           <CommandItem
-            onSelect={() => runCommand(() => router.push("/dashboard"))}
+            onSelect={() => runCommand(() => navigate("/dashboard"))}
           >
             <LayoutDashboard className="mr-2 h-4 w-4" />
             <span>Dashboard</span>
           </CommandItem>
           <CommandItem
-            onSelect={() => runCommand(() => router.push("/dashboard/proxies"))}
+            onSelect={() => runCommand(() => navigate("/dashboard/proxies"))}
           >
             <Network className="mr-2 h-4 w-4" />
             <span>Proxy Management</span>
           </CommandItem>
           <CommandItem
-            onSelect={() => runCommand(() => router.push("/dashboard/metrics"))}
+            onSelect={() => runCommand(() => navigate("/dashboard/metrics"))}
           >
             <Activity className="mr-2 h-4 w-4" />
             <span>System Metrics</span>
           </CommandItem>
           <CommandItem
-            onSelect={() => runCommand(() => router.push("/dashboard/logs"))}
+            onSelect={() => runCommand(() => navigate("/dashboard/logs"))}
           >
             <FileText className="mr-2 h-4 w-4" />
             <span>Proxy Logs</span>
           </CommandItem>
           <CommandItem
-            onSelect={() => runCommand(() => router.push("/dashboard/settings"))}
+            onSelect={() => runCommand(() => navigate("/dashboard/settings"))}
           >
             <Settings className="mr-2 h-4 w-4" />
             <span>Settings</span>
@@ -79,7 +78,7 @@ export function CommandPalette() {
         </CommandGroup>
         <CommandGroup heading="Actions">
           <CommandItem
-            onSelect={() => runCommand(() => router.push("/login"))}
+            onSelect={() => runCommand(() => navigate("/login"))}
           >
             <LogOut className="mr-2 h-4 w-4" />
             <span>Logout</span>

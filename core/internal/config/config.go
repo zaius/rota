@@ -28,6 +28,12 @@ type Config struct {
 	// the API down; doing so also enables credentialed CORS requests.
 	CORSAllowedOrigins []string
 
+	// WebDir, if set (WEB_DIR), is a directory of built dashboard assets that the
+	// API server serves at "/" with SPA fallback — so the Go binary serves both
+	// the UI and the API on one port, with no separate Node/Next runtime. Empty
+	// in dev, where the dashboard runs under the Vite dev server.
+	WebDir string
+
 	// Auth brute-force protection
 	// Per-IP: after AuthIPMaxAttempts failures within AuthIPWindowMinutes,
 	// that IP is blocked for AuthIPBlockMinutes.
@@ -77,6 +83,7 @@ func Load() (*Config, error) {
 		JWTSecret: getEnv("JWT_SECRET", ""),
 
 		CORSAllowedOrigins: getEnvAsSlice("CORS_ALLOWED_ORIGINS", []string{"*"}),
+		WebDir:             getEnv("WEB_DIR", ""),
 
 		AuthIPMaxAttempts:      getEnvAsInt("AUTH_IP_MAX_ATTEMPTS", 10),
 		AuthIPWindowMinutes:    getEnvAsInt("AUTH_IP_WINDOW_MINUTES", 10),

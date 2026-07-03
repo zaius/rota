@@ -32,7 +32,10 @@ import {
   CreatePoolAlertRuleRequest,
 } from "./types"
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001"
+// Empty base = same origin: in production the Go server serves both the SPA and
+// the API, and in dev the Vite proxy (see vite.config.ts) forwards /api and /ws
+// to the core. Set VITE_API_URL only to point at a different API host.
+const API_BASE_URL = import.meta.env.VITE_API_URL || ""
 
 class ApiClient {
   private baseUrl: string
@@ -515,7 +518,7 @@ class ApiClient {
 
   // WebSocket connections
   createDashboardWebSocket(onMessage: (data: DashboardStats) => void): WebSocket {
-    const wsUrl = this.baseUrl.replace(/^http/, "ws")
+    const wsUrl = (this.baseUrl || window.location.origin).replace(/^http/, "ws")
     const ws = new WebSocket(`${wsUrl}/ws/dashboard${this.token ? `?token=${this.token}` : ""}`)
 
     ws.onmessage = (event) => {
@@ -533,7 +536,7 @@ class ApiClient {
     levels?: string[],
     source?: string
   ): WebSocket {
-    const wsUrl = this.baseUrl.replace(/^http/, "ws")
+    const wsUrl = (this.baseUrl || window.location.origin).replace(/^http/, "ws")
     const ws = new WebSocket(`${wsUrl}/ws/logs${this.token ? `?token=${this.token}` : ""}`)
 
     ws.onopen = () => {

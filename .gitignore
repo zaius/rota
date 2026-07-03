@@ -57,3 +57,5 @@ old_codes/
 
 # Local data volumes (TimescaleDB, etc.)
 data/
+# Playwright MCP test artifacts
+.playwright-mcp/

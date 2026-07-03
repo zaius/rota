@@ -59,16 +59,16 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
           labels: |
-            org.opencontainers.image.title=Rota Core
-            org.opencontainers.image.description=Rota proxy rotation service
+            org.opencontainers.image.title=Rota
+            org.opencontainers.image.description=Rota proxy rotation service (proxy + API + dashboard in one image)
             org.opencontainers.image.vendor=${{ github.repository_owner }}
 
       - name: Build and push Docker image
         id: push
         uses: docker/build-push-action@v6
         with:
-          context: ./core
-          file: ./core/Dockerfile
+          context: .
+          file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

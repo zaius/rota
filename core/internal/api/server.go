@@ -46,6 +46,7 @@ type Server struct {
 	port        int
 	jwtSecret   string
 	corsOrigins []string
+	webDir      string
 	authRL      *authRateLimiter
 
 	// Proxy server reference for reloading
@@ -119,6 +120,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		port:                cfg.APIPort,
 		jwtSecret:           jwtSecret,
 		corsOrigins:         cfg.CORSAllowedOrigins,
+		webDir:              cfg.WebDir,
 		authRL:              authRL,
 		authHandler:         authHandler,
 		healthHandler:       healthHandler,
@@ -307,6 +309,13 @@ func (s *Server) setupRoutes() {
 	// WebSocket routes — protected via token query param
 	s.router.With(JWTMiddleware(s.jwtSecret)).Get("/ws/dashboard", s.websocketHandler.DashboardWebSocket)
 	s.router.With(JWTMiddleware(s.jwtSecret)).Get("/ws/logs", s.websocketHandler.LogsWebSocket)
+
+	// Serve the built dashboard (SPA) from the same origin as the API when a web
+	// directory is configured — one binary, one port, no separate Node runtime.
+	if s.webDir != "" {
+		s.router.NotFound(spaHandler(s.webDir))
+		s.logger.Info("serving dashboard SPA", "dir", s.webDir)
+	}
 }
 
 // Start starts the API server
