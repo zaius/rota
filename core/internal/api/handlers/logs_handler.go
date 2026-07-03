@@ -28,6 +28,7 @@ func NewLogsHandler(logRepo *repository.LogRepository, log *logger.Logger) *Logs
 }
 
 // List handles log listing with pagination and filters
+//
 //	@Summary		List logs
 //	@Description	Get paginated list of system logs with optional filters
 //	@Tags			logs
@@ -74,7 +75,7 @@ func (h *LogsHandler) List(w http.ResponseWriter, r *http.Request) {
 	logs, total, err := h.logRepo.List(r.Context(), page, limit, level, search, source, startTime, endTime)
 	if err != nil {
 		h.logger.Error("failed to list logs", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to list logs")
+		writeError(w, http.StatusInternalServerError, "Failed to list logs")
 		return
 	}
 
@@ -91,10 +92,11 @@ func (h *LogsHandler) List(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	h.jsonResponse(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // Export handles log export
+//
 //	@Summary		Export logs
 //	@Description	Export system logs in various formats (txt, json)
 //	@Tags			logs
@@ -134,7 +136,7 @@ func (h *LogsHandler) Export(w http.ResponseWriter, r *http.Request) {
 	logs, _, err := h.logRepo.List(r.Context(), 1, 100000, level, "", source, startTime, endTime)
 	if err != nil {
 		h.logger.Error("failed to get logs for export", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to export logs")
+		writeError(w, http.StatusInternalServerError, "Failed to export logs")
 		return
 	}
 
@@ -144,7 +146,7 @@ func (h *LogsHandler) Export(w http.ResponseWriter, r *http.Request) {
 	case "json":
 		h.exportJSON(w, logs)
 	default:
-		h.errorResponse(w, http.StatusBadRequest, "Invalid format")
+		writeError(w, http.StatusBadRequest, "Invalid format")
 	}
 }
 
@@ -168,19 +170,4 @@ func (h *LogsHandler) exportJSON(w http.ResponseWriter, logs []models.Log) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
 	json.NewEncoder(w).Encode(logs)
-}
-
-// jsonResponse sends a JSON response
-func (h *LogsHandler) jsonResponse(w http.ResponseWriter, statusCode int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-// errorResponse sends an error JSON response
-func (h *LogsHandler) errorResponse(w http.ResponseWriter, statusCode int, message string) {
-	response := models.ErrorResponse{
-		Error: message,
-	}
-	h.jsonResponse(w, statusCode, response)
 }

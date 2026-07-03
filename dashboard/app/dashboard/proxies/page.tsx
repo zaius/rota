@@ -1,4 +1,3 @@
-"use client"
 
 import * as React from "react"
 import {
@@ -13,6 +12,7 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table"
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query"
 import {
   ArrowUpDown,
   ChevronDown,
@@ -74,11 +74,9 @@ import {
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api } from "@/lib/api"
-import { Proxy, AddProxyRequest, ProxyFilter, Job, SourceFormat } from "@/lib/types"
+import { Proxy, AddProxyRequest, ProxyFilter, Job, SourceFormat, PROTOCOLS } from "@/lib/types"
 import { Progress } from "@/components/ui/progress"
 import { toast } from "@/lib/toast"
-
-const PROXY_PROTOCOLS = ["http", "https", "socks4", "socks4a", "socks5"] as const
 
 // Line formats an import file can use. Mirrors the backend source formats in
 // core/internal/models/source.go so both parsers stay consistent.
@@ -115,7 +113,7 @@ function parseProxyLine(raw: string, format: SourceFormat = "auto"): AddProxyReq
   const schemeIdx = line.indexOf("://")
   if (schemeIdx !== -1) {
     const scheme = line.slice(0, schemeIdx).toLowerCase()
-    if ((PROXY_PROTOCOLS as readonly string[]).includes(scheme)) {
+    if ((PROTOCOLS as string[]).includes(scheme)) {
       protocol = scheme as AddProxyRequest["protocol"]
     }
     line = line.slice(schemeIdx + 3)
@@ -213,8 +211,6 @@ function parseAddressAtAuth(
 }
 
 export default function ProxiesPage() {
-  const [data, setData] = React.useState<Proxy[]>([])
-  const [isLoading, setIsLoading] = React.useState(true)
   const [isAddDialogOpen, setIsAddDialogOpen] = React.useState(false)
   const [isEditDialogOpen, setIsEditDialogOpen] = React.useState(false)
   const [isImportDialogOpen, setIsImportDialogOpen] = React.useState(false)
@@ -268,15 +264,17 @@ export default function ProxiesPage() {
     return () => clearTimeout(timer)
   }, [searchQuery])
 
-  const fetchProxies = React.useCallback(async () => {
-    try {
-      setIsLoading(true)
-
-      // Build sort parameters from sorting state
+  // Server-side paginated/filtered/sorted list. The query key carries every
+  // parameter, so changing a filter/page/sort refetches automatically — no
+  // hand-rolled fetch callback or effect. keepPreviousData avoids a flash of
+  // empty table while the next page loads.
+  const queryClient = useQueryClient()
+  const proxiesQuery = useQuery({
+    queryKey: ["proxies", pagination.page, pagination.limit, debouncedSearchQuery, statusFilter, protocolFilter, sorting],
+    queryFn: () => {
       const sortField = sorting.length > 0 ? sorting[0].id : undefined
       const sortOrder = sorting.length > 0 ? (sorting[0].desc ? "desc" : "asc") : undefined
-
-      const response = await api.getProxies({
+      return api.getProxies({
         page: pagination.page,
         limit: pagination.limit,
         search: debouncedSearchQuery || undefined,
@@ -285,26 +283,27 @@ export default function ProxiesPage() {
         sort: sortField,
         order: sortOrder as "asc" | "desc" | undefined,
       })
-      setData(response.proxies)
-      setPagination(response.pagination)
-    } catch (error) {
-      console.error("Failed to fetch proxies:", error)
-    } finally {
-      setIsLoading(false)
+    },
+    placeholderData: keepPreviousData,
+  })
+  const data = proxiesQuery.data?.proxies ?? []
+  const isLoading = proxiesQuery.isLoading
+
+  // refetchProxies is stable (it doesn't close over the filters), so the
+  // bulk-test poller can call it on completion without being torn down when
+  // filters change — this replaces the old fetchProxiesRef workaround.
+  const refetchProxies = React.useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["proxies"] }),
+    [queryClient],
+  )
+
+  // Mirror the server-reported totals into the pagination state used by the UI.
+  React.useEffect(() => {
+    const d = proxiesQuery.data
+    if (d) {
+      setPagination(prev => ({ ...prev, total: d.pagination.total, total_pages: d.pagination.total_pages }))
     }
-  }, [pagination.page, pagination.limit, debouncedSearchQuery, statusFilter, protocolFilter, sorting])
-
-  React.useEffect(() => {
-    fetchProxies()
-  }, [fetchProxies])
-
-  // Keep a ref to the latest fetchProxies so the bulk-test poller can refresh
-  // the list on completion without being torn down/recreated when filters
-  // change (which would orphan the running interval).
-  const fetchProxiesRef = React.useRef(fetchProxies)
-  React.useEffect(() => {
-    fetchProxiesRef.current = fetchProxies
-  }, [fetchProxies])
+  }, [proxiesQuery.data])
 
   const handleAddProxy = async () => {
     try {
@@ -312,7 +311,7 @@ export default function ProxiesPage() {
       setIsAddDialogOpen(false)
       setNewProxy({ address: "", protocol: "http", username: "", password: "" })
       toast.success("Proxy added successfully")
-      fetchProxies()
+      refetchProxies()
     } catch (error) {
       console.error("Failed to add proxy:", error)
       toast.error("Failed to add proxy", error instanceof Error ? error.message : "Unknown error")
@@ -331,7 +330,7 @@ export default function ProxiesPage() {
       setIsEditDialogOpen(false)
       setEditingProxy(null)
       toast.success("Proxy updated successfully")
-      fetchProxies()
+      refetchProxies()
     } catch (error) {
       console.error("Failed to update proxy:", error)
       toast.error("Failed to update proxy", error instanceof Error ? error.message : "Unknown error")
@@ -348,7 +347,7 @@ export default function ProxiesPage() {
     try {
       await api.deleteProxy(deleteConfirm.proxyId)
       toast.success("Proxy deleted successfully")
-      fetchProxies()
+      refetchProxies()
     } catch (error) {
       console.error("Failed to delete proxy:", error)
       toast.error("Failed to delete proxy", error instanceof Error ? error.message : "Unknown error")
@@ -372,7 +371,7 @@ export default function ProxiesPage() {
           `${result.address} - ${result.error || "Unknown error"}`
         )
       }
-      fetchProxies()
+      refetchProxies()
     } catch (error) {
       console.error("Failed to test proxy:", error)
       toast.error("Failed to test proxy", error instanceof Error ? error.message : "Unknown error")
@@ -383,7 +382,7 @@ export default function ProxiesPage() {
     try {
       const res = await api.invalidateProxy(id, { reason: "manually invalidated" })
       toast.success("Proxy invalidated", `${res.address} pulled out of rotation`)
-      fetchProxies()
+      refetchProxies()
     } catch (error) {
       console.error("Failed to invalidate proxy:", error)
       toast.error("Failed to invalidate proxy", error instanceof Error ? error.message : "Unknown error")
@@ -394,7 +393,7 @@ export default function ProxiesPage() {
     try {
       await api.reactivateProxy(id)
       toast.success("Proxy reactivated", "Returned to rotation")
-      fetchProxies()
+      refetchProxies()
     } catch (error) {
       console.error("Failed to reactivate proxy:", error)
       toast.error("Failed to reactivate proxy", error instanceof Error ? error.message : "Unknown error")
@@ -416,7 +415,7 @@ export default function ProxiesPage() {
       setRowSelection({})
       setSelectAllMatching(false)
       toast.success(`${res.deleted} proxies deleted successfully`)
-      fetchProxies()
+      refetchProxies()
     } catch (error) {
       console.error("Failed to delete proxies:", error)
       toast.error("Failed to delete proxies", error instanceof Error ? error.message : "Unknown error")
@@ -449,7 +448,7 @@ export default function ProxiesPage() {
           } else {
             toast.error("Bulk test failed", job.error || "Unknown error")
           }
-          fetchProxiesRef.current()
+          refetchProxies()
         }
       } catch {
         stopBulkTestPoll()
@@ -457,7 +456,7 @@ export default function ProxiesPage() {
         toast.error("Lost track of bulk test", "The test may still be running on the server")
       }
     }, 1500)
-  }, [stopBulkTestPoll])
+  }, [stopBulkTestPoll, refetchProxies])
 
   // On load, re-attach to any in-flight bulk-test job so a page reload doesn't
   // orphan the progress UI (the server job keeps running regardless).
@@ -504,7 +503,7 @@ export default function ProxiesPage() {
       const res = await api.deleteAllProxies()
       setRowSelection({})
       toast.success(`${res.deleted} proxies deleted`)
-      fetchProxies()
+      refetchProxies()
     } catch (error) {
       toast.error("Failed to delete all proxies")
     } finally {
@@ -638,7 +637,7 @@ export default function ProxiesPage() {
     setIsImporting(false)
     // Refresh the proxy list
     setTimeout(() => {
-      fetchProxies()
+      refetchProxies()
     }, 1000)
   }
 

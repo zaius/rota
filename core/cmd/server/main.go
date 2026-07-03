@@ -74,12 +74,21 @@ func run() error {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
-	// Create repositories
+	// Create repositories once — this is the single place they are constructed.
 	proxyRepo := repository.NewProxyRepository(db)
 	settingsRepo := repository.NewSettingsRepository(db)
 	logRepo := repository.NewLogRepository(db)
 	poolRepo := repository.NewPoolRepository(db)
 	userRepo := repository.NewUserRepository(db)
+	dashboardRepo := repository.NewDashboardRepository(db)
+	sourceRepo := repository.NewSourceRepository(db)
+	adminRepo := repository.NewAdminRepository(db)
+
+	// Seed any missing default settings from the single Go-defined source of
+	// truth (migrations no longer seed settings). No-op for keys already set.
+	if err := settingsRepo.SeedDefaults(ctx); err != nil {
+		return fmt.Errorf("failed to seed default settings: %w", err)
+	}
 
 	// Add database logging hook for proxy logs
 	log.AddHook(func(level, message string, attrs map[string]any) {
@@ -129,22 +138,41 @@ func run() error {
 		}
 	})
 
-	// Create and start log cleanup service
-	logCleanupService := services.NewLogCleanupService(db, settingsRepo, log)
-	if err := logCleanupService.Start(ctx); err != nil {
-		log.Warn("failed to start log cleanup service", "error", err)
-	}
-	defer logCleanupService.Stop()
+	// Build background services once and hand their lifecycle to a single
+	// manager, so they start and stop with the process instead of leaking on a
+	// never-cancelled context.Background().
+	geoSvc := services.NewGeoIPService(log)
+	sourceSvc := services.NewSourceService(sourceRepo, proxyRepo, poolRepo, geoSvc, log)
+	poolSvc := services.NewPoolService(poolRepo, proxyRepo, log)
+	alertWatcher := services.NewAlertWatcher(poolRepo, log)
+	cleanupSvc := services.NewProxyCleanupService(proxyRepo, settingsRepo, log)
+	logCleanupSvc := services.NewLogCleanupService(db, settingsRepo, log)
+
+	svcManager := services.NewManager(log, sourceSvc, poolSvc, alertWatcher, cleanupSvc, logCleanupSvc)
 
 	// Create servers
 	proxyServer, err := proxy.New(cfg.ProxyPort, log, db, proxyRepo, poolRepo, userRepo, settingsRepo)
 	if err != nil {
 		return fmt.Errorf("failed to create proxy server: %w", err)
 	}
-	apiServer := api.New(cfg, log, db)
+	apiServer := api.New(cfg, log, db, api.Deps{
+		ProxyRepo:     proxyRepo,
+		LogRepo:       logRepo,
+		SettingsRepo:  settingsRepo,
+		DashboardRepo: dashboardRepo,
+		SourceRepo:    sourceRepo,
+		PoolRepo:      poolRepo,
+		UserRepo:      userRepo,
+		AdminRepo:     adminRepo,
+		SourceSvc:     sourceSvc,
+		PoolSvc:       poolSvc,
+	})
 
 	// Set proxy server reference in API server for reload functionality
 	apiServer.SetProxyServer(proxyServer)
+
+	// Start background services (cancelled during graceful shutdown below).
+	svcManager.Start(ctx)
 
 	// Start servers in goroutines
 	errChan := make(chan error, 2)
@@ -180,6 +208,12 @@ func run() error {
 	defer cancel()
 
 	log.Info("shutting down servers...")
+
+	// Stop background services first so they don't act mid-shutdown, then close
+	// the HTTP servers.
+	if err := svcManager.Stop(ctx); err != nil {
+		log.Warn("background services did not stop cleanly", "error", err)
+	}
 
 	// Shutdown both servers
 	var shutdownWg sync.WaitGroup

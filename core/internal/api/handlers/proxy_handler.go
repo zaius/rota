@@ -50,6 +50,7 @@ func NewProxyHandler(proxyRepo *repository.ProxyRepository, healthChecker Health
 }
 
 // List handles proxy listing with pagination and filters
+//
 //	@Summary		List proxies
 //	@Description	Get paginated list of proxies with optional filters
 //	@Tags			proxies
@@ -86,7 +87,7 @@ func (h *ProxyHandler) List(w http.ResponseWriter, r *http.Request) {
 	proxies, total, err := h.proxyRepo.List(r.Context(), page, limit, search, status, protocol, sortField, sortOrder)
 	if err != nil {
 		h.logger.Error("failed to list proxies", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to list proxies")
+		writeError(w, http.StatusInternalServerError, "Failed to list proxies")
 		return
 	}
 
@@ -103,10 +104,11 @@ func (h *ProxyHandler) List(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	h.jsonResponse(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // Create handles proxy creation
+//
 //	@Summary		Create proxy
 //	@Description	Create a new proxy server
 //	@Tags			proxies
@@ -120,13 +122,17 @@ func (h *ProxyHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *ProxyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Validate request
 	if req.Address == "" {
-		h.errorResponse(w, http.StatusBadRequest, "Address is required")
+		writeError(w, http.StatusBadRequest, "Address is required")
 		return
 	}
 
@@ -137,14 +143,15 @@ func (h *ProxyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	proxy, err := h.proxyRepo.Create(r.Context(), req)
 	if err != nil {
 		h.logger.Error("failed to create proxy", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to create proxy")
+		writeError(w, http.StatusInternalServerError, "Failed to create proxy")
 		return
 	}
 
-	h.jsonResponse(w, http.StatusCreated, proxy)
+	writeJSON(w, http.StatusCreated, proxy)
 }
 
 // BulkCreate handles bulk proxy creation
+//
 //	@Summary		Bulk create proxies
 //	@Description	Create multiple proxy servers at once
 //	@Tags			proxies
@@ -157,12 +164,16 @@ func (h *ProxyHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *ProxyHandler) BulkCreate(w http.ResponseWriter, r *http.Request) {
 	var req models.BulkCreateProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	if len(req.Proxies) == 0 {
-		h.errorResponse(w, http.StatusBadRequest, "At least one proxy is required")
+		writeError(w, http.StatusBadRequest, "At least one proxy is required")
 		return
 	}
 
@@ -195,10 +206,11 @@ func (h *ProxyHandler) BulkCreate(w http.ResponseWriter, r *http.Request) {
 		"results": results,
 	}
 
-	h.jsonResponse(w, http.StatusCreated, response)
+	writeJSON(w, http.StatusCreated, response)
 }
 
 // Update handles proxy update
+//
 //	@Summary		Update proxy
 //	@Description	Update an existing proxy server
 //	@Tags			proxies
@@ -215,32 +227,37 @@ func (h *ProxyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid proxy ID")
+		writeError(w, http.StatusBadRequest, "Invalid proxy ID")
 		return
 	}
 
 	var req models.UpdateProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	proxy, err := h.proxyRepo.Update(r.Context(), id, req)
 	if err != nil {
 		h.logger.Error("failed to update proxy", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to update proxy")
+		writeError(w, http.StatusInternalServerError, "Failed to update proxy")
 		return
 	}
 
 	if proxy == nil {
-		h.errorResponse(w, http.StatusNotFound, "Proxy not found")
+		writeError(w, http.StatusNotFound, "Proxy not found")
 		return
 	}
 
-	h.jsonResponse(w, http.StatusOK, proxy)
+	writeJSON(w, http.StatusOK, proxy)
 }
 
 // Delete handles proxy deletion
+//
 //	@Summary		Delete proxy
 //	@Description	Delete a proxy server by ID
 //	@Tags			proxies
@@ -253,13 +270,13 @@ func (h *ProxyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid proxy ID")
+		writeError(w, http.StatusBadRequest, "Invalid proxy ID")
 		return
 	}
 
 	if err := h.proxyRepo.Delete(r.Context(), id); err != nil {
 		h.logger.Error("failed to delete proxy", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to delete proxy")
+		writeError(w, http.StatusInternalServerError, "Failed to delete proxy")
 		return
 	}
 
@@ -267,6 +284,7 @@ func (h *ProxyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 // BulkDelete handles bulk proxy deletion
+//
 //	@Summary		Bulk delete proxies
 //	@Description	Delete multiple proxy servers at once
 //	@Tags			proxies
@@ -280,12 +298,16 @@ func (h *ProxyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 func (h *ProxyHandler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 	var req models.BulkDeleteProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	if !req.All && len(req.IDs) == 0 {
-		h.errorResponse(w, http.StatusBadRequest, "At least one proxy ID is required")
+		writeError(w, http.StatusBadRequest, "At least one proxy ID is required")
 		return
 	}
 
@@ -311,7 +333,7 @@ func (h *ProxyHandler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		h.logger.Error("failed to bulk delete proxies", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to delete proxies")
+		writeError(w, http.StatusInternalServerError, "Failed to delete proxies")
 		return
 	}
 
@@ -320,10 +342,11 @@ func (h *ProxyHandler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 		"message": fmt.Sprintf("Successfully deleted %d proxies", deleted),
 	}
 
-	h.jsonResponse(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // Test handles proxy testing
+//
 //	@Summary		Test proxy
 //	@Description	Test a proxy server's connectivity and performance
 //	@Tags			proxies
@@ -338,7 +361,7 @@ func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid proxy ID")
+		writeError(w, http.StatusBadRequest, "Invalid proxy ID")
 		return
 	}
 
@@ -346,12 +369,12 @@ func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 	proxy, err := h.proxyRepo.GetByID(r.Context(), id)
 	if err != nil {
 		h.logger.Error("failed to get proxy", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to get proxy")
+		writeError(w, http.StatusInternalServerError, "Failed to get proxy")
 		return
 	}
 
 	if proxy == nil {
-		h.errorResponse(w, http.StatusNotFound, "Proxy not found")
+		writeError(w, http.StatusNotFound, "Proxy not found")
 		return
 	}
 
@@ -360,7 +383,7 @@ func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 	result, err := h.healthChecker.CheckProxy(r.Context(), proxy)
 	if err != nil {
 		h.logger.Error("failed to test proxy", "error", err, "proxy_id", id)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to test proxy")
+		writeError(w, http.StatusInternalServerError, "Failed to test proxy")
 		return
 	}
 
@@ -370,13 +393,14 @@ func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 		"response_time", result.ResponseTime,
 	)
 
-	h.jsonResponse(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, result)
 }
 
 // BulkTest starts an async job that tests multiple proxies and returns the job
 // ID immediately. The frontend polls GET /proxies/bulk-test/{job_id} for
 // progress. The target is either an explicit list of IDs or every proxy
 // matching a filter (all=true).
+//
 //	@Summary		Bulk test proxies
 //	@Description	Start an async job to test multiple proxies, either an explicit list of IDs or every proxy matching a filter (all=true). Poll /proxies/bulk-test/{job_id} for progress.
 //	@Tags			proxies
@@ -390,12 +414,16 @@ func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 	var req models.BulkTestProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := validateStruct(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	if !req.All && len(req.IDs) == 0 {
-		h.errorResponse(w, http.StatusBadRequest, "At least one proxy ID is required")
+		writeError(w, http.StatusBadRequest, "At least one proxy ID is required")
 		return
 	}
 
@@ -413,7 +441,7 @@ func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 		matched, err = h.proxyRepo.CountByFilter(r.Context(), filter)
 		if err != nil {
 			h.logger.Error("failed to count proxies for bulk test", "error", err)
-			h.errorResponse(w, http.StatusInternalServerError, "Failed to count proxies")
+			writeError(w, http.StatusInternalServerError, "Failed to count proxies")
 			return
 		}
 	} else {
@@ -504,7 +532,7 @@ func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 		)
 	}()
 
-	h.jsonResponse(w, http.StatusAccepted, map[string]interface{}{
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
 		"job_id": job.ID,
 		"total":  tested,
 		"status": job.Status,
@@ -512,6 +540,7 @@ func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 }
 
 // BulkTestStatus returns the current status of a bulk-test job.
+//
 //	@Summary		Bulk test status
 //	@Description	Get the status/progress of a bulk proxy-test job.
 //	@Tags			proxies
@@ -524,15 +553,16 @@ func (h *ProxyHandler) BulkTestStatus(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "job_id")
 	job, ok := services.GetJobStore().Get(jobID)
 	if !ok || job.Kind != services.JobKindBulkTest {
-		h.errorResponse(w, http.StatusNotFound, "Job not found")
+		writeError(w, http.StatusNotFound, "Job not found")
 		return
 	}
-	h.jsonResponse(w, http.StatusOK, job)
+	writeJSON(w, http.StatusOK, job)
 }
 
 // BulkTestLatest returns the most recent bulk-test job (or {"job": null} if
 // none is known). The UI calls this on load so an in-flight test started before
 // a page reload can be re-attached to and its progress resumed.
+//
 //	@Summary		Latest bulk test
 //	@Description	Get the most recent bulk proxy-test job, so the UI can resume tracking after a reload.
 //	@Tags			proxies
@@ -542,13 +572,14 @@ func (h *ProxyHandler) BulkTestStatus(w http.ResponseWriter, r *http.Request) {
 func (h *ProxyHandler) BulkTestLatest(w http.ResponseWriter, r *http.Request) {
 	job, ok := services.GetJobStore().LatestByKind(services.JobKindBulkTest)
 	if !ok {
-		h.jsonResponse(w, http.StatusOK, map[string]interface{}{"job": nil})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"job": nil})
 		return
 	}
-	h.jsonResponse(w, http.StatusOK, map[string]interface{}{"job": job})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"job": job})
 }
 
 // Export handles proxy export
+//
 //	@Summary		Export proxies
 //	@Description	Export proxy list in various formats (txt, json, csv)
 //	@Tags			proxies
@@ -577,7 +608,7 @@ func (h *ProxyHandler) Export(w http.ResponseWriter, r *http.Request) {
 	proxies, _, err := h.proxyRepo.List(r.Context(), 1, 10000, search, status, protocol, "created_at", "asc")
 	if err != nil {
 		h.logger.Error("failed to get proxies for export", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to export proxies")
+		writeError(w, http.StatusInternalServerError, "Failed to export proxies")
 		return
 	}
 
@@ -589,7 +620,7 @@ func (h *ProxyHandler) Export(w http.ResponseWriter, r *http.Request) {
 	case "csv":
 		h.exportCSV(w, proxies)
 	default:
-		h.errorResponse(w, http.StatusBadRequest, "Invalid format")
+		writeError(w, http.StatusBadRequest, "Invalid format")
 	}
 }
 
@@ -635,23 +666,8 @@ func (h *ProxyHandler) DeleteAll(w http.ResponseWriter, r *http.Request) {
 	deleted, err := h.proxyRepo.DeleteAll(dbCtx)
 	if err != nil {
 		h.logger.Error("failed to delete all proxies", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to delete all proxies")
+		writeError(w, http.StatusInternalServerError, "Failed to delete all proxies")
 		return
 	}
-	h.jsonResponse(w, http.StatusOK, map[string]interface{}{"deleted": deleted})
-}
-
-// jsonResponse sends a JSON response
-func (h *ProxyHandler) jsonResponse(w http.ResponseWriter, statusCode int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-// errorResponse sends an error JSON response
-func (h *ProxyHandler) errorResponse(w http.ResponseWriter, statusCode int, message string) {
-	response := models.ErrorResponse{
-		Error: message,
-	}
-	h.jsonResponse(w, statusCode, response)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": deleted})
 }

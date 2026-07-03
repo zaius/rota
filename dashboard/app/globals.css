@@ -3,6 +3,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Provided by next/font previously; now self-hosted via @fontsource/fira-code. */
+:root {
+  --font-fira-code: "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

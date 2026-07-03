@@ -73,7 +73,7 @@ type ProxyWithStats struct {
 // CreateProxyRequest represents a request to create a proxy
 type CreateProxyRequest struct {
 	Address  string   `json:"address" validate:"required"`
-	Protocol string   `json:"protocol" validate:"required,oneof=http https socks4 socks4a socks5"`
+	Protocol string   `json:"protocol" validate:"omitempty,oneof=http https socks4 socks4a socks5"`
 	Username *string  `json:"username,omitempty"`
 	Password *string  `json:"password,omitempty"`
 	Tags     []string `json:"tags,omitempty"`

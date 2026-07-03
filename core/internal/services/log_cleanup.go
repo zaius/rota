@@ -11,13 +11,15 @@ import (
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
+// defaultCleanupInterval is used when the configured cleanup interval is unset
+// or the settings cannot be read.
+const defaultCleanupInterval = time.Hour
+
 // LogCleanupService handles automatic log cleanup and retention
 type LogCleanupService struct {
 	db           *database.DB
 	settingsRepo *repository.SettingsRepository
 	logger       *logger.Logger
-	stopChan     chan struct{}
-	ticker       *time.Ticker
 }
 
 // NewLogCleanupService creates a new log cleanup service
@@ -30,67 +32,52 @@ func NewLogCleanupService(
 		db:           db,
 		settingsRepo: settingsRepo,
 		logger:       log,
-		stopChan:     make(chan struct{}),
 	}
 }
 
-// Start starts the log cleanup service
-func (s *LogCleanupService) Start(ctx context.Context) error {
-	s.logger.Info("starting log cleanup service")
+// Name identifies the service for the lifecycle manager.
+func (s *LogCleanupService) Name() string { return "log-cleanup" }
 
-	// Get initial settings
-	settings, err := s.settingsRepo.GetAll(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get settings: %w", err)
+// Run applies retention/compression policies on the configured interval until
+// ctx is cancelled. The interval is re-derived from settings each cycle, so
+// changing it (or enabling/disabling cleanup) via the API takes effect without
+// a restart — runCleanup itself is a no-op while retention is disabled.
+func (s *LogCleanupService) Run(ctx context.Context) {
+	interval := s.cleanupInterval(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Run once on startup.
+	if err := s.runCleanup(ctx); err != nil {
+		s.logger.Error("failed to run initial cleanup", "error", err)
 	}
 
-	if !settings.LogRetention.Enabled {
-		s.logger.Info("log cleanup is disabled")
-		return nil
-	}
-
-	// Set initial interval
-	interval := time.Duration(settings.LogRetention.CleanupIntervalHours) * time.Hour
-	s.ticker = time.NewTicker(interval)
-
-	// Run cleanup immediately on start
-	go func() {
-		if err := s.runCleanup(ctx); err != nil {
-			s.logger.Error("failed to run initial cleanup", "error", err)
-		}
-	}()
-
-	// Start background worker
-	go s.worker(ctx)
-
-	return nil
-}
-
-// Stop stops the log cleanup service
-func (s *LogCleanupService) Stop() {
-	s.logger.Info("stopping log cleanup service")
-	close(s.stopChan)
-	if s.ticker != nil {
-		s.ticker.Stop()
-	}
-}
-
-// worker runs the cleanup job periodically
-func (s *LogCleanupService) worker(ctx context.Context) {
 	for {
 		select {
-		case <-s.ticker.C:
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 			if err := s.runCleanup(ctx); err != nil {
 				s.logger.Error("cleanup job failed", "error", err)
 			}
-		case <-s.stopChan:
-			s.logger.Info("log cleanup worker stopped")
-			return
-		case <-ctx.Done():
-			s.logger.Info("log cleanup worker context cancelled")
-			return
+			// Pick up interval changes made via the API since the last cycle.
+			if next := s.cleanupInterval(ctx); next != interval {
+				interval = next
+				ticker.Reset(interval)
+				s.logger.Info("updated cleanup interval", "interval", interval)
+			}
 		}
 	}
+}
+
+// cleanupInterval reads the configured cleanup interval, falling back to a sane
+// default when settings are unavailable or unset.
+func (s *LogCleanupService) cleanupInterval(ctx context.Context) time.Duration {
+	settings, err := s.settingsRepo.GetAll(ctx)
+	if err != nil || settings.LogRetention.CleanupIntervalHours <= 0 {
+		return defaultCleanupInterval
+	}
+	return time.Duration(settings.LogRetention.CleanupIntervalHours) * time.Hour
 }
 
 // runCleanup performs the actual cleanup
@@ -120,16 +107,6 @@ func (s *LogCleanupService) runCleanup(ctx context.Context) error {
 		// Don't return error, continue with other tasks
 	}
 
-	// Update ticker if interval changed
-	newInterval := time.Duration(settings.LogRetention.CleanupIntervalHours) * time.Hour
-	if s.ticker != nil {
-		currentInterval := time.Duration(settings.LogRetention.CleanupIntervalHours) * time.Hour
-		if currentInterval != newInterval {
-			s.ticker.Reset(newInterval)
-			s.logger.Info("updated cleanup interval", "hours", settings.LogRetention.CleanupIntervalHours)
-		}
-	}
-
 	s.logger.Info("log cleanup completed",
 		"retention_days", settings.LogRetention.RetentionDays,
 		"compression_after_days", settings.LogRetention.CompressionAfterDays,
@@ -138,11 +115,22 @@ func (s *LogCleanupService) runCleanup(ctx context.Context) error {
 	return nil
 }
 
-// updateRetentionPolicy updates the TimescaleDB retention policy
+// updateRetentionPolicy updates the TimescaleDB retention policy.
+//
+// Retention policies are a TSL-licensed TimescaleDB feature, unavailable on
+// Apache-only builds (e.g. Azure Flexible Server). The SQL is guarded on the
+// license so it is a no-op there instead of erroring on every cleanup cycle —
+// matching the guard the migrations use when creating the policies.
 func (s *LogCleanupService) updateRetentionPolicy(ctx context.Context, config models.LogRetentionSettings) error {
 	query := `
-		SELECT remove_retention_policy('logs', if_exists => true);
-		SELECT add_retention_policy('logs', INTERVAL '%d days', if_not_exists => true);
+		DO $ts$
+		BEGIN
+			IF current_setting('timescaledb.license', true) = 'timescale' THEN
+				PERFORM remove_retention_policy('logs', if_exists => true);
+				PERFORM add_retention_policy('logs', INTERVAL '%d days', if_not_exists => true);
+			END IF;
+		END
+		$ts$;
 	`
 	sql := fmt.Sprintf(query, config.RetentionDays)
 
@@ -154,55 +142,26 @@ func (s *LogCleanupService) updateRetentionPolicy(ctx context.Context, config mo
 	return nil
 }
 
-// updateCompressionPolicy updates the TimescaleDB compression policy
+// updateCompressionPolicy updates the TimescaleDB compression policy. Like the
+// retention policy above it is TSL-licensed, so it is guarded on the license
+// and becomes a no-op on Apache-only builds.
 func (s *LogCleanupService) updateCompressionPolicy(ctx context.Context, config models.LogRetentionSettings) error {
-	// Remove existing compression policy
-	removeQuery := `SELECT remove_compression_policy('logs', if_exists => true);`
-	if _, err := s.db.Pool.Exec(ctx, removeQuery); err != nil {
-		return fmt.Errorf("failed to remove compression policy: %w", err)
-	}
+	query := `
+		DO $ts$
+		BEGIN
+			IF current_setting('timescaledb.license', true) = 'timescale' THEN
+				PERFORM remove_compression_policy('logs', if_exists => true);
+				PERFORM add_compression_policy('logs', INTERVAL '%d days', if_not_exists => true);
+			END IF;
+		END
+		$ts$;
+	`
+	sql := fmt.Sprintf(query, config.CompressionAfterDays)
 
-	// Add new compression policy
-	addQuery := fmt.Sprintf(`
-		SELECT add_compression_policy('logs', INTERVAL '%d days', if_not_exists => true);
-	`, config.CompressionAfterDays)
-
-	if _, err := s.db.Pool.Exec(ctx, addQuery); err != nil {
-		return fmt.Errorf("failed to add compression policy: %w", err)
+	if _, err := s.db.Pool.Exec(ctx, sql); err != nil {
+		return fmt.Errorf("failed to update compression policy: %w", err)
 	}
 
 	s.logger.Info("updated compression policy", "compression_after_days", config.CompressionAfterDays)
-	return nil
-}
-
-// UpdateSettings updates the cleanup service with new settings
-func (s *LogCleanupService) UpdateSettings(ctx context.Context) error {
-	settings, err := s.settingsRepo.GetAll(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get settings: %w", err)
-	}
-
-	if !settings.LogRetention.Enabled {
-		s.logger.Info("log cleanup disabled")
-		if s.ticker != nil {
-			s.ticker.Stop()
-		}
-		return nil
-	}
-
-	// Restart ticker with new interval
-	if s.ticker != nil {
-		s.ticker.Stop()
-	}
-	interval := time.Duration(settings.LogRetention.CleanupIntervalHours) * time.Hour
-	s.ticker = time.NewTicker(interval)
-
-	// Run cleanup immediately
-	go func() {
-		if err := s.runCleanup(ctx); err != nil {
-			s.logger.Error("failed to run cleanup after settings update", "error", err)
-		}
-	}()
-
 	return nil
 }

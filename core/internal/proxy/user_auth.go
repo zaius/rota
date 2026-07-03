@@ -51,8 +51,8 @@ func splitSessionUsername(raw string) (baseUser, token string) {
 // userEntry caches a resolved PoolChain and the verified password hash for a user.
 // This avoids bcrypt on every request — bcrypt only runs on first auth or after TTL expiry.
 type userEntry struct {
-	chain          *PoolChain
-	expiresAt      time.Time
+	chain     *PoolChain
+	expiresAt time.Time
 	// passwordHash is the bcrypt hash we verified against. If the user changes their
 	// password the hash changes, causing a cache miss on next TTL expiry.
 	verifiedPwHash string
@@ -63,20 +63,26 @@ type userEntry struct {
 // If user-based auth is not configured (no proxy_users) and the legacy single-user
 // auth is enabled, it falls through to the original AuthMiddleware behaviour.
 type UserAuthMiddleware struct {
-	userRepo    *repository.UserRepository
-	poolRepo    *repository.PoolRepository
-	db          *database.DB
-	logger      *logger.Logger
-	rotSettings *models.RotationSettings
-	sessionMgr  *SessionManager
-	domainCD    *DomainCooldownManager
+	userRepo   *repository.UserRepository
+	poolRepo   *repository.PoolRepository
+	db         *database.DB
+	logger     *logger.Logger
+	sessionMgr *SessionManager
+	domainCD   *DomainCooldownManager
+	tracker    *UsageTracker
 
-	// legacy fallback (original single-user auth)
+	// legacy is the original single-user auth gate. It no longer selects a
+	// separate engine: it only decides whether a no-proxy-user request is
+	// allowed, after which the request is served by the default pool chain.
 	legacy *AuthMiddleware
 
+	// mu guards both the user chain cache and defaultChain.
+	mu sync.RWMutex
 	// cache: username -> userEntry (TTL 60s)
-	mu    sync.RWMutex
 	cache map[string]userEntry
+	// defaultChain serves every request that does not map to a proxy user (the
+	// former legacy global-selector path). Rebuilt on settings reload.
+	defaultChain *PoolChain
 }
 
 // NewUserAuthMiddleware creates the middleware.
@@ -88,20 +94,24 @@ func NewUserAuthMiddleware(
 	rotSettings *models.RotationSettings,
 	sessionMgr *SessionManager,
 	domainCD *DomainCooldownManager,
+	tracker *UsageTracker,
 	log *logger.Logger,
 ) *UserAuthMiddleware {
 	m := &UserAuthMiddleware{
-		userRepo:    userRepo,
-		poolRepo:    poolRepo,
-		db:          db,
-		legacy:      legacy,
-		rotSettings: rotSettings,
-		sessionMgr:  sessionMgr,
-		domainCD:    domainCD,
-		logger:      log,
-		cache:       make(map[string]userEntry),
+		userRepo:   userRepo,
+		poolRepo:   poolRepo,
+		db:         db,
+		legacy:     legacy,
+		sessionMgr: sessionMgr,
+		domainCD:   domainCD,
+		tracker:    tracker,
+		logger:     log,
+		cache:      make(map[string]userEntry),
 	}
-	// background goroutine: refresh all cached chains every 30s
+	// Build the default pool chain (serves no-proxy-user traffic) and warm it.
+	m.defaultChain = NewDefaultPoolChain(db, rotSettings, sessionMgr, domainCD, tracker, log)
+	m.defaultChain.Refresh(context.Background())
+	// background goroutine: refresh the default chain + all cached user chains every 30s
 	go m.refreshLoop()
 	return m
 }
@@ -111,38 +121,51 @@ func NewUserAuthMiddleware(
 // it in the request context so the handler can use it.
 func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *http.Response) {
 	rawUsername, password, ok := parseProxyAuth(req)
-	if !ok {
-		// No credentials provided — check legacy auth
-		return m.legacy.HandleRequest(req)
-	}
-
-	// A session token may be embedded in the username ("user-session-<token>").
-	username, sessionToken := splitSessionUsername(rawUsername)
-
-	chain, err := m.resolve(req.Context(), username, password)
-	if err != nil {
-		m.logger.Warn("user auth failed", "username", username, "err", err)
-		// If legacy auth is enabled and credentials don't match a proxy_user,
-		// still try the legacy path (single admin user)
-		if m.legacy != nil {
-			if _, resp := m.legacy.HandleRequest(req); resp != nil {
-				return req, resp
-			}
-			// legacy auth passed with these same credentials → allow without pool chain
-			return req, nil
+	if ok {
+		// A session token may be embedded in the username ("user-session-<token>").
+		username, sessionToken := splitSessionUsername(rawUsername)
+		if chain, err := m.resolve(req.Context(), username, password); err == nil {
+			return m.withChain(req, chain, sessionToken), nil
+		} else {
+			m.logger.Warn("proxy-user auth failed; falling back to default pool", "username", username, "err", err)
 		}
-		return req, unauthorized()
 	}
 
-	// Attach chain (and session token, if any) to context and strip the
-	// Proxy-Authorization header.
-	newCtx := context.WithValue(req.Context(), UserChainContextKey, chain)
-	if sessionToken != "" {
-		newCtx = context.WithValue(newCtx, SessionTokenContextKey, sessionToken)
+	// No proxy user matched (or no credentials). Apply the legacy single-user
+	// auth gate; if it allows the request, serve it from the default pool chain.
+	if _, resp := m.legacy.HandleRequest(req); resp != nil {
+		return req, resp
 	}
-	req = req.WithContext(newCtx)
+	return m.withChain(req, m.getDefaultChain(), ""), nil
+}
+
+// withChain attaches a PoolChain (and optional session token) to the request
+// context and strips the Proxy-Authorization header before forwarding.
+func (m *UserAuthMiddleware) withChain(req *http.Request, chain *PoolChain, sessionToken string) *http.Request {
+	ctx := context.WithValue(req.Context(), UserChainContextKey, chain)
+	if sessionToken != "" {
+		ctx = context.WithValue(ctx, SessionTokenContextKey, sessionToken)
+	}
+	req = req.WithContext(ctx)
 	req.Header.Del("Proxy-Authorization")
-	return req, nil
+	return req
+}
+
+// getDefaultChain returns the current default pool chain under a read lock.
+func (m *UserAuthMiddleware) getDefaultChain() *PoolChain {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.defaultChain
+}
+
+// RebuildDefaultChain replaces the default pool chain after a settings change
+// (e.g. a new global rotation method or filters) and warms it.
+func (m *UserAuthMiddleware) RebuildDefaultChain(ctx context.Context, settings *models.RotationSettings) {
+	chain := NewDefaultPoolChain(m.db, settings, m.sessionMgr, m.domainCD, m.tracker, m.logger)
+	chain.Refresh(ctx)
+	m.mu.Lock()
+	m.defaultChain = chain
+	m.mu.Unlock()
 }
 
 // HandleConnect is the same but for HTTPS CONNECT.
@@ -225,7 +248,7 @@ func (m *UserAuthMiddleware) buildChain(ctx context.Context, user *models.ProxyU
 		maxRetry = 5
 	}
 
-	chain := NewPoolChain(m.db, pools, maxRetry, m.sessionMgr, m.domainCD, m.logger)
+	chain := NewPoolChain(m.db, pools, maxRetry, m.sessionMgr, m.domainCD, m.tracker, m.logger)
 	chain.Refresh(ctx)
 	return chain, nil
 }
@@ -241,8 +264,12 @@ func (m *UserAuthMiddleware) refreshLoop() {
 		for k, v := range m.cache {
 			entries[k] = v
 		}
+		def := m.defaultChain
 		m.mu.RUnlock()
 
+		if def != nil {
+			def.Refresh(ctx)
+		}
 		for _, entry := range entries {
 			entry.chain.Refresh(ctx)
 		}

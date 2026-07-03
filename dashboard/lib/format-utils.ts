@@ -29,12 +29,3 @@ export function getUsageColor(percentage: number): string {
   if (percentage >= 60) return "text-yellow-500"
   return "text-green-500"
 }
-
-/**
- * Get progress bar variant based on percentage threshold
- */
-export function getProgressVariant(percentage: number): "default" | "warning" | "destructive" {
-  if (percentage >= 90) return "destructive"
-  if (percentage >= 75) return "warning"
-  return "default"
-}

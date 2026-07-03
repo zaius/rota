@@ -94,16 +94,8 @@ var migrations = []Migration{
 				value JSONB NOT NULL,
 				updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 			);
-
-			-- Insert default settings
-			-- Note: authentication settings are for PROXY server (port 8000), not dashboard/API
-			INSERT INTO settings (key, value) VALUES
-			('authentication', '{"enabled": false, "username": "", "password": ""}'::jsonb),
-			('rotation', '{"method": "random", "time_based": {"interval": 120}, "remove_unhealthy": true, "fallback": true, "fallback_max_retries": 10, "follow_redirect": false, "timeout": 90, "retries": 3}'::jsonb),
-			('rate_limit', '{"enabled": false, "interval": 1, "max_requests": 100}'::jsonb),
-			('healthcheck', '{"timeout": 60, "workers": 20, "url": "https://api.ipify.org", "status": 200, "headers": ["User-Agent: Rota-HealthCheck/1.0"]}'::jsonb),
-			('log_retention', '{"enabled": true, "retention_days": 30, "compression_after_days": 7, "cleanup_interval_hours": 24}'::jsonb)
-			ON CONFLICT (key) DO NOTHING;
+			-- Default values are seeded by the app on startup (SettingsRepository.
+			-- SeedDefaults) from a single Go-defined source, not here.
 		`,
 		Down: `
 			DROP TABLE IF EXISTS settings;
@@ -200,14 +192,13 @@ var migrations = []Migration{
 	},
 	{
 		Version:     7,
-		Description: "Add log retention settings",
+		Description: "Add log retention settings (now seeded by the app)",
 		Up: `
-			INSERT INTO settings (key, value) VALUES
-			('log_retention', '{"enabled": true, "retention_days": 30, "compression_after_days": 7, "cleanup_interval_hours": 24}'::jsonb)
-			ON CONFLICT (key) DO NOTHING;
+			-- log_retention defaults are seeded by SettingsRepository.SeedDefaults.
+			SELECT 1;
 		`,
 		Down: `
-			DELETE FROM settings WHERE key = 'log_retention';
+			SELECT 1;
 		`,
 	},
 	{
@@ -463,11 +454,7 @@ var migrations = []Migration{
 		Version:     19,
 		Description: "Add proxy cleanup settings and rate limit to proxy_users",
 		Up: `
-			-- Dead proxy cleanup settings
-			INSERT INTO settings (key, value) VALUES
-			('proxy_cleanup', '{"enabled": false, "max_failed_days": 7, "min_success_rate": 0, "cleanup_interval_hours": 24}'::jsonb)
-			ON CONFLICT (key) DO NOTHING;
-
+			-- proxy_cleanup defaults are seeded by SettingsRepository.SeedDefaults.
 			-- Per-user rate limiting
 			ALTER TABLE proxy_users ADD COLUMN IF NOT EXISTS requests_per_minute INTEGER NOT NULL DEFAULT 0;
 		`,
@@ -595,27 +582,49 @@ var migrations = []Migration{
 	},
 }
 
-// Migrate runs all pending migrations
+// migrationLockKey is an arbitrary constant identifying Rota's migration
+// advisory lock, so two instances starting together serialize instead of both
+// trying to apply the same migration.
+const migrationLockKey int64 = 4927562011
+
+// Migrate runs all pending migrations. It is safe to call from multiple
+// instances concurrently: a session advisory lock serializes them, and pending
+// migrations are determined per-version (not by MAX(version)), so a migration
+// backfilled with a lower version number than one already applied is still run.
 func (db *DB) Migrate(ctx context.Context) error {
 	db.logger.Info("starting database migrations")
+
+	// Hold the advisory lock on a dedicated connection for the whole run.
+	conn, err := db.Pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection for migration lock: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return fmt.Errorf("failed to acquire migration advisory lock: %w", err)
+	}
+	defer func() {
+		// Use a fresh context so unlock still runs if ctx was cancelled.
+		if _, err := conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockKey); err != nil {
+			db.logger.Warn("failed to release migration advisory lock", "error", err)
+		}
+	}()
 
 	// Sort migrations by version
 	sort.Slice(migrations, func(i, j int) bool {
 		return migrations[i].Version < migrations[j].Version
 	})
 
-	// Get current version
-	currentVersion, err := db.getCurrentVersion(ctx)
+	applied, err := db.appliedVersions(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get current version: %w", err)
+		return fmt.Errorf("failed to load applied migrations: %w", err)
 	}
 
-	db.logger.Info("current database version", "version", currentVersion)
-
-	// Apply pending migrations
+	// Apply any migration whose version has not been recorded yet.
 	appliedCount := 0
 	for _, migration := range migrations {
-		if migration.Version <= currentVersion {
+		if applied[migration.Version] {
 			continue
 		}
 
@@ -638,6 +647,38 @@ func (db *DB) Migrate(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// appliedVersions returns the set of migration versions already recorded in
+// schema_migrations. If the table does not exist yet the set is empty.
+func (db *DB) appliedVersions(ctx context.Context) (map[int]bool, error) {
+	applied := make(map[int]bool)
+
+	var exists bool
+	if err := db.Pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'schema_migrations'
+		)`).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return applied, nil
+	}
+
+	rows, err := db.Pool.Query(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		applied[v] = true
+	}
+	return applied, rows.Err()
 }
 
 // getCurrentVersion returns the current migration version
@@ -741,18 +782,17 @@ func (db *DB) Rollback(ctx context.Context) error {
 
 // GetMigrationStatus returns the status of all migrations
 func (db *DB) GetMigrationStatus(ctx context.Context) ([]map[string]interface{}, error) {
-	currentVersion, err := db.getCurrentVersion(ctx)
+	applied, err := db.appliedVersions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get current version: %w", err)
+		return nil, fmt.Errorf("failed to load applied migrations: %w", err)
 	}
 
 	var status []map[string]interface{}
 	for _, migration := range migrations {
-		applied := migration.Version <= currentVersion
 		status = append(status, map[string]interface{}{
 			"version":     migration.Version,
 			"description": migration.Description,
-			"applied":     applied,
+			"applied":     applied[migration.Version],
 		})
 	}
 

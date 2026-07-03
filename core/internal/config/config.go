@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds all application configuration
@@ -14,6 +15,24 @@ type Config struct {
 	Database  DatabaseConfig
 	AdminUser string
 	AdminPass string
+
+	// JWTSecret signs dashboard session tokens. Leave empty to generate a
+	// random secret on each boot (fine for single-node dev, but logs everyone
+	// out on restart and cannot work behind more than one replica). Set a
+	// stable value (JWT_SECRET) in production / multi-replica deployments.
+	JWTSecret string
+
+	// CORSAllowedOrigins lists browser origins allowed to call the API.
+	// Defaults to ["*"] for zero-config local development. Set explicit
+	// origins (CORS_ALLOWED_ORIGINS, comma-separated) in production to lock
+	// the API down; doing so also enables credentialed CORS requests.
+	CORSAllowedOrigins []string
+
+	// WebDir, if set (WEB_DIR), is a directory of built dashboard assets that the
+	// API server serves at "/" with SPA fallback — so the Go binary serves both
+	// the UI and the API on one port, with no separate Node/Next runtime. Empty
+	// in dev, where the dashboard runs under the Vite dev server.
+	WebDir string
 
 	// Auth brute-force protection
 	// Per-IP: after AuthIPMaxAttempts failures within AuthIPWindowMinutes,
@@ -61,6 +80,10 @@ func Load() (*Config, error) {
 		},
 		AdminUser: getEnv("ROTA_ADMIN_USER", "admin"),
 		AdminPass: getEnv("ROTA_ADMIN_PASSWORD", "admin"),
+		JWTSecret: getEnv("JWT_SECRET", ""),
+
+		CORSAllowedOrigins: getEnvAsSlice("CORS_ALLOWED_ORIGINS", []string{"*"}),
+		WebDir:             getEnv("WEB_DIR", ""),
 
 		AuthIPMaxAttempts:      getEnvAsInt("AUTH_IP_MAX_ATTEMPTS", 10),
 		AuthIPWindowMinutes:    getEnvAsInt("AUTH_IP_WINDOW_MINUTES", 10),
@@ -117,4 +140,24 @@ func getEnvAsInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+// getEnvAsSlice retrieves a comma-separated environment variable as a string
+// slice (trimming whitespace and dropping empty entries) or returns a default.
+func getEnvAsSlice(key string, defaultValue []string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	if len(result) == 0 {
+		return defaultValue
+	}
+	return result
 }

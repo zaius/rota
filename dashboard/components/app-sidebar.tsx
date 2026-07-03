@@ -1,7 +1,6 @@
-"use client"
 
 import * as React from "react"
-import { usePathname, useRouter } from "next/navigation"
+import { Link, useLocation, useNavigate } from "react-router-dom"
 import {
   LayoutDashboard,
   Network,
@@ -39,7 +38,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
-import Image from "next/image"
 
 const navigation = [
   {
@@ -85,13 +83,13 @@ const navigation = [
 ]
 
 export function AppSidebar() {
-  const pathname = usePathname()
-  const router = useRouter()
+  const { pathname } = useLocation()
+  const navigate = useNavigate()
   const { theme, setTheme } = useTheme()
 
   const handleLogout = () => {
     api.clearToken()
-    router.push("/login")
+    navigate("/login")
   }
 
   return (
@@ -100,9 +98,9 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
-              <a href="/dashboard">
+              <Link to="/dashboard">
                 <div className="flex aspect-square size-8 items-center justify-center rounded-lg">
-                  <Image
+                  <img
                     src="/logo.png"
                     alt="Rota"
                     width={32}
@@ -116,7 +114,7 @@ export function AppSidebar() {
                     Proxy Rotator
                   </span>
                 </div>
-              </a>
+              </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
@@ -131,10 +129,10 @@ export function AppSidebar() {
                     asChild
                     isActive={pathname === item.url}
                   >
-                    <a href={item.url}>
+                    <Link to={item.url}>
                       <item.icon className="h-4 w-4" />
                       <span>{item.title}</span>
-                    </a>
+                    </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}

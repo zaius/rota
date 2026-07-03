@@ -1,13 +1,16 @@
-"use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useState } from "react"
 import {
   Plus, Trash2, Pencil, Loader2, UserCheck, UserX,
-  ShieldCheck, Link2, ChevronDown, ChevronUp, Copy, Eye, EyeOff,
+  ShieldCheck, Link2, Copy, Eye, EyeOff,
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
-import { ProxyUser, ProxyPool, CreateProxyUserRequest } from "@/lib/types"
+import { ProxyUser, CreateProxyUserRequest } from "@/lib/types"
+import { useResourceQuery } from "@/hooks/use-resource-query"
+import { StatCard } from "@/components/crud/stat-card"
+import { EmptyState } from "@/components/crud/empty-state"
+import { PageSpinner } from "@/components/crud/page-spinner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -38,33 +41,18 @@ const DEFAULT_FORM: CreateProxyUserRequest = {
 }
 
 export default function UsersPage() {
-  const [users, setUsers] = useState<ProxyUser[]>([])
-  const [pools, setPools] = useState<ProxyPool[]>([])
-  const [loading, setLoading] = useState(true)
+  const usersQuery = useResourceQuery(["proxy-users"], () => api.getProxyUsers().then(r => r.users))
+  const poolsQuery = useResourceQuery(["pools"], () => api.getPools().then(r => r.pools))
+  const users = usersQuery.data ?? []
+  const pools = poolsQuery.data ?? []
+  const loading = usersQuery.isLoading || poolsQuery.isLoading
+  const reload = usersQuery.invalidate
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editUser, setEditUser] = useState<ProxyUser | null>(null)
   const [form, setForm] = useState<CreateProxyUserRequest>(DEFAULT_FORM)
   const [saving, setSaving] = useState(false)
   const [showPass, setShowPass] = useState(false)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [usersRes, poolsRes] = await Promise.all([
-        api.getProxyUsers(),
-        api.getPools(),
-      ])
-      setUsers(usersRes.users)
-      setPools(poolsRes.pools)
-    } catch {
-      toast.error("Failed to load data")
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { load() }, [load])
 
   const poolName = (id?: number | null) => {
     if (!id) return "—"
@@ -114,7 +102,7 @@ export default function UsersPage() {
         toast.success("User created")
       }
       setDialogOpen(false)
-      load()
+      reload()
     } catch (e: any) {
       toast.error(e.message || "Failed to save user")
     } finally {
@@ -127,7 +115,7 @@ export default function UsersPage() {
     try {
       await api.deleteProxyUser(id)
       toast.success("User deleted")
-      load()
+      reload()
     } catch {
       toast.error("Failed to delete user")
     }
@@ -136,7 +124,7 @@ export default function UsersPage() {
   const toggleEnabled = async (u: ProxyUser) => {
     try {
       await api.updateProxyUser(u.id, { enabled: !u.enabled })
-      load()
+      reload()
     } catch { toast.error("Failed to toggle user") }
   }
 
@@ -157,11 +145,7 @@ export default function UsersPage() {
   }
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    )
+    return <PageSpinner />
   }
 
   return (
@@ -212,33 +196,19 @@ export default function UsersPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-muted-foreground">Total Users</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold">{users.length}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-muted-foreground">Enabled</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold text-green-500">{users.filter(u => u.enabled).length}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-muted-foreground">With Main Pool</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold">{users.filter(u => u.main_pool_id).length}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-muted-foreground">Pools Available</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold">{pools.length}</div></CardContent>
-        </Card>
+        <StatCard label="Total Users" value={users.length} />
+        <StatCard label="Enabled" value={users.filter(u => u.enabled).length} valueClassName="text-green-500" />
+        <StatCard label="With Main Pool" value={users.filter(u => u.main_pool_id).length} />
+        <StatCard label="Pools Available" value={pools.length} />
       </div>
 
       {/* Table */}
       {users.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-16 gap-3">
-            <UserX className="h-10 w-10 text-muted-foreground" />
-            <p className="text-muted-foreground">No proxy users yet.</p>
-            <Button onClick={openCreate}><Plus className="h-4 w-4 mr-2" />Add User</Button>
-          </CardContent>
-        </Card>
+        <EmptyState
+          icon={UserX}
+          message="No proxy users yet."
+          action={<Button onClick={openCreate}><Plus className="h-4 w-4 mr-2" />Add User</Button>}
+        />
       ) : (
         <Card>
           <CardContent className="p-0">

@@ -1,5 +1,3 @@
-"use client"
-
 import * as React from "react"
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar"
 import { AppSidebar } from "@/components/app-sidebar"
@@ -13,15 +11,11 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
-import { usePathname, useRouter } from "next/navigation"
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom"
 
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
-  const pathname = usePathname()
-  const router = useRouter()
+export default function DashboardLayout() {
+  const { pathname } = useLocation()
+  const navigate = useNavigate()
   const [isAuthenticated, setIsAuthenticated] = React.useState(false)
   const [isLoading, setIsLoading] = React.useState(true)
 
@@ -30,13 +24,13 @@ export default function DashboardLayout({
     const token = localStorage.getItem("auth_token")
 
     if (!token) {
-      router.push("/login")
+      navigate("/login")
     } else {
       setIsAuthenticated(true)
     }
 
     setIsLoading(false)
-  }, [router])
+  }, [navigate])
 
   // Show loading state while checking authentication
   if (isLoading) {
@@ -73,7 +67,9 @@ export default function DashboardLayout({
                   <React.Fragment key={segment}>
                     <BreadcrumbItem>
                       {!isLast ? (
-                        <BreadcrumbLink href={href}>{title}</BreadcrumbLink>
+                        <BreadcrumbLink asChild>
+                          <Link to={href}>{title}</Link>
+                        </BreadcrumbLink>
                       ) : (
                         <BreadcrumbPage>{title}</BreadcrumbPage>
                       )}
@@ -86,7 +82,7 @@ export default function DashboardLayout({
           </Breadcrumb>
         </header>
         <div className="flex flex-1 flex-col gap-4 p-4">
-          {children}
+          <Outlet />
         </div>
       </SidebarInset>
       <CommandPalette />

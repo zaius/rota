@@ -32,6 +32,7 @@ func NewAuthHandler(settingsRepo *repository.SettingsRepository, adminRepo *repo
 }
 
 // Login handles user login for dashboard/API access
+//
 //	@Summary		User login
 //	@Description	Authenticate user and receive JWT token
 //	@Tags			auth
@@ -45,14 +46,14 @@ func NewAuthHandler(settingsRepo *repository.SettingsRepository, adminRepo *repo
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req models.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Verify against DB (bcrypt)
 	if err := h.adminRepo.Authenticate(r.Context(), req.Username, req.Password); err != nil {
 		h.logger.Warn("failed login attempt", "username", req.Username)
-		h.errorResponse(w, http.StatusUnauthorized, "Invalid credentials")
+		writeError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
 
@@ -60,7 +61,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	token, err := h.generateToken(req.Username)
 	if err != nil {
 		h.logger.Error("failed to generate token", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Internal server error")
+		writeError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
@@ -72,7 +73,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logger.Info("successful login", "username", req.Username)
-	h.jsonResponse(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // ChangePassword handles password change for the currently logged-in admin
@@ -80,7 +81,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	// Extract username from JWT
 	username, err := h.usernameFromRequest(r)
 	if err != nil {
-		h.errorResponse(w, http.StatusUnauthorized, "Unauthorized")
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
@@ -90,12 +91,12 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		NewUsername     string `json:"new_username,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if req.CurrentPassword == "" || req.NewPassword == "" {
-		h.errorResponse(w, http.StatusBadRequest, "current_password and new_password are required")
+		writeError(w, http.StatusBadRequest, "current_password and new_password are required")
 		return
 	}
 
@@ -103,7 +104,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	newUsername := username
 	if req.NewUsername != "" && req.NewUsername != username {
 		if err := h.adminRepo.ChangeUsername(r.Context(), username, req.NewUsername, req.CurrentPassword); err != nil {
-			h.errorResponse(w, http.StatusBadRequest, err.Error())
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		newUsername = req.NewUsername
@@ -112,19 +113,19 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	// Change password
 	if err := h.adminRepo.ChangePassword(r.Context(), username, req.CurrentPassword, req.NewPassword); err != nil {
-		h.errorResponse(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Issue a new token with updated username
 	token, err := h.generateToken(newUsername)
 	if err != nil {
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to generate token")
+		writeError(w, http.StatusInternalServerError, "Failed to generate token")
 		return
 	}
 
 	h.logger.Info("admin password changed", "username", newUsername)
-	h.jsonResponse(w, http.StatusOK, map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"message":  "Password updated successfully",
 		"username": newUsername,
 		"token":    token,
@@ -135,10 +136,10 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) GetAdminInfo(w http.ResponseWriter, r *http.Request) {
 	username, err := h.adminRepo.GetUsername(r.Context())
 	if err != nil {
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to get admin info")
+		writeError(w, http.StatusInternalServerError, "Failed to get admin info")
 		return
 	}
-	h.jsonResponse(w, http.StatusOK, map[string]string{"username": username})
+	writeJSON(w, http.StatusOK, map[string]string{"username": username})
 }
 
 // usernameFromRequest extracts the username from the JWT Bearer token
@@ -172,19 +173,4 @@ func (h *AuthHandler) generateToken(username string) (string, error) {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(h.jwtSecret)
-}
-
-// jsonResponse sends a JSON response
-func (h *AuthHandler) jsonResponse(w http.ResponseWriter, statusCode int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-// errorResponse sends an error JSON response
-func (h *AuthHandler) errorResponse(w http.ResponseWriter, statusCode int, message string) {
-	response := models.ErrorResponse{
-		Error: message,
-	}
-	h.jsonResponse(w, statusCode, response)
 }

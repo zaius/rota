@@ -21,8 +21,6 @@ import {
   PoolProxy,
   GeoSummaryItem,
   GeoCityItem,
-  PoolHealthCheckResult,
-  HCJob,
   Job,
   JobStatus,
   CreatePoolRequest,
@@ -31,10 +29,12 @@ import {
   UpdateProxyUserRequest,
   PoolAlertRule,
   CreatePoolAlertRuleRequest,
-  SessionInfo,
 } from "./types"
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001"
+// Empty base = same origin: in production the Go server serves both the SPA and
+// the API, and in dev the Vite proxy (see vite.config.ts) forwards /api and /ws
+// to the core. Set VITE_API_URL only to point at a different API host.
+const API_BASE_URL = import.meta.env.VITE_API_URL || ""
 
 class ApiClient {
   private baseUrl: string
@@ -262,17 +262,6 @@ class ApiClient {
     })
   }
 
-  async listSessions(): Promise<{ sessions: SessionInfo[] }> {
-    return this.request("/api/v1/sessions")
-  }
-
-  async releaseSession(token: string, poolId?: number): Promise<{ status: string; count: number }> {
-    return this.request("/api/v1/sessions/release", {
-      method: "POST",
-      body: JSON.stringify({ token, pool_id: poolId }),
-    })
-  }
-
   async exportProxies(
     format: "txt" | "json" | "csv" = "txt",
     filter?: ProxyFilter
@@ -412,10 +401,6 @@ class ApiClient {
     return this.request("/api/v1/pools")
   }
 
-  async getPool(id: number): Promise<ProxyPool> {
-    return this.request(`/api/v1/pools/${id}`)
-  }
-
   async createPool(req: CreatePoolRequest): Promise<ProxyPool> {
     return this.request("/api/v1/pools", { method: "POST", body: JSON.stringify(req) })
   }
@@ -461,16 +446,8 @@ class ApiClient {
     })
   }
 
-  async getHealthCheckJob(poolId: number, jobId: string): Promise<HCJob> {
+  async getHealthCheckJob(poolId: number, jobId: string): Promise<Job> {
     return this.request(`/api/v1/pools/${poolId}/health-check/${jobId}`)
-  }
-
-  async getHealthCheckJobs(poolId: number): Promise<{ jobs: HCJob[] }> {
-    return this.request(`/api/v1/pools/${poolId}/health-check/jobs`)
-  }
-
-  async getGeoSummary(): Promise<{ geo: GeoSummaryItem[] }> {
-    return this.request("/api/v1/pools/geo-summary")
   }
 
   async getGeoByCountry(): Promise<{ geo: GeoSummaryItem[] }> {
@@ -486,10 +463,6 @@ class ApiClient {
     return this.request("/api/v1/proxy-users")
   }
 
-  async getProxyUser(id: number): Promise<ProxyUser> {
-    return this.request(`/api/v1/proxy-users/${id}`)
-  }
-
   async createProxyUser(req: CreateProxyUserRequest): Promise<ProxyUser> {
     return this.request("/api/v1/proxy-users", { method: "POST", body: JSON.stringify(req) })
   }
@@ -503,10 +476,19 @@ class ApiClient {
   }
 
   // ── Pool Export ──────────────────────────────────────────────────────────
-  getPoolExportUrl(poolId: number, format: "txt" | "csv" = "txt"): string {
-    const base = typeof window !== "undefined" ? window.location.origin : API_BASE_URL
-    const token = this.token
-    return `${base}/api/v1/pools/${poolId}/export?format=${format}${token ? `&token=${token}` : ""}`
+  async exportPool(poolId: number, format: "txt" | "csv" = "txt"): Promise<Blob> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/pools/${poolId}/export?format=${format}`,
+      {
+        headers: this.getHeaders(),
+      }
+    )
+
+    if (!response.ok) {
+      throw new Error("Export failed")
+    }
+
+    return response.blob()
   }
 
   // ── Alert Rules ──────────────────────────────────────────────────────────
@@ -533,21 +515,9 @@ class ApiClient {
     return this.request(`/api/v1/pools/${poolId}/alert-rules/${ruleId}`, { method: "DELETE" })
   }
 
-  // ── ISP / Tag lists ──────────────────────────────────────────────────────
-  async getISPList(q?: string): Promise<string[]> {
-    const qs = q ? `?q=${encodeURIComponent(q)}` : ""
-    const data = await this.request<{ isps: string[] }>(`/api/v1/pools/isp-list${qs}`)
-    return data.isps
-  }
-
-  async getTagList(): Promise<string[]> {
-    const data = await this.request<{ tags: string[] }>("/api/v1/pools/tag-list")
-    return data.tags
-  }
-
   // WebSocket connections
   createDashboardWebSocket(onMessage: (data: DashboardStats) => void): WebSocket {
-    const wsUrl = this.baseUrl.replace(/^http/, "ws")
+    const wsUrl = (this.baseUrl || window.location.origin).replace(/^http/, "ws")
     const ws = new WebSocket(`${wsUrl}/ws/dashboard${this.token ? `?token=${this.token}` : ""}`)
 
     ws.onmessage = (event) => {
@@ -565,7 +535,7 @@ class ApiClient {
     levels?: string[],
     source?: string
   ): WebSocket {
-    const wsUrl = this.baseUrl.replace(/^http/, "ws")
+    const wsUrl = (this.baseUrl || window.location.origin).replace(/^http/, "ws")
     const ws = new WebSocket(`${wsUrl}/ws/logs${this.token ? `?token=${this.token}` : ""}`)
 
     ws.onopen = () => {

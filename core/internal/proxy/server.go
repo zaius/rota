@@ -75,23 +75,22 @@ func writeHTTPResponse(w http.ResponseWriter, resp *http.Response) {
 
 // Server represents the proxy server
 type Server struct {
-	router          *proxyRouter
-	server          *http.Server
-	logger          *logger.Logger
-	port            int
-	selector        ProxySelector
-	tracker         *UsageTracker
-	handler         *UpstreamProxyHandler
-	authMiddleware  *AuthMiddleware
-	userAuthMw      *UserAuthMiddleware
-	rateLimitMw     *RateLimitMiddleware
-	proxyRepo       *repository.ProxyRepository
-	settingsRepo    *repository.SettingsRepository
-	sessionMgr      *SessionManager
-	domainCD        *DomainCooldownManager
-	refreshTicker   *time.Ticker
-	cleanupTicker   *time.Ticker
-	stopChan        chan struct{}
+	router         *proxyRouter
+	server         *http.Server
+	logger         *logger.Logger
+	port           int
+	tracker        *UsageTracker
+	handler        *UpstreamProxyHandler
+	authMiddleware *AuthMiddleware
+	userAuthMw     *UserAuthMiddleware
+	rateLimitMw    *RateLimitMiddleware
+	proxyRepo      *repository.ProxyRepository
+	settingsRepo   *repository.SettingsRepository
+	sessionMgr     *SessionManager
+	domainCD       *DomainCooldownManager
+	refreshTicker  *time.Ticker
+	cleanupTicker  *time.Ticker
+	stopChan       chan struct{}
 }
 
 // New creates a new proxy server instance
@@ -109,19 +108,6 @@ func New(
 	settings, err := settingsRepo.GetAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load settings: %w", err)
-	}
-
-	// Create proxy selector based on rotation settings
-	selector, err := NewProxySelector(proxyRepo, &settings.Rotation)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create proxy selector: %w", err)
-	}
-
-	// Initial refresh of proxy list
-	if err := selector.Refresh(ctx); err != nil {
-		log.Warn("no proxies available at startup - server will start but requests will fail until proxies are added", "error", err)
-	} else {
-		log.Info("proxy server initialized successfully")
 	}
 
 	// Create usage tracker
@@ -142,8 +128,8 @@ func New(
 		}
 	}
 
-	// Create upstream proxy handler
-	handler := NewUpstreamProxyHandler(selector, tracker, &settings.Rotation, domainCD, log)
+	// Create upstream proxy handler (forwards through the request's PoolChain)
+	handler := NewUpstreamProxyHandler(tracker, &settings.Rotation, log)
 
 	// Create middlewares
 	authMiddleware := NewAuthMiddleware(settings.Authentication)
@@ -153,7 +139,7 @@ func New(
 	sessionMgr := NewSessionManager()
 
 	// Create user-aware auth middleware (pool-based routing)
-	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, authMiddleware, &settings.Rotation, sessionMgr, domainCD, log)
+	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, authMiddleware, &settings.Rotation, sessionMgr, domainCD, tracker, log)
 
 	// Create the proxy router
 	router := &proxyRouter{
@@ -177,7 +163,6 @@ func New(
 		server:         httpServer,
 		logger:         log,
 		port:           port,
-		selector:       selector,
 		tracker:        tracker,
 		handler:        handler,
 		authMiddleware: authMiddleware,
@@ -205,13 +190,10 @@ func (s *Server) startBackgroundTasks() {
 			select {
 			case <-s.refreshTicker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				if err := s.selector.Refresh(ctx); err != nil {
-					s.logger.Error("failed to refresh proxy list", "error", err)
-				} else {
-					s.logger.Debug("proxy list refreshed")
-				}
-				// Re-sync domain cooldowns from the DB so the in-memory view
-				// tracks expirations and cooldowns set by other instances.
+				// Proxy lists are refreshed by UserAuthMiddleware (default + per-user
+				// chains). Here we only re-sync domain cooldowns from the DB so the
+				// in-memory view tracks expirations and cooldowns set by other
+				// instances.
 				if s.domainCD != nil {
 					if cooldowns, err := s.proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
 						s.logger.Error("failed to refresh domain cooldowns", "error", err)
@@ -312,6 +294,15 @@ func (s *Server) EvictProxy(proxyID int) {
 	}
 }
 
+// InvalidateUser drops a proxy user's cached auth entry so that changes to the
+// user (disable, password change, pool reassignment, deletion) take effect on
+// the next request instead of after the auth cache TTL.
+func (s *Server) InvalidateUser(username string) {
+	if s.userAuthMw != nil {
+		s.userAuthMw.InvalidateUser(username)
+	}
+}
+
 // SetDomainCooldown puts a proxy on a domain-scoped cooldown: it is skipped
 // for requests to domain (and its subdomains) until the given time, but stays
 // in rotation for every other target. Takes effect immediately.
@@ -359,21 +350,12 @@ func (s *Server) ReloadSettings(ctx context.Context) error {
 	s.authMiddleware.UpdateSettings(settings.Authentication)
 	s.rateLimitMw.UpdateSettings(settings.RateLimit)
 
-	// Update handler settings
-	s.handler.settings = &settings.Rotation
+	// Update handler settings (atomic publish; read concurrently on the hot path)
+	s.handler.setSettings(&settings.Rotation)
 
-	// Recreate selector if rotation method changed
-	newSelector, err := NewProxySelector(s.proxyRepo, &settings.Rotation)
-	if err != nil {
-		return fmt.Errorf("failed to create new selector: %w", err)
-	}
-
-	if err := newSelector.Refresh(ctx); err != nil {
-		return fmt.Errorf("failed to refresh new selector: %w", err)
-	}
-
-	s.selector = newSelector
-	s.handler.selector = newSelector
+	// Rebuild the default pool chain so global rotation-method/filter changes take
+	// effect. Per-user chains pick up rotation settings on their own refresh.
+	s.userAuthMw.RebuildDefaultChain(ctx, &settings.Rotation)
 
 	s.logger.Info("settings reloaded successfully")
 	return nil

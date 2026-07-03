@@ -129,8 +129,8 @@ type CreatePoolRequest struct {
 	GeoFilters         []GeoFilter `json:"geo_filters,omitempty"`  // multi-location
 	ISPFilters         []string    `json:"isp_filters,omitempty"`  // ISP name substrings
 	TagFilters         []string    `json:"tag_filters,omitempty"`  // proxy tags (AND logic)
-	RotationMethod     string      `json:"rotation_method" validate:"required,oneof=roundrobin random stick session"`
-	StickCount         int         `json:"stick_count"     validate:"min=1"`
+	RotationMethod     string      `json:"rotation_method" validate:"omitempty,oneof=roundrobin random stick session"`
+	StickCount         int         `json:"stick_count"     validate:"omitempty,min=1"`
 	SessionTTLMinutes  int         `json:"session_ttl_minutes" validate:"omitempty,min=1"`
 	HealthCheckURL     string      `json:"health_check_url"`
 	HealthCheckCron    string      `json:"health_check_cron"`

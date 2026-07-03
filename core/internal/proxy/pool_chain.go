@@ -19,18 +19,102 @@ import (
 // SendWithRetry / ConnectWithRetry methods used by the proxy handler.
 type PoolChain struct {
 	selectors []*PoolSelector
+	tracker   *UsageTracker
 	logger    *logger.Logger
 	maxRetry  int // total upstream attempts across all pools
 }
 
 // NewPoolChain builds a PoolChain from an ordered list of ProxyPool objects.
-func NewPoolChain(db *database.DB, pools []models.ProxyPool, maxRetry int, sessionMgr *SessionManager, domainCD *DomainCooldownManager, log *logger.Logger) *PoolChain {
+func NewPoolChain(db *database.DB, pools []models.ProxyPool, maxRetry int, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
 	selectors := make([]*PoolSelector, 0, len(pools))
 	for _, p := range pools {
 		selectors = append(selectors, NewPoolSelector(db, p, sessionMgr, domainCD))
 	}
 	return &PoolChain{
 		selectors: selectors,
+		tracker:   tracker,
+		logger:    log,
+		maxRetry:  maxRetry,
+	}
+}
+
+// recordFailure asynchronously records a failed upstream attempt. Without this
+// the pool path only ever persists successes, so proxy failure stats and the
+// consecutive-failure auto-disable threshold (see updateProxyStats) never
+// advance for pooled proxies — a dead proxy would be retried forever. This
+// mirrors the per-attempt recording the legacy path does in the handler.
+func (c *PoolChain) recordFailure(proxyID int, address, url, method string, attemptStart time.Time, cause error) {
+	if c.tracker == nil || proxyID <= 0 {
+		return
+	}
+	record := RequestRecord{
+		ProxyID:      proxyID,
+		ProxyAddress: address,
+		RequestedURL: url,
+		Method:       method,
+		Success:      false,
+		ResponseTime: int(time.Since(attemptStart).Milliseconds()),
+		Timestamp:    attemptStart,
+	}
+	if cause != nil {
+		record.ErrorMessage = cause.Error()
+	}
+	go func() {
+		recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := c.tracker.RecordRequest(recordCtx, record); err != nil {
+			c.logger.Error("failed to record pool-chain failure", "error", err)
+		}
+	}()
+}
+
+// defaultPoolMethod maps a global rotation method onto the selector methods the
+// default pool supports, preserving the legacy global selector's fallbacks:
+// session/stick have no global session context, so they degrade to round-robin,
+// and an unknown method defaults to random.
+func defaultPoolMethod(method string) string {
+	switch method {
+	case "random":
+		return "random"
+	case "roundrobin", "round-robin":
+		return "roundrobin"
+	case "least_conn", "least-conn", "least_connections":
+		return "least_conn"
+	case "time_based", "time-based":
+		return "time_based"
+	case "session", "stick", "sticky":
+		return "roundrobin"
+	default:
+		return "random"
+	}
+}
+
+// NewDefaultPoolChain builds the chain used for requests that do not map to a
+// proxy user: a single selector over every active proxy, honouring the global
+// rotation method and filters. It replaces the legacy global selector engine.
+func NewDefaultPoolChain(db *database.DB, settings *models.RotationSettings, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
+	sel := &PoolSelector{
+		db:               db,
+		poolID:           0,
+		method:           defaultPoolMethod(settings.Method),
+		timeInterval:     time.Duration(settings.TimeBased.Interval) * time.Second,
+		sessionMgr:       sessionMgr,
+		domainCD:         domainCD,
+		loadAll:          true,
+		allowedProtocols: settings.AllowedProtocols,
+		maxResponseTime:  settings.MaxResponseTime,
+		minSuccessRate:   settings.MinSuccessRate,
+	}
+	maxRetry := 5
+	if settings.FallbackMaxRetries > 0 {
+		maxRetry = settings.FallbackMaxRetries
+	}
+	if !settings.Fallback {
+		maxRetry = 1
+	}
+	return &PoolChain{
+		selectors: []*PoolSelector{sel},
+		tracker:   tracker,
 		logger:    log,
 		maxRetry:  maxRetry,
 	}
@@ -110,6 +194,7 @@ func (c *PoolChain) SendWithRetry(
 			return nil, 0, fmt.Errorf("no proxy available: %w", lastErr)
 		}
 		tried[selectedProxy.ID] = true
+		attemptStart := time.Now()
 
 		log.Info("pool chain: trying proxy",
 			"attempt", attempt+1,
@@ -118,9 +203,13 @@ func (c *PoolChain) SendWithRetry(
 			"proxy", selectedProxy.Address,
 		)
 
-		transport, err := CreateProxyTransport(selectedProxy)
+		// Use the shared per-proxy transport cache so keep-alive connections are
+		// reused across attempts instead of building a fresh connection pool each
+		// time (the legacy path already did this).
+		transport, err := GetOrCreateTransport(selectedProxy)
 		if err != nil {
 			lastErr = err
+			c.recordFailure(selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
 			c.markFailed(selIdx, selectedProxy.ID)
 			continue
 		}
@@ -149,6 +238,7 @@ func (c *PoolChain) SendWithRetry(
 
 		resp, err := client.Do(cloned)
 		if err != nil {
+			c.recordFailure(selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
 			lastErr = fmt.Errorf("proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)
 			log.Warn("pool chain: proxy failed", "proxy", selectedProxy.Address, "err", err)
 			c.markFailed(selIdx, selectedProxy.ID)
@@ -185,6 +275,7 @@ func (c *PoolChain) ConnectWithRetry(
 			return nil, 0, fmt.Errorf("no proxy available: %w", lastErr)
 		}
 		tried[selectedProxy.ID] = true
+		attemptStart := time.Now()
 
 		log.Info("pool chain CONNECT: trying proxy",
 			"attempt", attempt+1,
@@ -192,9 +283,9 @@ func (c *PoolChain) ConnectWithRetry(
 			"host", host,
 		)
 
-		// Reuse the existing connectViaProxy logic via a temporary handler
 		conn, err := connectViaProxyStandalone(selectedProxy, host, rotationSettings)
 		if err != nil {
+			c.recordFailure(selectedProxy.ID, selectedProxy.Address, "CONNECT://"+host, "CONNECT", attemptStart, err)
 			lastErr = fmt.Errorf("CONNECT proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)
 			log.Warn("pool chain CONNECT: failed", "proxy", selectedProxy.Address, "err", err)
 			c.markFailed(selIdx, selectedProxy.ID)
@@ -208,7 +299,8 @@ func (c *PoolChain) ConnectWithRetry(
 	return nil, 0, fmt.Errorf("all %d CONNECT attempts failed, last: %w", maxAttempts, lastErr)
 }
 
-// connectViaProxyStandalone is a standalone version of connectViaProxy (no handler receiver needed).
+// connectViaProxyStandalone dials host through the given proxy for a CONNECT
+// tunnel, dispatching by protocol. It is the sole CONNECT dial path.
 func connectViaProxyStandalone(p *models.Proxy, host string, settings *models.RotationSettings) (net.Conn, error) {
 	timeout := 90 * time.Second
 	if settings != nil && settings.Timeout > 0 {

@@ -32,21 +32,21 @@ func NewAlertWatcher(poolRepo *repository.PoolRepository, log *logger.Logger) *A
 	}
 }
 
-// Start begins the background watcher loop.
-func (w *AlertWatcher) Start(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(w.interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				w.check(ctx)
-			}
+// Name identifies the service for the lifecycle manager.
+func (w *AlertWatcher) Name() string { return "alert-watcher" }
+
+// Run checks pool alert rules on the configured interval until ctx is cancelled.
+func (w *AlertWatcher) Run(ctx context.Context) {
+	ticker := time.NewTicker(w.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.check(ctx)
 		}
-	}()
-	w.log.Info("alert watcher started", "interval", w.interval)
+	}
 }
 
 // check loads all enabled rules and fires those whose thresholds are exceeded

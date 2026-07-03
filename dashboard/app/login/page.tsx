@@ -1,16 +1,13 @@
-"use client";
-
-import { useState, useEffect, Suspense } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import Image from "next/image";
+import { useState, useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
 
-function LoginForm() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
+export default function LoginPage() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [sessionExpired, setSessionExpired] = useState(false);
@@ -24,10 +21,10 @@ function LoginForm() {
     } else {
       const token = localStorage.getItem("auth_token");
       if (token) {
-        router.push("/dashboard");
+        navigate("/dashboard");
       }
     }
-  }, [router, searchParams]);
+  }, [navigate, searchParams]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -36,7 +33,7 @@ function LoginForm() {
 
     try {
       await api.login(username, password);
-      router.push("/dashboard");
+      navigate("/dashboard");
     } catch (err: any) {
       setError(err.message || "Invalid credentials. Please try again.");
       console.error("Login failed:", err);
@@ -53,7 +50,7 @@ function LoginForm() {
           <CardContent className="space-y-12 px-8 pb-8 pt-10">
             {/* Logo and Title */}
             <div className="flex flex-col items-center gap-6 text-center">
-              <Image
+              <img
                 src="/logo.png"
                 alt="Rota Logo"
                 width={80}
@@ -125,13 +122,5 @@ function LoginForm() {
         </p>
       </div>
     </div>
-  );
-}
-
-export default function LoginPage() {
-  return (
-    <Suspense>
-      <LoginForm />
-    </Suspense>
   );
 }

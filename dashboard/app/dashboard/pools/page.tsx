@@ -1,4 +1,3 @@
-"use client"
 
 import { useEffect, useState, useCallback, useRef } from "react"
 import {
@@ -9,9 +8,12 @@ import {
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import {
-  ProxyPool, PoolProxy, GeoSummaryItem, HCJob, CreatePoolRequest,
+  ProxyPool, PoolProxy, Job, CreatePoolRequest,
   PoolAlertRule, CreatePoolAlertRuleRequest,
 } from "@/lib/types"
+import { useResourceQuery } from "@/hooks/use-resource-query"
+import { EmptyState } from "@/components/crud/empty-state"
+import { PageSpinner } from "@/components/crud/page-spinner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -71,9 +73,12 @@ const DEFAULT_POOL_FORM: CreatePoolRequest = {
 // ────────────────────────────────────────────────────────────────────────────
 
 export default function PoolsPage() {
-  const [pools, setPools] = useState<ProxyPool[]>([])
-  const [geoCountries, setGeoCountries] = useState<GeoSummaryItem[]>([])
-  const [loading, setLoading] = useState(true)
+  const poolsQuery = useResourceQuery(["pools"], () => api.getPools().then(r => r.pools))
+  const geoQuery = useResourceQuery(["geo-countries"], () => api.getGeoByCountry().then(r => r.geo))
+  const pools = poolsQuery.data ?? []
+  const geoCountries = geoQuery.data ?? []
+  const loading = poolsQuery.isLoading || geoQuery.isLoading
+  const loadAll = () => { poolsQuery.invalidate(); geoQuery.invalidate() }
   const [activeTab, setActiveTab] = useState<"pools" | "geo">("pools")
 
 
@@ -81,7 +86,7 @@ export default function PoolsPage() {
   const [selectedPool, setSelectedPool] = useState<ProxyPool | null>(null)
   const [poolProxies, setPoolProxies] = useState<PoolProxy[]>([])
   const [poolProxiesLoading, setPoolProxiesLoading] = useState(false)
-  const [hcJob, setHcJob] = useState<HCJob | null>(null)
+  const [hcJob, setHcJob] = useState<Job | null>(null)
   const [hcRunning, setHcRunning] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const hcPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -105,23 +110,6 @@ export default function PoolsPage() {
   const [editAlertRule, setEditAlertRule] = useState<PoolAlertRule | null>(null)
   const [savingAlert, setSavingAlert] = useState(false)
 
-  const loadAll = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [poolsRes, countriesRes] = await Promise.all([
-        api.getPools(),
-        api.getGeoByCountry(),
-      ])
-      setPools(poolsRes.pools)
-      setGeoCountries(countriesRes.geo)
-    } catch {
-      toast.error("Failed to load pools data")
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { loadAll() }, [loadAll])
 
   const openCreate = () => {
     setEditPool(null)
@@ -207,10 +195,20 @@ export default function PoolsPage() {
     }
   }
 
-  const handleExport = (format: "txt" | "csv") => {
+  const handleExport = async (format: "txt" | "csv") => {
     if (!selectedPool) return
-    const url = api.getPoolExportUrl(selectedPool.id, format)
-    window.open(url, "_blank")
+    try {
+      const blob = await api.exportPool(selectedPool.id, format)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `${selectedPool.name}.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error("Failed to export pool:", error)
+      toast.error(error instanceof Error ? error.message : "Failed to export pool")
+    }
   }
 
   const openCreateAlertRule = () => {
@@ -324,11 +322,7 @@ export default function PoolsPage() {
   useEffect(() => () => stopHcPoll(), [stopHcPoll])
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    )
+    return <PageSpinner />
   }
 
   return (
@@ -366,13 +360,11 @@ export default function PoolsPage() {
         {/* ── Pools tab ─────────���─────────────────────────────��───────────── */}
         {activeTab === "pools" && <div className="mt-4">
           {pools.length === 0 ? (
-            <Card>
-              <CardContent className="flex flex-col items-center justify-center py-16 gap-3">
-                <Layers className="h-10 w-10 text-muted-foreground" />
-                <p className="text-muted-foreground">No pools yet. Create one to get started.</p>
-                <Button onClick={openCreate}><Plus className="h-4 w-4 mr-2" />New Pool</Button>
-              </CardContent>
-            </Card>
+            <EmptyState
+              icon={Layers}
+              message="No pools yet. Create one to get started."
+              action={<Button onClick={openCreate}><Plus className="h-4 w-4 mr-2" />New Pool</Button>}
+            />
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Pool list */}

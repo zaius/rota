@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -19,11 +20,6 @@ func NewPoolRepository(db *database.DB) *PoolRepository {
 	return &PoolRepository{db: db}
 }
 
-// GetDB returns the underlying database instance (for direct queries in handlers)
-func (r *PoolRepository) GetDB() *database.DB {
-	return r.db
-}
-
 // poolColumns is the canonical SELECT column list (without aggregates)
 const poolColumns = `
 	pp.id, pp.name, pp.description,
@@ -33,20 +29,6 @@ const poolColumns = `
 	pp.auto_sync, COALESCE(pp.sync_mode,'auto') AS sync_mode, pp.enabled,
 	pp.created_at, pp.updated_at
 `
-
-// scanPool scans the pool columns (without aggregates)
-func scanPool(row interface {
-	Scan(...interface{}) error
-}, pool *models.ProxyPool) error {
-	return row.Scan(
-		&pool.ID, &pool.Name, &pool.Description,
-		&pool.CountryCode, &pool.RegionName, &pool.CityName,
-		&pool.RotationMethod, &pool.StickCount, &pool.SessionTTLMinutes,
-		&pool.HealthCheckURL, &pool.HealthCheckCron, &pool.HealthCheckEnabled,
-		&pool.AutoSync, &pool.SyncMode, &pool.Enabled,
-		&pool.CreatedAt, &pool.UpdatedAt,
-	)
-}
 
 // List returns all pools with computed proxy counts
 func (r *PoolRepository) List(ctx context.Context) ([]models.ProxyPool, error) {
@@ -276,14 +258,16 @@ func (r *PoolRepository) AddProxies(ctx context.Context, poolID int, proxyIDs []
 	if len(proxyIDs) == 0 {
 		return nil
 	}
-	for _, pid := range proxyIDs {
-		_, err := r.db.Pool.Exec(ctx,
-			`INSERT INTO pool_proxies (pool_id, proxy_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-			poolID, pid,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to add proxy %d to pool: %w", pid, err)
-		}
+	// Single batched insert instead of one round-trip per proxy — syncing a large
+	// pool used to issue thousands of individual INSERTs.
+	_, err := r.db.Pool.Exec(ctx,
+		`INSERT INTO pool_proxies (pool_id, proxy_id)
+		 SELECT $1, unnest($2::int[])
+		 ON CONFLICT DO NOTHING`,
+		poolID, proxyIDs,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to add proxies to pool: %w", err)
 	}
 	return nil
 }
@@ -326,85 +310,21 @@ func (r *PoolRepository) GetGeoFilters(ctx context.Context, poolID int) ([]model
 	return filters, nil
 }
 
-// SetGeoFilters replaces all geo filters for a pool atomically
+// SetGeoFilters replaces all geo filters for a pool atomically.
 func (r *PoolRepository) SetGeoFilters(ctx context.Context, poolID int, filters []models.GeoFilter) error {
-	_, err := r.db.Pool.Exec(ctx, `DELETE FROM pool_geo_filters WHERE pool_id=$1`, poolID)
-	if err != nil {
-		return err
-	}
-	for _, f := range filters {
-		city := f.CityName
-		_, err := r.db.Pool.Exec(ctx,
-			`INSERT INTO pool_geo_filters (pool_id, country_code, city_name) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-			poolID, f.CountryCode, city)
-		if err != nil {
+	return pgx.BeginFunc(ctx, r.db.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM pool_geo_filters WHERE pool_id=$1`, poolID); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-// SyncPoolByGeo rebuilds pool membership based on geo filters (pool_geo_filters table + legacy single filter)
-func (r *PoolRepository) SyncPoolByGeo(ctx context.Context, pool models.ProxyPool) (int, error) {
-	// Prefer multi-filters from pool_geo_filters table
-	filters, err := r.GetGeoFilters(ctx, pool.ID)
-	if err != nil {
-		return 0, err
-	}
-
-	// Fall back to legacy single country/city on pool row
-	if len(filters) == 0 && pool.CountryCode != nil && *pool.CountryCode != "" {
-		filters = []models.GeoFilter{{CountryCode: *pool.CountryCode}}
-		if pool.CityName != nil {
-			filters[0].CityName = *pool.CityName
-		}
-	}
-
-	if len(filters) == 0 {
-		// No geo filters — nothing to sync
-		return 0, nil
-	}
-
-	// Collect proxy IDs matching ANY of the filters (OR logic)
-	idSet := make(map[int]bool)
-	for _, f := range filters {
-		var rows interface{ Next() bool; Scan(...interface{}) error; Close() }
-		var qerr error
-		if f.CityName != "" {
-			rows, qerr = r.db.Pool.Query(ctx,
-				`SELECT id FROM proxies WHERE country_code=$1 AND city_name ILIKE $2`,
-				f.CountryCode, "%"+f.CityName+"%")
-		} else {
-			rows, qerr = r.db.Pool.Query(ctx,
-				`SELECT id FROM proxies WHERE country_code=$1`,
-				f.CountryCode)
-		}
-		if qerr != nil {
-			return 0, fmt.Errorf("geo query failed: %w", qerr)
-		}
-		for rows.Next() {
-			var id int
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return 0, err
+		for _, f := range filters {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO pool_geo_filters (pool_id, country_code, city_name) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+				poolID, f.CountryCode, f.CityName); err != nil {
+				return err
 			}
-			idSet[id] = true
 		}
-		rows.Close()
-	}
-
-	ids := make([]int, 0, len(idSet))
-	for id := range idSet {
-		ids = append(ids, id)
-	}
-
-	if err := r.ClearProxies(ctx, pool.ID); err != nil {
-		return 0, err
-	}
-	if err := r.AddProxies(ctx, pool.ID, ids); err != nil {
-		return 0, err
-	}
-	return len(ids), nil
+		return nil
+	})
 }
 
 // GetCitiesByCountry returns city-level breakdown for a given country code
@@ -562,6 +482,45 @@ func (r *PoolRepository) GetAllEnabledWithHC(ctx context.Context) ([]models.Prox
 
 // --- ISP Filters ---
 
+// ListKnownISPs returns distinct ISP names across all proxies matching the
+// optional search substring, for the pool filter-builder UI.
+func (r *PoolRepository) ListKnownISPs(ctx context.Context, search string) ([]string, error) {
+	rows, err := r.db.Pool.Query(ctx,
+		`SELECT DISTINCT isp FROM proxies WHERE isp IS NOT NULL AND isp ILIKE $1 ORDER BY isp LIMIT 50`,
+		"%"+search+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	isps := []string{}
+	for rows.Next() {
+		var isp string
+		if err := rows.Scan(&isp); err == nil && strings.TrimSpace(isp) != "" {
+			isps = append(isps, isp)
+		}
+	}
+	return isps, rows.Err()
+}
+
+// ListKnownTags returns distinct proxy tags across all proxies, for the pool
+// filter-builder UI.
+func (r *PoolRepository) ListKnownTags(ctx context.Context) ([]string, error) {
+	rows, err := r.db.Pool.Query(ctx,
+		`SELECT DISTINCT unnest(tags) AS tag FROM proxies WHERE array_length(tags,1) > 0 ORDER BY tag LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tags := []string{}
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err == nil && strings.TrimSpace(tag) != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags, rows.Err()
+}
+
 // GetISPFilters returns all ISP filters for a pool
 func (r *PoolRepository) GetISPFilters(ctx context.Context, poolID int) ([]string, error) {
 	rows, err := r.db.Pool.Query(ctx,
@@ -583,17 +542,19 @@ func (r *PoolRepository) GetISPFilters(ctx context.Context, poolID int) ([]strin
 
 // SetISPFilters replaces all ISP filters for a pool
 func (r *PoolRepository) SetISPFilters(ctx context.Context, poolID int, isps []string) error {
-	if _, err := r.db.Pool.Exec(ctx, `DELETE FROM pool_isp_filters WHERE pool_id=$1`, poolID); err != nil {
-		return err
-	}
-	for _, isp := range isps {
-		if _, err := r.db.Pool.Exec(ctx,
-			`INSERT INTO pool_isp_filters (pool_id, isp) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
-			poolID, isp); err != nil {
+	return pgx.BeginFunc(ctx, r.db.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM pool_isp_filters WHERE pool_id=$1`, poolID); err != nil {
 			return err
 		}
-	}
-	return nil
+		for _, isp := range isps {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO pool_isp_filters (pool_id, isp) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+				poolID, isp); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // --- Tag Filters ---
@@ -619,17 +580,19 @@ func (r *PoolRepository) GetTagFilters(ctx context.Context, poolID int) ([]strin
 
 // SetTagFilters replaces all tag filters for a pool
 func (r *PoolRepository) SetTagFilters(ctx context.Context, poolID int, tags []string) error {
-	if _, err := r.db.Pool.Exec(ctx, `DELETE FROM pool_tag_filters WHERE pool_id=$1`, poolID); err != nil {
-		return err
-	}
-	for _, tag := range tags {
-		if _, err := r.db.Pool.Exec(ctx,
-			`INSERT INTO pool_tag_filters (pool_id, tag) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
-			poolID, tag); err != nil {
+	return pgx.BeginFunc(ctx, r.db.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM pool_tag_filters WHERE pool_id=$1`, poolID); err != nil {
 			return err
 		}
-	}
-	return nil
+		for _, tag := range tags {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO pool_tag_filters (pool_id, tag) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+				poolID, tag); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // SyncPoolByFilters rebuilds pool membership using geo + ISP + tag filters combined.
@@ -751,11 +714,25 @@ func (r *PoolRepository) SyncPoolByFilters(ctx context.Context, pool models.Prox
 		}
 	}
 
-	if err := r.ClearProxies(ctx, pool.ID); err != nil {
-		return 0, nil, err
-	}
-	if err := r.AddProxies(ctx, pool.ID, ids); err != nil {
-		return 0, nil, err
+	// Rebuild membership atomically: a crash between the clear and the re-insert
+	// used to leave the pool empty (this runs every minute via auto-sync).
+	err = pgx.BeginFunc(ctx, r.db.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM pool_proxies WHERE pool_id = $1`, pool.ID); err != nil {
+			return err
+		}
+		if len(ids) > 0 {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO pool_proxies (pool_id, proxy_id)
+				 SELECT $1, unnest($2::int[])
+				 ON CONFLICT DO NOTHING`,
+				pool.ID, ids); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to rebuild pool membership: %w", err)
 	}
 	return len(ids), newIDs, nil
 }

@@ -1,12 +1,10 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
@@ -30,6 +28,7 @@ func NewHealthHandler(db *database.DB, proxyRepo *repository.ProxyRepository, lo
 }
 
 // Health handles basic health check
+//
 //	@Summary		Health check
 //	@Description	Check if the API server is running and healthy
 //	@Tags			health
@@ -43,10 +42,11 @@ func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 		"uptime":  int(time.Since(startTime).Seconds()),
 	}
 
-	h.jsonResponse(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // Status handles detailed status check
+//
 //	@Summary		System status
 //	@Description	Get detailed system status including proxy and request statistics
 //	@Tags			health
@@ -59,7 +59,7 @@ func (h *HealthHandler) Status(w http.ResponseWriter, r *http.Request) {
 	proxyStats, err := h.proxyRepo.GetStats(r.Context())
 	if err != nil {
 		h.logger.Error("failed to get proxy stats", "error", err)
-		h.errorResponse(w, http.StatusInternalServerError, "Failed to get proxy stats")
+		writeError(w, http.StatusInternalServerError, "Failed to get proxy stats")
 		return
 	}
 
@@ -91,10 +91,11 @@ func (h *HealthHandler) Status(w http.ResponseWriter, r *http.Request) {
 		"system":   systemStats,
 	}
 
-	h.jsonResponse(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // DatabaseHealth handles database health check
+//
 //	@Summary		Database health
 //	@Description	Check database connection health
 //	@Tags			health
@@ -106,14 +107,15 @@ func (h *HealthHandler) DatabaseHealth(w http.ResponseWriter, r *http.Request) {
 	health, err := h.db.Health(r.Context())
 	if err != nil {
 		h.logger.Error("database health check failed", "error", err)
-		h.errorResponse(w, http.StatusServiceUnavailable, "database health check failed")
+		writeError(w, http.StatusServiceUnavailable, "database health check failed")
 		return
 	}
 
-	h.jsonResponse(w, http.StatusOK, health)
+	writeJSON(w, http.StatusOK, health)
 }
 
 // DatabaseStats handles database statistics
+//
 //	@Summary		Database statistics
 //	@Description	Get database connection pool statistics
 //	@Tags			health
@@ -134,20 +136,5 @@ func (h *HealthHandler) DatabaseStats(w http.ResponseWriter, r *http.Request) {
 		"canceled_acquire_count": stats.CanceledAcquireCount(),
 	}
 
-	h.jsonResponse(w, http.StatusOK, response)
-}
-
-// jsonResponse sends a JSON response
-func (h *HealthHandler) jsonResponse(w http.ResponseWriter, statusCode int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-// errorResponse sends an error JSON response
-func (h *HealthHandler) errorResponse(w http.ResponseWriter, statusCode int, message string) {
-	response := models.ErrorResponse{
-		Error: message,
-	}
-	h.jsonResponse(w, statusCode, response)
+	writeJSON(w, http.StatusOK, response)
 }

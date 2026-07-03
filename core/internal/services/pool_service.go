@@ -13,7 +13,12 @@ import (
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/gammazero/workerpool"
+	"github.com/robfig/cron/v3"
 )
+
+// cronParser parses standard 5-field cron expressions (minute-resolution),
+// matching the scheduler's 1-minute tick in runScheduledHealthChecks.
+var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
 // PoolService manages proxy pools: auto-sync by geo, health checks, rotation state
 type PoolService struct {
@@ -22,10 +27,10 @@ type PoolService struct {
 	logger    *logger.Logger
 
 	// per-pool rotation state (roundrobin index, stick counters)
-	mu          sync.Mutex
-	rrIndex     map[int]int   // pool_id -> current roundrobin index
-	stickCur    map[int]int   // pool_id -> current proxy index in stick mode
-	stickCount  map[int]int   // pool_id -> requests served on current proxy
+	mu         sync.Mutex
+	rrIndex    map[int]int // pool_id -> current roundrobin index
+	stickCur   map[int]int // pool_id -> current proxy index in stick mode
+	stickCount map[int]int // pool_id -> requests served on current proxy
 }
 
 // NewPoolService creates a new PoolService
@@ -44,23 +49,23 @@ func NewPoolService(
 	}
 }
 
-// Start launches background cron-like goroutine for pool health checks and auto-sync
-func (ps *PoolService) Start(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		ps.logger.Info("pool service started")
-		for {
-			select {
-			case <-ticker.C:
-				ps.runScheduledHealthChecks(ctx)
-				ps.runAutoSync(ctx)
-			case <-ctx.Done():
-				ps.logger.Info("pool service stopped")
-				return
-			}
+// Name identifies the service for the lifecycle manager.
+func (ps *PoolService) Name() string { return "pool-scheduler" }
+
+// Run fires due pool health checks and auto-sync every minute until ctx is
+// cancelled.
+func (ps *PoolService) Run(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			ps.runScheduledHealthChecks(ctx)
+			ps.runAutoSync(ctx)
+		case <-ctx.Done():
+			return
 		}
-	}()
+	}
 }
 
 // runScheduledHealthChecks fires health checks for pools whose cron is due
@@ -161,23 +166,9 @@ func (ps *PoolService) checkProxiesByIDs(ctx context.Context, checkURL string, p
 	}
 
 	// Load the proxy rows for the given IDs
-	rows, err := ps.proxyRepo.GetDB().Pool.Query(ctx, `
-		SELECT id, address, protocol, username, password, status
-		FROM proxies
-		WHERE id = ANY($1::int[])
-	`, proxyIDs)
+	proxies, err := ps.proxyRepo.GetByIDs(ctx, proxyIDs, len(proxyIDs))
 	if err != nil {
 		return fmt.Errorf("failed to load proxies by ids: %w", err)
-	}
-	defer rows.Close()
-
-	var proxies []*models.Proxy
-	for rows.Next() {
-		var p models.Proxy
-		if err := rows.Scan(&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status); err != nil {
-			return err
-		}
-		proxies = append(proxies, &p)
 	}
 	if len(proxies) == 0 {
 		return nil
@@ -326,9 +317,9 @@ func (ps *PoolService) checkOneProxyTimeout(ctx context.Context, p *models.Proxy
 
 // updateProxyStatus writes the new status to the DB
 func (ps *PoolService) updateProxyStatus(ctx context.Context, proxyID int, status string) {
-	ps.proxyRepo.GetDB().Pool.Exec(ctx,
-		`UPDATE proxies SET status = $1, last_check = NOW(), updated_at = NOW() WHERE id = $2`,
-		status, proxyID)
+	if err := ps.proxyRepo.UpdateStatus(ctx, proxyID, status); err != nil {
+		ps.logger.Warn("failed to update proxy status", "proxy_id", proxyID, "error", err)
+	}
 }
 
 // HealthCheckPoolWithProgress is like HealthCheckPool but calls progressFn after each proxy finishes.
@@ -406,23 +397,31 @@ func (ps *PoolService) HealthCheckPoolWithProgress(
 	return result, nil
 }
 
-// isCronDue is a simple every-N-minutes checker.
-// Supports "*/N * * * *" (every N minutes) and "@every Nm" style.
-// For more complex cron expressions just returns false.
-func isCronDue(cron string) bool {
-	cron = strings.TrimSpace(cron)
-	if strings.HasPrefix(cron, "*/") {
-		parts := strings.Fields(cron)
-		if len(parts) == 5 {
-			var n int
-			fmt.Sscanf(parts[0][2:], "%d", &n)
-			if n <= 0 {
-				n = 30
-			}
-			now := time.Now()
-			return now.Minute()%n == 0 && now.Second() < 60
-		}
+// isCronDue reports whether a standard 5-field cron expression is due in the
+// current minute. It is called once per minute by the scheduler, so "due" means
+// the expression's next activation lands within the current minute window.
+//
+// Unlike the previous implementation, arbitrary expressions (e.g. "0 */6 * * *")
+// are honoured exactly; an empty or invalid expression is treated as never due
+// rather than silently falling back to every 30 minutes.
+func isCronDue(expr string) bool {
+	return cronDueAt(expr, time.Now())
+}
+
+// cronDueAt is the testable core of isCronDue: it reports whether expr is due in
+// the minute containing now.
+func cronDueAt(expr string, now time.Time) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return false
 	}
-	// Default: every 30 minutes
-	return time.Now().Minute()%30 == 0
+	sched, err := cronParser.Parse(expr)
+	if err != nil {
+		return false
+	}
+	minuteStart := now.Truncate(time.Minute)
+	// Next activation strictly after the instant just before this minute; due if
+	// that activation falls inside [minuteStart, minuteStart+1m).
+	next := sched.Next(minuteStart.Add(-time.Second))
+	return !next.Before(minuteStart) && next.Before(minuteStart.Add(time.Minute))
 }

@@ -85,8 +85,8 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 		transport.TLSClientConfig = &tls.Config{}
 	}
 	transport.TLSClientConfig.InsecureSkipVerify = true
-	transport.TLSClientConfig.MinVersion = 0 // Allow all TLS versions including SSLv3
-	transport.TLSClientConfig.MaxVersion = 0 // No maximum version restriction
+	transport.TLSClientConfig.MinVersion = 0     // Allow all TLS versions including SSLv3
+	transport.TLSClientConfig.MaxVersion = 0     // No maximum version restriction
 	transport.TLSClientConfig.CipherSuites = nil // Accept all cipher suites
 	// This callback allows us to accept even unparseable certificates
 	transport.TLSClientConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
@@ -188,33 +188,9 @@ func (h *HealthChecker) CheckAllProxies(ctx context.Context) ([]models.ProxyTest
 	h.settings = &settings.HealthCheck
 
 	// Get all proxies (including failed ones for re-testing)
-	query := `
-		SELECT
-			id, address, protocol, username, password, status,
-			requests, successful_requests, failed_requests,
-			avg_response_time, last_check, last_error, created_at, updated_at
-		FROM proxies
-		ORDER BY address
-	`
-
-	rows, err := h.proxyRepo.GetDB().Pool.Query(ctx, query)
+	proxies, err := h.proxyRepo.ListAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get proxies: %w", err)
-	}
-	defer rows.Close()
-
-	proxies := make([]*models.Proxy, 0)
-	for rows.Next() {
-		var p models.Proxy
-		err := rows.Scan(
-			&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status,
-			&p.Requests, &p.SuccessfulRequests, &p.FailedRequests,
-			&p.AvgResponseTime, &p.LastCheck, &p.LastError, &p.CreatedAt, &p.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan proxy: %w", err)
-		}
-		proxies = append(proxies, &p)
 	}
 
 	return h.CheckProxies(ctx, proxies, 0, nil)
@@ -256,8 +232,8 @@ func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Prox
 	// Running counters for progress reporting (guarded; callbacks fire from
 	// worker goroutines).
 	var (
-		mu                       sync.Mutex
-		checked, active, failed  int
+		mu                      sync.Mutex
+		checked, active, failed int
 	)
 
 	// Submit jobs
@@ -311,26 +287,4 @@ func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Prox
 func (h *HealthChecker) createTransport(p *models.Proxy) (*http.Transport, error) {
 	// Use shared transport creation utility
 	return CreateProxyTransport(p)
-}
-
-// StartPeriodicHealthCheck starts a background health check routine
-func (h *HealthChecker) StartPeriodicHealthCheck(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	h.logger.Info("starting periodic health check", "interval", interval)
-
-	for {
-		select {
-		case <-ticker.C:
-			h.logger.Info("running periodic health check")
-			_, err := h.CheckAllProxies(ctx)
-			if err != nil {
-				h.logger.Error("periodic health check failed", "error", err)
-			}
-		case <-ctx.Done():
-			h.logger.Info("stopping periodic health check")
-			return
-		}
-	}
 }
