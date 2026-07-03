@@ -42,8 +42,8 @@ type CreateProxyUserRequest struct {
 type UpdateProxyUserRequest struct {
 	Password          string `json:"password,omitempty"`
 	Enabled           *bool  `json:"enabled,omitempty"`
-	MainPoolID        *int   `json:"main_pool_id"`         // null clears it
-	FallbackPoolIDs   []int  `json:"fallback_pool_ids"`    // replaces list
+	MainPoolID        *int   `json:"main_pool_id"`      // null clears it
+	FallbackPoolIDs   []int  `json:"fallback_pool_ids"` // replaces list
 	MaxRetries        int    `json:"max_retries,omitempty"`
 	RequestsPerMinute *int   `json:"requests_per_minute,omitempty"`
 }

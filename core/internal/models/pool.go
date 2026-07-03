@@ -4,45 +4,45 @@ import "time"
 
 // ProxyPool is a named group of proxies filtered by geo or manually managed
 type ProxyPool struct {
-	ID                 int        `json:"id"`
-	Name               string     `json:"name"`
-	Description        string     `json:"description"`
-	CountryCode        *string    `json:"country_code,omitempty"`
-	RegionName         *string    `json:"region_name,omitempty"`
-	CityName           *string    `json:"city_name,omitempty"`
-	RotationMethod     string     `json:"rotation_method"`
-	StickCount         int        `json:"stick_count"`
-	SessionTTLMinutes  int        `json:"session_ttl_minutes"`
-	HealthCheckURL     string     `json:"health_check_url"`
-	HealthCheckCron    string     `json:"health_check_cron"`
-	HealthCheckEnabled bool       `json:"health_check_enabled"`
-	AutoSync           bool       `json:"auto_sync"`
-	SyncMode           string     `json:"sync_mode"` // "auto" | "manual"
-	Enabled            bool       `json:"enabled"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	ID                 int       `json:"id"`
+	Name               string    `json:"name"`
+	Description        string    `json:"description"`
+	CountryCode        *string   `json:"country_code,omitempty"`
+	RegionName         *string   `json:"region_name,omitempty"`
+	CityName           *string   `json:"city_name,omitempty"`
+	RotationMethod     string    `json:"rotation_method"`
+	StickCount         int       `json:"stick_count"`
+	SessionTTLMinutes  int       `json:"session_ttl_minutes"`
+	HealthCheckURL     string    `json:"health_check_url"`
+	HealthCheckCron    string    `json:"health_check_cron"`
+	HealthCheckEnabled bool      `json:"health_check_enabled"`
+	AutoSync           bool      `json:"auto_sync"`
+	SyncMode           string    `json:"sync_mode"` // "auto" | "manual"
+	Enabled            bool      `json:"enabled"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 
 	// Computed fields (not stored)
-	TotalProxies  int          `json:"total_proxies"`
-	ActiveProxies int          `json:"active_proxies"`
-	FailedProxies int          `json:"failed_proxies"`
-	GeoFilters    []GeoFilter  `json:"geo_filters,omitempty"`
-	ISPFilters    []string     `json:"isp_filters,omitempty"`
-	TagFilters    []string     `json:"tag_filters,omitempty"`
+	TotalProxies  int         `json:"total_proxies"`
+	ActiveProxies int         `json:"active_proxies"`
+	FailedProxies int         `json:"failed_proxies"`
+	GeoFilters    []GeoFilter `json:"geo_filters,omitempty"`
+	ISPFilters    []string    `json:"isp_filters,omitempty"`
+	TagFilters    []string    `json:"tag_filters,omitempty"`
 }
 
 // PoolAlertRule defines a webhook alert for a pool when active proxies drop below threshold
 type PoolAlertRule struct {
-	ID                int        `json:"id"`
-	PoolID            int        `json:"pool_id"`
-	Enabled           bool       `json:"enabled"`
-	MinActiveProxies  int        `json:"min_active_proxies"`
-	WebhookURL        string     `json:"webhook_url"`
-	WebhookMethod     string     `json:"webhook_method"`
-	LastFiredAt       *time.Time `json:"last_fired_at,omitempty"`
-	CooldownMinutes   int        `json:"cooldown_minutes"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	ID               int        `json:"id"`
+	PoolID           int        `json:"pool_id"`
+	Enabled          bool       `json:"enabled"`
+	MinActiveProxies int        `json:"min_active_proxies"`
+	WebhookURL       string     `json:"webhook_url"`
+	WebhookMethod    string     `json:"webhook_method"`
+	LastFiredAt      *time.Time `json:"last_fired_at,omitempty"`
+	CooldownMinutes  int        `json:"cooldown_minutes"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 // CreatePoolAlertRuleRequest is the payload for creating an alert rule
@@ -98,14 +98,14 @@ func (pp *PoolProxy) ToProxy() *Proxy {
 
 // PoolHealthCheckResult is per-proxy result from a pool health check run
 type PoolHealthCheckResult struct {
-	PoolID       int                    `json:"pool_id"`
-	PoolName     string                 `json:"pool_name"`
-	Checked      int                    `json:"checked"`
-	Active       int                    `json:"active"`
-	Failed       int                    `json:"failed"`
-	Results      []ProxyTestResult      `json:"results"`
-	StartedAt    time.Time              `json:"started_at"`
-	FinishedAt   time.Time              `json:"finished_at"`
+	PoolID     int               `json:"pool_id"`
+	PoolName   string            `json:"pool_name"`
+	Checked    int               `json:"checked"`
+	Active     int               `json:"active"`
+	Failed     int               `json:"failed"`
+	Results    []ProxyTestResult `json:"results"`
+	StartedAt  time.Time         `json:"started_at"`
+	FinishedAt time.Time         `json:"finished_at"`
 }
 
 // GeoInfo is the result of a GeoIP lookup
@@ -126,9 +126,9 @@ type CreatePoolRequest struct {
 	CountryCode        *string     `json:"country_code,omitempty"`
 	RegionName         *string     `json:"region_name,omitempty"`
 	CityName           *string     `json:"city_name,omitempty"`
-	GeoFilters         []GeoFilter `json:"geo_filters,omitempty"`  // multi-location
-	ISPFilters         []string    `json:"isp_filters,omitempty"`  // ISP name substrings
-	TagFilters         []string    `json:"tag_filters,omitempty"`  // proxy tags (AND logic)
+	GeoFilters         []GeoFilter `json:"geo_filters,omitempty"` // multi-location
+	ISPFilters         []string    `json:"isp_filters,omitempty"` // ISP name substrings
+	TagFilters         []string    `json:"tag_filters,omitempty"` // proxy tags (AND logic)
 	RotationMethod     string      `json:"rotation_method" validate:"omitempty,oneof=roundrobin random stick session"`
 	StickCount         int         `json:"stick_count"     validate:"omitempty,min=1"`
 	SessionTTLMinutes  int         `json:"session_ttl_minutes" validate:"omitempty,min=1"`
@@ -147,9 +147,9 @@ type UpdatePoolRequest struct {
 	CountryCode        *string     `json:"country_code"`
 	RegionName         *string     `json:"region_name"`
 	CityName           *string     `json:"city_name"`
-	GeoFilters         []GeoFilter `json:"geo_filters"`  // replaces filters when provided
-	ISPFilters         []string    `json:"isp_filters"`  // replaces ISP filters
-	TagFilters         []string    `json:"tag_filters"`  // replaces tag filters
+	GeoFilters         []GeoFilter `json:"geo_filters"` // replaces filters when provided
+	ISPFilters         []string    `json:"isp_filters"` // replaces ISP filters
+	TagFilters         []string    `json:"tag_filters"` // replaces tag filters
 	RotationMethod     string      `json:"rotation_method" validate:"omitempty,oneof=roundrobin random stick session"`
 	StickCount         int         `json:"stick_count"     validate:"omitempty,min=1"`
 	SessionTTLMinutes  int         `json:"session_ttl_minutes" validate:"omitempty,min=1"`

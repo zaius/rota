@@ -64,6 +64,7 @@ type RuntimeMetrics struct {
 }
 
 // GetSystemMetrics retrieves current system metrics
+//
 //	@Summary		System metrics
 //	@Description	Get current system resource metrics (CPU, memory, disk, runtime)
 //	@Tags			metrics

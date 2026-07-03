@@ -141,8 +141,8 @@ func TestRateLimitMiddleware_Disabled(t *testing.T) {
 func TestRateLimitMiddleware_AllowsUnderLimit(t *testing.T) {
 	m := NewRateLimitMiddleware(models.RateLimitSettings{
 		Enabled:     true,
-		Interval:    1,    // 1 second
-		MaxRequests: 100,  // 100 per second
+		Interval:    1,   // 1 second
+		MaxRequests: 100, // 100 per second
 	})
 
 	req, _ := http.NewRequest("GET", "http://example.com", nil)
@@ -160,8 +160,8 @@ func TestRateLimitMiddleware_AllowsUnderLimit(t *testing.T) {
 func TestRateLimitMiddleware_BlocksOverLimit(t *testing.T) {
 	m := NewRateLimitMiddleware(models.RateLimitSettings{
 		Enabled:     true,
-		Interval:    1,  // 1 second
-		MaxRequests: 5,  // only 5 burst
+		Interval:    1, // 1 second
+		MaxRequests: 5, // only 5 burst
 	})
 
 	req, _ := http.NewRequest("GET", "http://example.com", nil)
@@ -183,7 +183,7 @@ func TestRateLimitMiddleware_PerIP(t *testing.T) {
 	m := NewRateLimitMiddleware(models.RateLimitSettings{
 		Enabled:     true,
 		Interval:    1,
-		MaxRequests: 2,  // tiny burst
+		MaxRequests: 2, // tiny burst
 	})
 
 	// Exhaust limit for IP1

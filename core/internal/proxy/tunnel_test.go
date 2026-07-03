@@ -135,8 +135,8 @@ func TestBidirectionalCopy_HalfClose(t *testing.T) {
 
 	// Client sends data then closes write side.
 	msg := []byte("one-way message")
-	clientConn.Write(msg)                       //nolint:errcheck
-	clientConn.(*net.TCPConn).CloseWrite()      //nolint:errcheck
+	clientConn.Write(msg)                  //nolint:errcheck
+	clientConn.(*net.TCPConn).CloseWrite() //nolint:errcheck
 
 	// Upstream should receive the message and then get EOF.
 	buf := make([]byte, 256)

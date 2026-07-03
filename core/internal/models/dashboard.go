@@ -2,14 +2,14 @@ package models
 
 // DashboardStats represents dashboard statistics
 type DashboardStats struct {
-	ActiveProxies      int     `json:"active_proxies"`
-	TotalProxies       int     `json:"total_proxies"`
-	TotalRequests      int64   `json:"total_requests"`
-	AvgSuccessRate     float64 `json:"avg_success_rate"`
-	AvgResponseTime    int     `json:"avg_response_time"`
-	RequestGrowth      float64 `json:"request_growth"`
-	SuccessRateGrowth  float64 `json:"success_rate_growth"`
-	ResponseTimeDelta  int     `json:"response_time_delta"`
+	ActiveProxies     int     `json:"active_proxies"`
+	TotalProxies      int     `json:"total_proxies"`
+	TotalRequests     int64   `json:"total_requests"`
+	AvgSuccessRate    float64 `json:"avg_success_rate"`
+	AvgResponseTime   int     `json:"avg_response_time"`
+	RequestGrowth     float64 `json:"request_growth"`
+	SuccessRateGrowth float64 `json:"success_rate_growth"`
+	ResponseTimeDelta int     `json:"response_time_delta"`
 }
 
 // ChartDataPoint represents a single data point in a chart

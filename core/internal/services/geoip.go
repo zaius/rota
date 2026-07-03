@@ -28,18 +28,18 @@ type ipAPIResponse struct {
 }
 
 type cacheEntry struct {
-	geo       models.GeoInfo
-	cachedAt  time.Time
+	geo      models.GeoInfo
+	cachedAt time.Time
 }
 
 // GeoIPService performs IP geolocation lookups via ip-api.com (free, no key needed)
 // It caches results for 24 h and batches requests in groups of 100.
 type GeoIPService struct {
-	client    *http.Client
-	cache     map[string]cacheEntry
-	mu        sync.RWMutex
-	logger    *logger.Logger
-	cacheTTL  time.Duration
+	client   *http.Client
+	cache    map[string]cacheEntry
+	mu       sync.RWMutex
+	logger   *logger.Logger
+	cacheTTL time.Duration
 }
 
 // NewGeoIPService creates a new GeoIPService

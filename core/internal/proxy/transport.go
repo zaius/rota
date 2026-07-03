@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
-	"h12.io/socks"
 	proxyDialer "golang.org/x/net/proxy"
+	"h12.io/socks"
 )
 
 // transportCache caches *http.Transport per proxy address+protocol to avoid
@@ -40,9 +40,9 @@ func CreateProxyTransport(p *models.Proxy) (*http.Transport, error) {
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,  // Skip certificate verification for proxy connections
+			InsecureSkipVerify: true,             // Skip certificate verification for proxy connections
 			MinVersion:         tls.VersionTLS10, // Support older TLS versions for compatibility
-			MaxVersion:         0, // Allow all TLS versions
+			MaxVersion:         0,                // Allow all TLS versions
 			// Don't specify CipherSuites to accept all available ciphers for maximum compatibility
 			// This is acceptable since InsecureSkipVerify is already true
 		},

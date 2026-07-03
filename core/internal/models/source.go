@@ -31,11 +31,11 @@ type ProxySource struct {
 	Enabled         bool       `json:"enabled"`
 	IntervalMinutes int        `json:"interval_minutes"`
 	LastFetchedAt   *time.Time `json:"last_fetched_at,omitempty"`
-	LastCount       int        `json:"last_count"`        // newly imported on last fetch
-	LastTotal       int        `json:"last_total"`        // total lines returned on last fetch
+	LastCount       int        `json:"last_count"` // newly imported on last fetch
+	LastTotal       int        `json:"last_total"` // total lines returned on last fetch
 	LastError       *string    `json:"last_error,omitempty"`
-	CleanupEnabled  bool       `json:"cleanup_enabled"`   // per-source opt-in soft cleanup
-	CleanupDays     int        `json:"cleanup_days"`      // delete proxies stale for this many days
+	CleanupEnabled  bool       `json:"cleanup_enabled"` // per-source opt-in soft cleanup
+	CleanupDays     int        `json:"cleanup_days"`    // delete proxies stale for this many days
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 }

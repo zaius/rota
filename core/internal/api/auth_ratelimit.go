@@ -25,7 +25,7 @@ import (
 // They are intentionally NOT persisted — a restart clears them, which is fine
 // since the goal is to blunt online attacks, not forensic accounting.
 type authRateLimiter struct {
-	mu sync.Mutex
+	mu  sync.Mutex
 	log logger.Logger
 
 	// per-IP state
@@ -33,8 +33,8 @@ type authRateLimiter struct {
 	ipBlocked  map[string]time.Time   // unblock time per IP
 
 	// global state
-	globalAttempts []time.Time // timestamps of ALL attempts (last 60 s)
-	globalLockUntil time.Time  // when the global lockout expires
+	globalAttempts  []time.Time // timestamps of ALL attempts (last 60 s)
+	globalLockUntil time.Time   // when the global lockout expires
 
 	// config (immutable after construction)
 	ipMaxAttempts   int

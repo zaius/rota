@@ -4,34 +4,34 @@ import "time"
 
 // Proxy represents a proxy server
 type Proxy struct {
-	ID                 int       `json:"id"`
-	Address            string    `json:"address"`
-	Protocol           string    `json:"protocol"`
-	Username           *string   `json:"username,omitempty"`
-	Password           *string   `json:"-"` // Never expose password in JSON
-	Status             string    `json:"status"`
-	Requests           int64     `json:"requests"`
-	SuccessfulRequests int64     `json:"-"`
-	FailedRequests     int64     `json:"-"`
-	AvgResponseTime    int       `json:"avg_response_time"`
+	ID                 int        `json:"id"`
+	Address            string     `json:"address"`
+	Protocol           string     `json:"protocol"`
+	Username           *string    `json:"username,omitempty"`
+	Password           *string    `json:"-"` // Never expose password in JSON
+	Status             string     `json:"status"`
+	Requests           int64      `json:"requests"`
+	SuccessfulRequests int64      `json:"-"`
+	FailedRequests     int64      `json:"-"`
+	AvgResponseTime    int        `json:"avg_response_time"`
 	LastCheck          *time.Time `json:"last_check,omitempty"`
-	LastError          *string   `json:"-"`
+	LastError          *string    `json:"-"`
 	// Manual invalidation: excluded from rotation until CooldownUntil passes
 	CooldownUntil  *time.Time `json:"cooldown_until,omitempty"`
 	CooldownReason *string    `json:"cooldown_reason,omitempty"`
 	// GeoIP fields
-	CountryCode   *string   `json:"country_code,omitempty"`
-	CountryName   *string   `json:"country_name,omitempty"`
-	RegionName    *string   `json:"region_name,omitempty"`
-	CityName      *string   `json:"city_name,omitempty"`
-	Latitude      *float64  `json:"latitude,omitempty"`
-	Longitude     *float64  `json:"longitude,omitempty"`
-	ISP           *string   `json:"isp,omitempty"`
-	GeoUpdatedAt  *time.Time `json:"geo_updated_at,omitempty"`
+	CountryCode  *string    `json:"country_code,omitempty"`
+	CountryName  *string    `json:"country_name,omitempty"`
+	RegionName   *string    `json:"region_name,omitempty"`
+	CityName     *string    `json:"city_name,omitempty"`
+	Latitude     *float64   `json:"latitude,omitempty"`
+	Longitude    *float64   `json:"longitude,omitempty"`
+	ISP          *string    `json:"isp,omitempty"`
+	GeoUpdatedAt *time.Time `json:"geo_updated_at,omitempty"`
 	// Tags
-	Tags          []string  `json:"tags"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	Tags      []string  `json:"tags"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ProxyDomainCooldown is a per-domain invalidation: the proxy is excluded from
@@ -59,15 +59,15 @@ type ProxyWithStats struct {
 	CooldownUntil  *time.Time `json:"cooldown_until,omitempty"`
 	CooldownReason *string    `json:"cooldown_reason,omitempty"`
 	// GeoIP fields
-	CountryCode  *string  `json:"country_code,omitempty"`
-	CountryName  *string  `json:"country_name,omitempty"`
-	RegionName   *string  `json:"region_name,omitempty"`
-	CityName     *string  `json:"city_name,omitempty"`
-	ISP          *string  `json:"isp,omitempty"`
+	CountryCode *string `json:"country_code,omitempty"`
+	CountryName *string `json:"country_name,omitempty"`
+	RegionName  *string `json:"region_name,omitempty"`
+	CityName    *string `json:"city_name,omitempty"`
+	ISP         *string `json:"isp,omitempty"`
 	// Tags
-	Tags         []string `json:"tags"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	Tags      []string  `json:"tags"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // CreateProxyRequest represents a request to create a proxy
@@ -91,11 +91,11 @@ type UpdateProxyRequest struct {
 
 // BulkCreateResult is the result of a bulk proxy import
 type BulkCreateResult struct {
-	Created int                      `json:"created"`
-	Updated int                      `json:"updated"`
-	Skipped int                      `json:"skipped"`
-	Failed  int                      `json:"failed"`
-	Results []BulkCreateItemResult   `json:"results"`
+	Created int                    `json:"created"`
+	Updated int                    `json:"updated"`
+	Skipped int                    `json:"skipped"`
+	Failed  int                    `json:"failed"`
+	Results []BulkCreateItemResult `json:"results"`
 }
 
 // BulkCreateItemResult is a per-proxy result from bulk import
@@ -138,12 +138,12 @@ type BulkTestProxyRequest struct {
 
 // ProxyTestResult represents the result of testing a proxy
 type ProxyTestResult struct {
-	ID           int        `json:"id"`
-	Address      string     `json:"address"`
-	Status       string     `json:"status"`
-	ResponseTime *int       `json:"response_time,omitempty"`
-	Error        *string    `json:"error,omitempty"`
-	TestedAt     time.Time  `json:"tested_at"`
+	ID           int       `json:"id"`
+	Address      string    `json:"address"`
+	Status       string    `json:"status"`
+	ResponseTime *int      `json:"response_time,omitempty"`
+	Error        *string   `json:"error,omitempty"`
+	TestedAt     time.Time `json:"tested_at"`
 }
 
 // ProxyListResponse represents a paginated list of proxies

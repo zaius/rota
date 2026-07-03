@@ -47,18 +47,18 @@ const (
 // bulk proxy test, …). Kind-specific fields are omitempty so unrelated jobs
 // stay lean in the JSON the UI polls.
 type Job struct {
-	ID         string                   `json:"id"`
-	Kind       JobKind                  `json:"kind"`
-	Status     JobStatus                `json:"status"`
-	Progress   int                      `json:"progress"` // items processed so far
-	Total      int                      `json:"total"`    // total items to process
-	Active     int                      `json:"active"`
-	Failed     int                      `json:"failed"`
-	Skipped    int                      `json:"skipped,omitempty"`
-	Error      string                   `json:"error,omitempty"`
-	StartedAt  time.Time                `json:"started_at"`
-	UpdatedAt  time.Time                `json:"updated_at"`
-	FinishedAt *time.Time               `json:"finished_at,omitempty"`
+	ID         string     `json:"id"`
+	Kind       JobKind    `json:"kind"`
+	Status     JobStatus  `json:"status"`
+	Progress   int        `json:"progress"` // items processed so far
+	Total      int        `json:"total"`    // total items to process
+	Active     int        `json:"active"`
+	Failed     int        `json:"failed"`
+	Skipped    int        `json:"skipped,omitempty"`
+	Error      string     `json:"error,omitempty"`
+	StartedAt  time.Time  `json:"started_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	// Full results (populated when done)
 	Results []models.ProxyTestResult `json:"results,omitempty"`
 

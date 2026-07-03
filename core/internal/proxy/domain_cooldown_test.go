@@ -92,11 +92,11 @@ func TestDomainCooldownManager_ClearAndList(t *testing.T) {
 
 func TestNormalizeHost(t *testing.T) {
 	cases := map[string]string{
-		"Foo.com":         "foo.com",
-		"foo.com:443":     "foo.com",
-		"foo.com.":        "foo.com",
-		" FOO.com:8080 ":  "foo.com",
-		"[2001:db8::1]":   "2001:db8::1",
+		"Foo.com":           "foo.com",
+		"foo.com:443":       "foo.com",
+		"foo.com.":          "foo.com",
+		" FOO.com:8080 ":    "foo.com",
+		"[2001:db8::1]":     "2001:db8::1",
 		"[2001:db8::1]:443": "2001:db8::1",
 	}
 	for in, want := range cases {

@@ -56,7 +56,7 @@ func TestProxyRouter_AuthReject(t *testing.T) {
 	// Create a minimal proxyRouter without the full handler chain.
 	// We test that middleware rejection works at the router level.
 	router := &proxyRouter{
-		userAuthMw: NewTestUserAuthMiddleware(authMw),
+		userAuthMw:  NewTestUserAuthMiddleware(authMw),
 		rateLimitMw: rlMw,
 		upstream:    nil, // won't be reached due to auth rejection
 		logger:      log,

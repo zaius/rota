@@ -6,8 +6,8 @@ import (
 	"net"
 	"net/url"
 
-	"h12.io/socks"
 	proxyDialer "golang.org/x/net/proxy"
+	"h12.io/socks"
 )
 
 // parseURL wraps url.Parse with a helpful error
