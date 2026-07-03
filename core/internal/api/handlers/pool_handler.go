@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
@@ -583,25 +582,10 @@ func (h *PoolHandler) DeleteAlertRule(w http.ResponseWriter, r *http.Request) {
 //	@Success		200	{object}	map[string]interface{}
 //	@Router			/pools/isp-list [get]
 func (h *PoolHandler) GetISPList(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("q")
-	// Simple distinct query with optional search
-	rows, err := h.poolRepo.GetDB().Pool.Query(r.Context(),
-		`SELECT DISTINCT isp FROM proxies WHERE isp IS NOT NULL AND isp ILIKE $1 ORDER BY isp LIMIT 50`,
-		"%"+q+"%")
+	isps, err := h.poolRepo.ListKnownISPs(r.Context(), r.URL.Query().Get("q"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get ISPs")
 		return
-	}
-	defer rows.Close()
-	var isps []string
-	for rows.Next() {
-		var isp string
-		if err := rows.Scan(&isp); err == nil && strings.TrimSpace(isp) != "" {
-			isps = append(isps, isp)
-		}
-	}
-	if isps == nil {
-		isps = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"isps": isps})
 }
@@ -615,22 +599,10 @@ func (h *PoolHandler) GetISPList(w http.ResponseWriter, r *http.Request) {
 //	@Success		200	{object}	map[string]interface{}
 //	@Router			/pools/tag-list [get]
 func (h *PoolHandler) GetTagList(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.poolRepo.GetDB().Pool.Query(r.Context(),
-		`SELECT DISTINCT unnest(tags) AS tag FROM proxies WHERE array_length(tags,1) > 0 ORDER BY tag LIMIT 100`)
+	tags, err := h.poolRepo.ListKnownTags(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get tags")
 		return
-	}
-	defer rows.Close()
-	var tags []string
-	for rows.Next() {
-		var tag string
-		if err := rows.Scan(&tag); err == nil && strings.TrimSpace(tag) != "" {
-			tags = append(tags, tag)
-		}
-	}
-	if tags == nil {
-		tags = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"tags": tags})
 }

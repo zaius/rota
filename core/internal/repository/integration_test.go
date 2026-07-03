@@ -210,6 +210,79 @@ func TestIntegration_SetGeoFilters_ReplacesAtomically(t *testing.T) {
 	}
 }
 
+// Covers the queries moved out of the handler/service layer into the
+// repository (ListAll, ListUngeotaggedAddresses, UpdateGeo, UpdateStatus, and
+// the pool filter-builder's ListKnownISPs/ListKnownTags).
+func TestIntegration_ProxyRepoMethods(t *testing.T) {
+	db := testDB(t)
+	cleanTables(t, db)
+	proxyRepo := NewProxyRepository(db)
+	poolRepo := NewPoolRepository(db)
+	ctx := context.Background()
+
+	// Two ungeotagged proxies (one tagged), one already-geotagged.
+	var taggedID int
+	err := db.Pool.QueryRow(ctx,
+		`INSERT INTO proxies (address, protocol, status, tags) VALUES ('1.1.1.1:80','http','active','{"fast","us"}') RETURNING id`).Scan(&taggedID)
+	if err != nil {
+		t.Fatalf("insert tagged: %v", err)
+	}
+	if _, err := db.Pool.Exec(ctx,
+		`INSERT INTO proxies (address, protocol, status) VALUES ('2.2.2.2:80','http','idle')`); err != nil {
+		t.Fatalf("insert plain: %v", err)
+	}
+	mustProxy(t, db, "3.3.3.3:80", "DE") // already has country_code
+
+	// ListAll returns every proxy.
+	all, err := proxyRepo.ListAll(ctx)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("ListAll: got %d (err %v), want 3", len(all), err)
+	}
+
+	// ListUngeotaggedAddresses returns only the two without country_code.
+	ungeo, err := proxyRepo.ListUngeotaggedAddresses(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListUngeotagged: %v", err)
+	}
+	if len(ungeo) != 2 {
+		t.Fatalf("expected 2 ungeotagged, got %d (%v)", len(ungeo), ungeo)
+	}
+
+	// UpdateGeo writes geo (incl. ISP) and moves a proxy out of the ungeotagged set.
+	if err := proxyRepo.UpdateGeo(ctx, "1.1.1.1:80", models.GeoInfo{CountryCode: "US", CountryName: "United States", ISP: "Cloudflare"}); err != nil {
+		t.Fatalf("UpdateGeo: %v", err)
+	}
+	ungeo2, _ := proxyRepo.ListUngeotaggedAddresses(ctx, 100)
+	if len(ungeo2) != 1 {
+		t.Fatalf("after UpdateGeo expected 1 ungeotagged, got %d", len(ungeo2))
+	}
+
+	// ListKnownISPs (pool filter-builder) sees the ISP we just wrote.
+	isps, err := poolRepo.ListKnownISPs(ctx, "cloud")
+	if err != nil || len(isps) != 1 || isps[0] != "Cloudflare" {
+		t.Fatalf("ListKnownISPs: got %v (err %v), want [Cloudflare]", isps, err)
+	}
+
+	// ListKnownTags returns the distinct tags.
+	tags, err := poolRepo.ListKnownTags(ctx)
+	if err != nil {
+		t.Fatalf("ListKnownTags: %v", err)
+	}
+	if len(tags) != 2 {
+		t.Fatalf("expected 2 distinct tags, got %d (%v)", len(tags), tags)
+	}
+
+	// UpdateStatus flips a proxy's status.
+	if err := proxyRepo.UpdateStatus(ctx, taggedID, "failed"); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	var status string
+	db.Pool.QueryRow(ctx, `SELECT status FROM proxies WHERE id=$1`, taggedID).Scan(&status)
+	if status != "failed" {
+		t.Fatalf("expected status failed, got %q", status)
+	}
+}
+
 func TestIntegration_Migrate_Idempotent(t *testing.T) {
 	db := testDB(t)
 	// testDB already migrated once; a second run must be a clean no-op.

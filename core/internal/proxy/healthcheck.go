@@ -188,33 +188,9 @@ func (h *HealthChecker) CheckAllProxies(ctx context.Context) ([]models.ProxyTest
 	h.settings = &settings.HealthCheck
 
 	// Get all proxies (including failed ones for re-testing)
-	query := `
-		SELECT
-			id, address, protocol, username, password, status,
-			requests, successful_requests, failed_requests,
-			avg_response_time, last_check, last_error, created_at, updated_at
-		FROM proxies
-		ORDER BY address
-	`
-
-	rows, err := h.proxyRepo.GetDB().Pool.Query(ctx, query)
+	proxies, err := h.proxyRepo.ListAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get proxies: %w", err)
-	}
-	defer rows.Close()
-
-	proxies := make([]*models.Proxy, 0)
-	for rows.Next() {
-		var p models.Proxy
-		err := rows.Scan(
-			&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status,
-			&p.Requests, &p.SuccessfulRequests, &p.FailedRequests,
-			&p.AvgResponseTime, &p.LastCheck, &p.LastError, &p.CreatedAt, &p.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan proxy: %w", err)
-		}
-		proxies = append(proxies, &p)
 	}
 
 	return h.CheckProxies(ctx, proxies, 0, nil)

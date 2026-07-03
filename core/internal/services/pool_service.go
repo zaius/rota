@@ -166,23 +166,9 @@ func (ps *PoolService) checkProxiesByIDs(ctx context.Context, checkURL string, p
 	}
 
 	// Load the proxy rows for the given IDs
-	rows, err := ps.proxyRepo.GetDB().Pool.Query(ctx, `
-		SELECT id, address, protocol, username, password, status
-		FROM proxies
-		WHERE id = ANY($1::int[])
-	`, proxyIDs)
+	proxies, err := ps.proxyRepo.GetByIDs(ctx, proxyIDs, len(proxyIDs))
 	if err != nil {
 		return fmt.Errorf("failed to load proxies by ids: %w", err)
-	}
-	defer rows.Close()
-
-	var proxies []*models.Proxy
-	for rows.Next() {
-		var p models.Proxy
-		if err := rows.Scan(&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status); err != nil {
-			return err
-		}
-		proxies = append(proxies, &p)
 	}
 	if len(proxies) == 0 {
 		return nil
@@ -331,9 +317,9 @@ func (ps *PoolService) checkOneProxyTimeout(ctx context.Context, p *models.Proxy
 
 // updateProxyStatus writes the new status to the DB
 func (ps *PoolService) updateProxyStatus(ctx context.Context, proxyID int, status string) {
-	ps.proxyRepo.GetDB().Pool.Exec(ctx,
-		`UPDATE proxies SET status = $1, last_check = NOW(), updated_at = NOW() WHERE id = $2`,
-		status, proxyID)
+	if err := ps.proxyRepo.UpdateStatus(ctx, proxyID, status); err != nil {
+		ps.logger.Warn("failed to update proxy status", "proxy_id", proxyID, "error", err)
+	}
 }
 
 // HealthCheckPoolWithProgress is like HealthCheckPool but calls progressFn after each proxy finishes.

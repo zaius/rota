@@ -371,20 +371,7 @@ func (s *SourceService) enrichGeo(ctx context.Context, addresses []string) {
 	}
 
 	for addr, geo := range geos {
-		if _, err := s.proxyRepo.GetDB().Pool.Exec(ctx, `
-			UPDATE proxies SET
-				country_code   = $1,
-				country_name   = $2,
-				region_name    = $3,
-				city_name      = $4,
-				latitude       = $5,
-				longitude      = $6,
-				isp            = $7,
-				geo_updated_at = NOW()
-			WHERE address = $8
-		`, geo.CountryCode, geo.CountryName, geo.RegionName, geo.CityName,
-			geo.Latitude, geo.Longitude, geo.ISP, addr,
-		); err != nil {
+		if err := s.proxyRepo.UpdateGeo(ctx, addr, geo); err != nil {
 			s.logger.Warn("failed to update geo for proxy", "address", addr, "error", err)
 		}
 	}
@@ -392,42 +379,19 @@ func (s *SourceService) enrichGeo(ctx context.Context, addresses []string) {
 
 // EnrichAll re-runs geo enrichment for all proxies that have no geo data yet.
 func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
-	rows, err := s.proxyRepo.GetDB().Pool.Query(ctx,
-		`SELECT address FROM proxies WHERE country_code IS NULL LIMIT 500`)
+	addresses, err := s.proxyRepo.ListUngeotaggedAddresses(ctx, 500)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
-
-	var addresses []string
-	for rows.Next() {
-		var addr string
-		if err := rows.Scan(&addr); err != nil {
-			continue
-		}
-		addresses = append(addresses, addr)
-	}
-	rows.Close()
-
 	if len(addresses) == 0 {
 		return 0, nil
 	}
 
 	geos := s.geoSvc.EnrichProxies(ctx, addresses)
 	for addr, geo := range geos {
-		s.proxyRepo.GetDB().Pool.Exec(ctx, `
-			UPDATE proxies SET
-				country_code   = $1,
-				country_name   = $2,
-				region_name    = $3,
-				city_name      = $4,
-				latitude       = $5,
-				longitude      = $6,
-				isp            = $7,
-				geo_updated_at = NOW()
-			WHERE address = $8
-		`, geo.CountryCode, geo.CountryName, geo.RegionName, geo.CityName,
-			geo.Latitude, geo.Longitude, geo.ISP, addr)
+		if err := s.proxyRepo.UpdateGeo(ctx, addr, geo); err != nil {
+			s.logger.Warn("failed to update geo for proxy", "address", addr, "error", err)
+		}
 	}
 
 	// Re-sync pools now that geo data has changed

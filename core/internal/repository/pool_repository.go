@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -17,11 +18,6 @@ type PoolRepository struct {
 // NewPoolRepository creates a new PoolRepository
 func NewPoolRepository(db *database.DB) *PoolRepository {
 	return &PoolRepository{db: db}
-}
-
-// GetDB returns the underlying database instance (for direct queries in handlers)
-func (r *PoolRepository) GetDB() *database.DB {
-	return r.db
 }
 
 // poolColumns is the canonical SELECT column list (without aggregates)
@@ -485,6 +481,45 @@ func (r *PoolRepository) GetAllEnabledWithHC(ctx context.Context) ([]models.Prox
 }
 
 // --- ISP Filters ---
+
+// ListKnownISPs returns distinct ISP names across all proxies matching the
+// optional search substring, for the pool filter-builder UI.
+func (r *PoolRepository) ListKnownISPs(ctx context.Context, search string) ([]string, error) {
+	rows, err := r.db.Pool.Query(ctx,
+		`SELECT DISTINCT isp FROM proxies WHERE isp IS NOT NULL AND isp ILIKE $1 ORDER BY isp LIMIT 50`,
+		"%"+search+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	isps := []string{}
+	for rows.Next() {
+		var isp string
+		if err := rows.Scan(&isp); err == nil && strings.TrimSpace(isp) != "" {
+			isps = append(isps, isp)
+		}
+	}
+	return isps, rows.Err()
+}
+
+// ListKnownTags returns distinct proxy tags across all proxies, for the pool
+// filter-builder UI.
+func (r *PoolRepository) ListKnownTags(ctx context.Context) ([]string, error) {
+	rows, err := r.db.Pool.Query(ctx,
+		`SELECT DISTINCT unnest(tags) AS tag FROM proxies WHERE array_length(tags,1) > 0 ORDER BY tag LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tags := []string{}
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err == nil && strings.TrimSpace(tag) != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags, rows.Err()
+}
 
 // GetISPFilters returns all ISP filters for a pool
 func (r *PoolRepository) GetISPFilters(ctx context.Context, poolID int) ([]string, error) {

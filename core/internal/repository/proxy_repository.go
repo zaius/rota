@@ -23,7 +23,9 @@ func NewProxyRepository(db *database.DB) *ProxyRepository {
 	return &ProxyRepository{db: db}
 }
 
-// GetDB returns the database instance
+// GetDB returns the underlying database instance. It exists only for the
+// UsageTracker, which is a focused request-recording data-access object; all
+// other proxy access goes through the repository's methods.
 func (r *ProxyRepository) GetDB() *database.DB {
 	return r.db
 }
@@ -581,6 +583,68 @@ func (r *ProxyRepository) CountByFilter(ctx context.Context, filter models.Proxy
 		return 0, fmt.Errorf("failed to count proxies by filter: %w", err)
 	}
 	return total, nil
+}
+
+// ListAll returns every proxy (including credentials), ordered by address. Used
+// by the on-demand full health check.
+func (r *ProxyRepository) ListAll(ctx context.Context) ([]*models.Proxy, error) {
+	rows, err := r.db.Pool.Query(ctx, fmt.Sprintf("SELECT %s FROM proxies ORDER BY address", proxyFullColumns))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list proxies: %w", err)
+	}
+	return scanProxies(rows)
+}
+
+// ListUngeotaggedAddresses returns up to limit addresses of proxies that have no
+// geo data yet, for geo enrichment.
+func (r *ProxyRepository) ListUngeotaggedAddresses(ctx context.Context, limit int) ([]string, error) {
+	rows, err := r.db.Pool.Query(ctx,
+		`SELECT address FROM proxies WHERE country_code IS NULL ORDER BY id LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list ungeotagged proxies: %w", err)
+	}
+	defer rows.Close()
+	var addresses []string
+	for rows.Next() {
+		var addr string
+		if err := rows.Scan(&addr); err != nil {
+			return nil, err
+		}
+		addresses = append(addresses, addr)
+	}
+	return addresses, rows.Err()
+}
+
+// UpdateGeo writes GeoIP data for the proxy with the given address.
+func (r *ProxyRepository) UpdateGeo(ctx context.Context, address string, geo models.GeoInfo) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE proxies SET
+			country_code   = $1,
+			country_name   = $2,
+			region_name    = $3,
+			city_name      = $4,
+			latitude       = $5,
+			longitude      = $6,
+			isp            = $7,
+			geo_updated_at = NOW()
+		WHERE address = $8`,
+		geo.CountryCode, geo.CountryName, geo.RegionName, geo.CityName,
+		geo.Latitude, geo.Longitude, geo.ISP, address)
+	if err != nil {
+		return fmt.Errorf("failed to update geo for %s: %w", address, err)
+	}
+	return nil
+}
+
+// UpdateStatus sets a proxy's status and bumps last_check.
+func (r *ProxyRepository) UpdateStatus(ctx context.Context, id int, status string) error {
+	_, err := r.db.Pool.Exec(ctx,
+		`UPDATE proxies SET status = $1, last_check = NOW(), updated_at = NOW() WHERE id = $2`,
+		status, id)
+	if err != nil {
+		return fmt.Errorf("failed to update proxy status: %w", err)
+	}
+	return nil
 }
 
 // GetStats retrieves overall proxy statistics
