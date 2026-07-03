@@ -110,19 +110,6 @@ func New(
 		return nil, fmt.Errorf("failed to load settings: %w", err)
 	}
 
-	// Create proxy selector based on rotation settings
-	selector, err := NewProxySelector(proxyRepo, &settings.Rotation)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create proxy selector: %w", err)
-	}
-
-	// Initial refresh of proxy list
-	if err := selector.Refresh(ctx); err != nil {
-		log.Warn("no proxies available at startup - server will start but requests will fail until proxies are added", "error", err)
-	} else {
-		log.Info("proxy server initialized successfully")
-	}
-
 	// Create usage tracker
 	tracker := NewUsageTracker(proxyRepo)
 
@@ -141,8 +128,8 @@ func New(
 		}
 	}
 
-	// Create upstream proxy handler
-	handler := NewUpstreamProxyHandler(selector, tracker, &settings.Rotation, domainCD, log)
+	// Create upstream proxy handler (forwards through the request's PoolChain)
+	handler := NewUpstreamProxyHandler(tracker, &settings.Rotation, log)
 
 	// Create middlewares
 	authMiddleware := NewAuthMiddleware(settings.Authentication)
@@ -203,13 +190,10 @@ func (s *Server) startBackgroundTasks() {
 			select {
 			case <-s.refreshTicker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				if err := s.handler.getSelector().Refresh(ctx); err != nil {
-					s.logger.Error("failed to refresh proxy list", "error", err)
-				} else {
-					s.logger.Debug("proxy list refreshed")
-				}
-				// Re-sync domain cooldowns from the DB so the in-memory view
-				// tracks expirations and cooldowns set by other instances.
+				// Proxy lists are refreshed by UserAuthMiddleware (default + per-user
+				// chains). Here we only re-sync domain cooldowns from the DB so the
+				// in-memory view tracks expirations and cooldowns set by other
+				// instances.
 				if s.domainCD != nil {
 					if cooldowns, err := s.proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
 						s.logger.Error("failed to refresh domain cooldowns", "error", err)
@@ -369,17 +353,9 @@ func (s *Server) ReloadSettings(ctx context.Context) error {
 	// Update handler settings (atomic publish; read concurrently on the hot path)
 	s.handler.setSettings(&settings.Rotation)
 
-	// Recreate selector if rotation method changed
-	newSelector, err := NewProxySelector(s.proxyRepo, &settings.Rotation)
-	if err != nil {
-		return fmt.Errorf("failed to create new selector: %w", err)
-	}
-
-	if err := newSelector.Refresh(ctx); err != nil {
-		return fmt.Errorf("failed to refresh new selector: %w", err)
-	}
-
-	s.handler.setSelector(newSelector)
+	// Rebuild the default pool chain so global rotation-method/filter changes take
+	// effect. Per-user chains pick up rotation settings on their own refresh.
+	s.userAuthMw.RebuildDefaultChain(ctx, &settings.Rotation)
 
 	s.logger.Info("settings reloaded successfully")
 	return nil

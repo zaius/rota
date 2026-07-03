@@ -68,6 +68,58 @@ func (c *PoolChain) recordFailure(proxyID int, address, url, method string, atte
 	}()
 }
 
+// defaultPoolMethod maps a global rotation method onto the selector methods the
+// default pool supports, preserving the legacy global selector's fallbacks:
+// session/stick have no global session context, so they degrade to round-robin,
+// and an unknown method defaults to random.
+func defaultPoolMethod(method string) string {
+	switch method {
+	case "random":
+		return "random"
+	case "roundrobin", "round-robin":
+		return "roundrobin"
+	case "least_conn", "least-conn", "least_connections":
+		return "least_conn"
+	case "time_based", "time-based":
+		return "time_based"
+	case "session", "stick", "sticky":
+		return "roundrobin"
+	default:
+		return "random"
+	}
+}
+
+// NewDefaultPoolChain builds the chain used for requests that do not map to a
+// proxy user: a single selector over every active proxy, honouring the global
+// rotation method and filters. It replaces the legacy global selector engine.
+func NewDefaultPoolChain(db *database.DB, settings *models.RotationSettings, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
+	sel := &PoolSelector{
+		db:               db,
+		poolID:           0,
+		method:           defaultPoolMethod(settings.Method),
+		timeInterval:     time.Duration(settings.TimeBased.Interval) * time.Second,
+		sessionMgr:       sessionMgr,
+		domainCD:         domainCD,
+		loadAll:          true,
+		allowedProtocols: settings.AllowedProtocols,
+		maxResponseTime:  settings.MaxResponseTime,
+		minSuccessRate:   settings.MinSuccessRate,
+	}
+	maxRetry := 5
+	if settings.FallbackMaxRetries > 0 {
+		maxRetry = settings.FallbackMaxRetries
+	}
+	if !settings.Fallback {
+		maxRetry = 1
+	}
+	return &PoolChain{
+		selectors: []*PoolSelector{sel},
+		tracker:   tracker,
+		logger:    log,
+		maxRetry:  maxRetry,
+	}
+}
+
 // Refresh reloads all pool selectors (non-blocking goroutine).
 func (c *PoolChain) Refresh(ctx context.Context) {
 	var wg sync.WaitGroup
@@ -151,7 +203,10 @@ func (c *PoolChain) SendWithRetry(
 			"proxy", selectedProxy.Address,
 		)
 
-		transport, err := CreateProxyTransport(selectedProxy)
+		// Use the shared per-proxy transport cache so keep-alive connections are
+		// reused across attempts instead of building a fresh connection pool each
+		// time (the legacy path already did this).
+		transport, err := GetOrCreateTransport(selectedProxy)
 		if err != nil {
 			lastErr = err
 			c.recordFailure(selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
@@ -228,7 +283,6 @@ func (c *PoolChain) ConnectWithRetry(
 			"host", host,
 		)
 
-		// Reuse the existing connectViaProxy logic via a temporary handler
 		conn, err := connectViaProxyStandalone(selectedProxy, host, rotationSettings)
 		if err != nil {
 			c.recordFailure(selectedProxy.ID, selectedProxy.Address, "CONNECT://"+host, "CONNECT", attemptStart, err)
@@ -245,7 +299,8 @@ func (c *PoolChain) ConnectWithRetry(
 	return nil, 0, fmt.Errorf("all %d CONNECT attempts failed, last: %w", maxAttempts, lastErr)
 }
 
-// connectViaProxyStandalone is a standalone version of connectViaProxy (no handler receiver needed).
+// connectViaProxyStandalone dials host through the given proxy for a CONNECT
+// tunnel, dispatching by protocol. It is the sole CONNECT dial path.
 func connectViaProxyStandalone(p *models.Proxy, host string, settings *models.RotationSettings) (net.Conn, error) {
 	timeout := 90 * time.Second
 	if settings != nil && settings.Timeout > 0 {

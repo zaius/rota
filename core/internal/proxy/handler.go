@@ -1,12 +1,8 @@
 package proxy
 
 import (
-	"bufio"
 	"context"
-	"encoding/base64"
-	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -15,43 +11,31 @@ import (
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/google/uuid"
-	proxyDialer "golang.org/x/net/proxy"
 )
 
-// UpstreamProxyHandler handles requests with upstream proxy rotation.
+// UpstreamProxyHandler forwards proxy requests through the PoolChain that
+// UserAuthMiddleware attaches to each request — either a per-user chain or the
+// default pool chain for unauthenticated/legacy traffic. There is only one
+// request engine now (the pool chain); the former global-selector path is gone.
 //
-// settings and selector are swapped by ReloadSettings concurrently with
-// hot-path request goroutines, so both are held in atomic pointers and must be
-// accessed only through the get/set helpers below. Reads take a stable snapshot
-// per method rather than dereferencing the field repeatedly.
+// settings is swapped by ReloadSettings concurrently with hot-path request
+// goroutines, so it is held in an atomic pointer and read via getSettings.
 type UpstreamProxyHandler struct {
-	selector atomic.Pointer[selectorHolder]
 	tracker  *UsageTracker
 	settings atomic.Pointer[models.RotationSettings]
-	domainCD *DomainCooldownManager
 	logger   *logger.Logger
 }
 
-// selectorHolder wraps the ProxySelector interface so it can be stored in an
-// atomic.Pointer, which requires a concrete element type.
-type selectorHolder struct {
-	sel ProxySelector
-}
-
-// NewUpstreamProxyHandler creates a new upstream proxy handler
+// NewUpstreamProxyHandler creates a new upstream proxy handler.
 func NewUpstreamProxyHandler(
-	selector ProxySelector,
 	tracker *UsageTracker,
 	settings *models.RotationSettings,
-	domainCD *DomainCooldownManager,
 	log *logger.Logger,
 ) *UpstreamProxyHandler {
 	h := &UpstreamProxyHandler{
-		tracker:  tracker,
-		domainCD: domainCD,
-		logger:   log,
+		tracker: tracker,
+		logger:  log,
 	}
-	h.setSelector(selector)
 	h.setSettings(settings)
 	return h
 }
@@ -66,21 +50,16 @@ func (h *UpstreamProxyHandler) setSettings(s *models.RotationSettings) {
 	h.settings.Store(s)
 }
 
-// getSelector returns the current legacy global selector (may be nil).
-func (h *UpstreamProxyHandler) getSelector() ProxySelector {
-	if hs := h.selector.Load(); hs != nil {
-		return hs.sel
-	}
-	return nil
+// chainFromContext returns the PoolChain UserAuthMiddleware attached to the
+// request. A chain is always present in normal operation (the default pool
+// backs no-user traffic); a missing chain indicates a routing bug.
+func chainFromContext(ctx context.Context) (*PoolChain, bool) {
+	chain, ok := ctx.Value(UserChainContextKey).(*PoolChain)
+	return chain, ok && chain != nil
 }
 
-// setSelector atomically publishes a new legacy global selector.
-func (h *UpstreamProxyHandler) setSelector(s ProxySelector) {
-	h.selector.Store(&selectorHolder{sel: s})
-}
-
-// HandleHTTPRequest handles HTTP requests (non-CONNECT) with upstream proxy rotation.
-// It writes the proxied response directly to w.
+// HandleHTTPRequest handles HTTP requests (non-CONNECT) and writes the proxied
+// response directly to w.
 func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	requestID := uuid.New().String()
@@ -92,56 +71,21 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 		"url", r.URL.String(),
 	)
 
-	// Remove hop-by-hop headers
 	h.removeHopByHopHeaders(r)
 
-	// --- Pool-aware path: if a PoolChain was attached by UserAuthMiddleware, use it ---
 	reqCtx := r.Context()
-	if chain, ok := reqCtx.Value(UserChainContextKey).(*PoolChain); ok && chain != nil {
-		resp, proxyID, err := chain.SendWithRetry(r, reqCtx, h.getSettings(), h.logger)
-		duration := int(time.Since(startTime).Milliseconds())
-		if proxyID > 0 {
-			h.recordAsync(proxyID, "", r.URL.String(), r.Method, resp, err, duration, startTime)
-		}
-		if err != nil {
-			h.logger.Error("pool-chain request failed", "request_id", requestID, "error", err)
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		copyResponse(w, resp)
+	chain, ok := chainFromContext(reqCtx)
+	if !ok {
+		h.logger.Error("no proxy chain on request", "request_id", requestID)
+		http.Error(w, "no proxy pool available", http.StatusBadGateway)
 		return
 	}
 
-	// --- Legacy path: global proxy pool ---
-	resp, proxyID, err := h.sendWithRetry(r, r.Context())
+	resp, proxyID, err := chain.SendWithRetry(r, reqCtx, h.getSettings(), h.logger)
 	duration := int(time.Since(startTime).Milliseconds())
-
-	// Record the request
 	if proxyID > 0 {
-		record := RequestRecord{
-			ProxyID:      proxyID,
-			ProxyAddress: "",
-			RequestedURL: r.URL.String(),
-			Method:       r.Method,
-			Success:      err == nil && resp != nil,
-			ResponseTime: duration,
-			Timestamp:    startTime,
-		}
-		if resp != nil {
-			record.StatusCode = resp.StatusCode
-		}
-		if err != nil {
-			record.ErrorMessage = err.Error()
-		}
-		go func() {
-			recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if recordErr := h.tracker.RecordRequest(recordCtx, record); recordErr != nil {
-				h.logger.Error("failed to record request", "error", recordErr)
-			}
-		}()
+		h.recordAsync(proxyID, "", r.URL.String(), r.Method, resp, err, duration, startTime)
 	}
-
 	if err != nil {
 		h.logger.Error("proxy request failed",
 			"source", "proxy",
@@ -159,13 +103,12 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 		"status", resp.StatusCode,
 		"duration_ms", duration,
 	)
-
 	copyResponse(w, resp)
 }
 
-// HandleConnectRequest handles HTTPS CONNECT requests.
-// It hijacks the client connection, establishes an upstream tunnel,
-// and copies data bidirectionally using splice(2) on Linux.
+// HandleConnectRequest handles HTTPS CONNECT requests. It hijacks the client
+// connection, establishes an upstream tunnel, and copies data bidirectionally
+// using splice(2) on Linux.
 func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	host := r.Host
@@ -175,18 +118,15 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		"host", host,
 	)
 
-	// Establish upstream connection (pool-chain or global)
-	var upstreamConn net.Conn
-	var proxyID int
-	var err error
-
 	reqCtx := r.Context()
-	if chain, ok := reqCtx.Value(UserChainContextKey).(*PoolChain); ok && chain != nil {
-		upstreamConn, proxyID, err = chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
-	} else {
-		upstreamConn, proxyID, err = h.connectThroughProxy(host, reqCtx)
+	chain, ok := chainFromContext(reqCtx)
+	if !ok {
+		h.logger.Error("no proxy chain on CONNECT request", "host", host)
+		http.Error(w, "no proxy pool available", http.StatusBadGateway)
+		return
 	}
 
+	upstreamConn, proxyID, err := chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
 	if err != nil {
 		h.logger.Error("CONNECT upstream failed",
 			"source", "proxy",
@@ -272,351 +212,6 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	buf := bufPool.Get().([]byte)
 	defer bufPool.Put(buf)
 	io.CopyBuffer(w, resp.Body, buf) //nolint:errcheck
-}
-
-// selectEligibleProxy asks the selector for the next proxy that has neither
-// been tried for this request nor placed on a domain cooldown for targetHost.
-// Skipped proxies are recorded in tried and do NOT consume a fallback attempt —
-// only a returned, attemptable proxy does. This matters on the legacy path: the
-// global selectors are not domain-cooldown aware, so without this a request to a
-// host with several cooled proxies could exhaust its fallback budget on skips
-// and fail without ever trying an eligible proxy. The scan is bounded so a
-// selector that only ever yields ineligible proxies still terminates.
-func (h *UpstreamProxyHandler) selectEligibleProxy(ctx context.Context, tried map[int]bool, targetHost string) (*models.Proxy, error) {
-	const maxScan = 1000
-	selector := h.getSelector()
-	for i := 0; i < maxScan; i++ {
-		selectedProxy, err := selector.Select(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if tried[selectedProxy.ID] {
-			continue
-		}
-		// Skip proxies invalidated for this request's target domain (the
-		// pool-aware path handles this inside PoolSelector.Select). Mark them
-		// tried so a repeating selector does not keep offering them.
-		if h.domainCD != nil && targetHost != "" && h.domainCD.IsCooled(selectedProxy.ID, targetHost) {
-			tried[selectedProxy.ID] = true
-			continue
-		}
-		tried[selectedProxy.ID] = true
-		return selectedProxy, nil
-	}
-	return nil, fmt.Errorf("no eligible proxy available for host %q", targetHost)
-}
-
-// sendWithRetry attempts to send the request with retry and fallback logic
-func (h *UpstreamProxyHandler) sendWithRetry(req *http.Request, ctx context.Context) (*http.Response, int, error) {
-	st := h.getSettings()
-	maxFallbackRetries := st.FallbackMaxRetries
-	if !st.Fallback {
-		maxFallbackRetries = 1
-	}
-
-	perProxyRetries := st.Retries
-	if perProxyRetries <= 0 {
-		perProxyRetries = 1
-	}
-
-	h.logger.Debug("starting proxy selection",
-		"source", "proxy",
-		"max_fallback_retries", maxFallbackRetries,
-		"per_proxy_retries", perProxyRetries,
-	)
-
-	var lastErr error
-	triedProxies := make(map[int]bool)
-	targetHost, _ := ctx.Value(TargetHostContextKey).(string)
-
-	for fallbackAttempt := 0; fallbackAttempt < maxFallbackRetries; fallbackAttempt++ {
-		selectedProxy, err := h.selectEligibleProxy(ctx, triedProxies, targetHost)
-		if err != nil {
-			if fallbackAttempt == 0 {
-				return nil, 0, fmt.Errorf("no proxy available: %w", err)
-			}
-			// No more eligible proxies to fall back to; return what we have.
-			break
-		}
-
-		h.logger.Debug("attempting request with proxy",
-			"source", "proxy",
-			"proxy_id", selectedProxy.ID,
-			"proxy_address", selectedProxy.Address,
-			"fallback_attempt", fallbackAttempt+1,
-		)
-
-		resp, err := h.tryProxyWithRetries(req, ctx, selectedProxy, perProxyRetries)
-		if err != nil {
-			lastErr = fmt.Errorf("proxy %s failed after %d retries: %w", selectedProxy.Address, perProxyRetries, err)
-			h.logger.Warn("proxy failed after all retries",
-				"source", "proxy",
-				"proxy_id", selectedProxy.ID,
-				"error", err,
-			)
-
-			go func() {
-				recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				record := RequestRecord{
-					ProxyID:      selectedProxy.ID,
-					ProxyAddress: selectedProxy.Address,
-					RequestedURL: req.URL.String(),
-					Method:       req.Method,
-					Success:      false,
-					ResponseTime: 0,
-					ErrorMessage: err.Error(),
-					Timestamp:    time.Now(),
-				}
-				// RecordRequest → updateProxyStats applies the 3-consecutive-failures
-				// threshold naturally. Deliberately not force-setting status to
-				// "failed" here — that bypasses the threshold and kills the proxy on
-				// its first failure.
-				if recordErr := h.tracker.RecordRequest(recordCtx, record); recordErr != nil {
-					h.logger.Error("failed to record failed request", "error", recordErr)
-				}
-			}()
-
-			continue
-		}
-
-		return resp, selectedProxy.ID, nil
-	}
-
-	return nil, 0, fmt.Errorf("all proxies failed, last error: %w", lastErr)
-}
-
-// tryProxyWithRetries attempts to send request through a specific proxy with retries
-func (h *UpstreamProxyHandler) tryProxyWithRetries(req *http.Request, ctx context.Context, selectedProxy *models.Proxy, maxRetries int) (*http.Response, error) {
-	var lastErr error
-
-	for retry := 0; retry < maxRetries; retry++ {
-		transport, err := GetOrCreateTransport(selectedProxy)
-		if err != nil {
-			lastErr = fmt.Errorf("failed to create transport: %w", err)
-			continue
-		}
-
-		st := h.getSettings()
-		client := &http.Client{
-			Transport: transport,
-			Timeout:   time.Duration(st.Timeout) * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if !st.FollowRedirect {
-					return http.ErrUseLastResponse
-				}
-				if len(via) >= 10 {
-					return fmt.Errorf("stopped after 10 redirects")
-				}
-				return nil
-			},
-		}
-
-		clonedReq := req.Clone(ctx)
-		clonedReq.RequestURI = ""
-
-		resp, err := client.Do(clonedReq)
-		if err != nil {
-			lastErr = fmt.Errorf("proxy %s failed: %w", selectedProxy.Address, err)
-			if retry < maxRetries-1 {
-				continue
-			}
-		} else {
-			return resp, nil
-		}
-	}
-
-	return nil, lastErr
-}
-
-// connectThroughProxy establishes a connection through upstream proxy with retry logic
-func (h *UpstreamProxyHandler) connectThroughProxy(host string, ctx context.Context) (net.Conn, int, error) {
-	startTime := time.Now()
-
-	st := h.getSettings()
-	maxFallbackRetries := st.FallbackMaxRetries
-	if !st.Fallback {
-		maxFallbackRetries = 1
-	}
-
-	perProxyRetries := st.Retries
-	if perProxyRetries <= 0 {
-		perProxyRetries = 1
-	}
-
-	var lastErr error
-	triedProxies := make(map[int]bool)
-	targetHost := normalizeHost(host)
-
-	for fallbackAttempt := 0; fallbackAttempt < maxFallbackRetries; fallbackAttempt++ {
-		selectedProxy, err := h.selectEligibleProxy(ctx, triedProxies, targetHost)
-		if err != nil {
-			if fallbackAttempt == 0 {
-				return nil, 0, fmt.Errorf("no proxy available: %w", err)
-			}
-			// No more eligible proxies to fall back to; return what we have.
-			break
-		}
-
-		conn, err := h.tryConnectWithRetries(selectedProxy, host, perProxyRetries)
-		duration := int(time.Since(startTime).Milliseconds())
-
-		if err != nil {
-			lastErr = fmt.Errorf("proxy %s failed after %d retries: %w", selectedProxy.Address, perProxyRetries, err)
-
-			go func(proxyID int, proxyAddr string, failedDuration int, failErr error) {
-				recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				record := RequestRecord{
-					ProxyID:      proxyID,
-					ProxyAddress: proxyAddr,
-					RequestedURL: "CONNECT://" + host,
-					Method:       "CONNECT",
-					Success:      false,
-					ResponseTime: failedDuration,
-					ErrorMessage: failErr.Error(),
-					Timestamp:    startTime,
-				}
-				h.tracker.RecordRequest(recordCtx, record) //nolint:errcheck
-			}(selectedProxy.ID, selectedProxy.Address, duration, err)
-
-			continue
-		}
-
-		return conn, selectedProxy.ID, nil
-	}
-
-	return nil, 0, fmt.Errorf("all proxies failed for CONNECT, last error: %w", lastErr)
-}
-
-// tryConnectWithRetries attempts to connect through a specific proxy with retries
-func (h *UpstreamProxyHandler) tryConnectWithRetries(selectedProxy *models.Proxy, host string, maxRetries int) (net.Conn, error) {
-	var lastErr error
-
-	for retry := 0; retry < maxRetries; retry++ {
-		conn, err := h.connectViaProxy(selectedProxy, host)
-		if err != nil {
-			lastErr = fmt.Errorf("proxy %s failed: %w", selectedProxy.Address, err)
-			if retry < maxRetries-1 {
-				continue
-			}
-		} else {
-			return conn, nil
-		}
-	}
-
-	return nil, lastErr
-}
-
-// connectViaProxy establishes a connection through a specific proxy
-func (h *UpstreamProxyHandler) connectViaProxy(proxy *models.Proxy, host string) (net.Conn, error) {
-	switch proxy.Protocol {
-	case "socks5":
-		var dialer proxyDialer.Dialer
-		var err error
-
-		if proxy.Username != nil && *proxy.Username != "" {
-			password := ""
-			if proxy.Password != nil {
-				password = *proxy.Password
-			}
-			auth := &proxyDialer.Auth{
-				User:     *proxy.Username,
-				Password: password,
-			}
-			dialer, err = proxyDialer.SOCKS5("tcp", proxy.Address, auth, proxyDialer.Direct)
-		} else {
-			dialer, err = proxyDialer.SOCKS5("tcp", proxy.Address, nil, proxyDialer.Direct)
-		}
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to create SOCKS5 dialer: %w", err)
-		}
-
-		conn, err := dialer.Dial("tcp", host)
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to %s via SOCKS5 proxy %s: %w", host, proxy.Address, err)
-		}
-
-		return conn, nil
-
-	case "http", "https":
-		return h.connectViaHTTPProxy(proxy, host)
-
-	default:
-		return nil, fmt.Errorf("unsupported proxy protocol for CONNECT: %s", proxy.Protocol)
-	}
-}
-
-// connectViaHTTPProxy establishes a connection through HTTP proxy using CONNECT method
-func (h *UpstreamProxyHandler) connectViaHTTPProxy(proxy *models.Proxy, host string) (net.Conn, error) {
-	timeout := time.Duration(h.getSettings().Timeout) * time.Second
-	if timeout < 60*time.Second {
-		timeout = 60 * time.Second
-	}
-
-	conn, err := net.DialTimeout("tcp", proxy.Address, timeout)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to proxy %s: %w", proxy.Address, err)
-	}
-
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
-	}
-
-	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\n", host)
-	connectReq += fmt.Sprintf("Host: %s\r\n", host)
-
-	if proxy.Username != nil && *proxy.Username != "" {
-		password := ""
-		if proxy.Password != nil {
-			password = *proxy.Password
-		}
-		auth := *proxy.Username + ":" + password
-		encoded := base64.StdEncoding.EncodeToString([]byte(auth))
-		connectReq += fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", encoded)
-	}
-
-	connectReq += "User-Agent: Rota-Proxy/1.0\r\n"
-	connectReq += "Proxy-Connection: Keep-Alive\r\n"
-	connectReq += "\r\n"
-
-	if _, err = conn.Write([]byte(connectReq)); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to send CONNECT request: %w", err)
-	}
-
-	// Read the response.
-	reader := bufio.NewReader(conn)
-	statusLine, err := reader.ReadString('\n')
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to read CONNECT response: %w", err)
-	}
-
-	// Parse status: "HTTP/1.x 200 ..."
-	parts := strings.SplitN(strings.TrimSpace(statusLine), " ", 3)
-	if len(parts) < 2 || parts[1] != "200" {
-		conn.Close()
-		return nil, fmt.Errorf("CONNECT request failed: %s", strings.TrimSpace(statusLine))
-	}
-
-	// Consume remaining headers until empty line.
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil || strings.TrimSpace(line) == "" {
-			break
-		}
-	}
-
-	// Clear deadline for the tunnel phase.
-	if err := conn.SetDeadline(time.Time{}); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to clear connection deadline: %w", err)
-	}
-
-	return conn, nil
 }
 
 // removeHopByHopHeaders removes hop-by-hop headers that shouldn't be proxied
