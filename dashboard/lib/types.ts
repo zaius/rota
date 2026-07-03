@@ -1,9 +1,14 @@
 // API Response Types
 
+// Protocol is the single source of truth for supported proxy protocols; the
+// same union used to be written out inline in half a dozen places.
+export type Protocol = "http" | "https" | "socks4" | "socks4a" | "socks5"
+export const PROTOCOLS: Protocol[] = ["http", "https", "socks4", "socks4a", "socks5"]
+
 export interface Proxy {
   id: number
   address: string
-  protocol: "http" | "https" | "socks4" | "socks4a" | "socks5"
+  protocol: Protocol
   status: "active" | "failed" | "idle"
   requests: number
   success_rate: number
@@ -149,14 +154,14 @@ export interface ApiError {
 // Request Types
 export interface AddProxyRequest {
   address: string
-  protocol: "http" | "https" | "socks4" | "socks4a" | "socks5"
+  protocol: Protocol
   username?: string
   password?: string
 }
 
 export interface UpdateProxyRequest {
   address?: string
-  protocol?: "http" | "https" | "socks4" | "socks4a" | "socks5"
+  protocol?: Protocol
   username?: string
   password?: string
 }
@@ -209,7 +214,7 @@ export interface ProxySource {
   id: number
   name: string
   url: string
-  protocol: "http" | "https" | "socks4" | "socks4a" | "socks5"
+  protocol: Protocol
   format: SourceFormat
   enabled: boolean
   interval_minutes: number
@@ -226,7 +231,7 @@ export interface ProxySource {
 export interface CreateSourceRequest {
   name: string
   url: string
-  protocol: "http" | "https" | "socks4" | "socks4a" | "socks5"
+  protocol: Protocol
   format?: SourceFormat
   enabled: boolean
   interval_minutes: number
@@ -356,10 +361,6 @@ export interface Job {
   check_url?: string
   workers?: number
 }
-
-// Backwards-compatible aliases for the original health-check-only names.
-export type HCJobStatus = JobStatus
-export type HCJob = Job
 
 // ── Proxy Users ────────────────────────────────────────────────────────────
 export interface ProxyUser {

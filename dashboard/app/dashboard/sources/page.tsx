@@ -6,7 +6,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
-import { ProxySource, CreateSourceRequest, SourceFormat } from "@/lib/types"
+import { ProxySource, CreateSourceRequest, SourceFormat, PROTOCOLS } from "@/lib/types"
 import { useResourceQuery } from "@/hooks/use-resource-query"
 import { StatCard } from "@/components/crud/stat-card"
 import { EmptyState } from "@/components/crud/empty-state"
@@ -27,7 +27,6 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 
-const PROTOCOLS = ["http", "https", "socks4", "socks4a", "socks5"] as const
 const FORMATS: { value: SourceFormat; label: string; hint: string }[] = [
   { value: "auto", label: "Auto-detect", hint: "host:port, user:pass@host:port, scheme://…" },
   { value: "host:port:user:pass", label: "host:port:user:pass", hint: "e.g. Webshare downloads" },

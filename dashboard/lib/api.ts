@@ -21,7 +21,6 @@ import {
   PoolProxy,
   GeoSummaryItem,
   GeoCityItem,
-  HCJob,
   Job,
   JobStatus,
   CreatePoolRequest,
@@ -447,7 +446,7 @@ class ApiClient {
     })
   }
 
-  async getHealthCheckJob(poolId: number, jobId: string): Promise<HCJob> {
+  async getHealthCheckJob(poolId: number, jobId: string): Promise<Job> {
     return this.request(`/api/v1/pools/${poolId}/health-check/${jobId}`)
   }
 

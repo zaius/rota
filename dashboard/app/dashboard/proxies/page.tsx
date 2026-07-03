@@ -73,11 +73,9 @@ import {
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api } from "@/lib/api"
-import { Proxy, AddProxyRequest, ProxyFilter, Job, SourceFormat } from "@/lib/types"
+import { Proxy, AddProxyRequest, ProxyFilter, Job, SourceFormat, PROTOCOLS } from "@/lib/types"
 import { Progress } from "@/components/ui/progress"
 import { toast } from "@/lib/toast"
-
-const PROXY_PROTOCOLS = ["http", "https", "socks4", "socks4a", "socks5"] as const
 
 // Line formats an import file can use. Mirrors the backend source formats in
 // core/internal/models/source.go so both parsers stay consistent.
@@ -114,7 +112,7 @@ function parseProxyLine(raw: string, format: SourceFormat = "auto"): AddProxyReq
   const schemeIdx = line.indexOf("://")
   if (schemeIdx !== -1) {
     const scheme = line.slice(0, schemeIdx).toLowerCase()
-    if ((PROXY_PROTOCOLS as readonly string[]).includes(scheme)) {
+    if ((PROTOCOLS as string[]).includes(scheme)) {
       protocol = scheme as AddProxyRequest["protocol"]
     }
     line = line.slice(schemeIdx + 3)
