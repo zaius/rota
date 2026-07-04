@@ -34,6 +34,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/api"
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/proxy"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/services"
@@ -74,13 +75,23 @@ func run() error {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
+	// Create the event store — the single boundary for time-series event data
+	// (system logs, per-request history). Config selects the backend; only
+	// Postgres exists today, ClickHouse is planned.
+	var eventStore events.Store
+	switch cfg.EventStore {
+	case "postgres":
+		eventStore = events.NewPostgresStore(db)
+	default:
+		return fmt.Errorf("unsupported event store: %s", cfg.EventStore)
+	}
+
 	// Create repositories once — this is the single place they are constructed.
 	proxyRepo := repository.NewProxyRepository(db)
 	settingsRepo := repository.NewSettingsRepository(db)
-	logRepo := repository.NewLogRepository(db)
 	poolRepo := repository.NewPoolRepository(db)
 	userRepo := repository.NewUserRepository(db)
-	dashboardRepo := repository.NewDashboardRepository(db)
+	dashboardRepo := repository.NewDashboardRepository(db, eventStore)
 	sourceRepo := repository.NewSourceRepository(db)
 	formatHistoryRepo := repository.NewFormatHistoryRepository(db)
 	adminRepo := repository.NewAdminRepository(db)
@@ -132,8 +143,15 @@ func run() error {
 			detailsPtr = &details
 		}
 
-		// Create log entry in database
-		if err := logRepo.Create(dbCtx, level, message, detailsPtr, attrs); err != nil {
+		// Create log entry in the event store
+		entry := events.LogEntry{
+			Level:    level,
+			Message:  message,
+			Details:  detailsPtr,
+			Source:   fmt.Sprintf("%v", source),
+			Metadata: attrs,
+		}
+		if err := eventStore.InsertLog(dbCtx, entry); err != nil {
 			// Don't log errors to avoid infinite loop
 			fmt.Fprintf(os.Stderr, "failed to write log to database: %v\n", err)
 		}
@@ -147,18 +165,18 @@ func run() error {
 	poolSvc := services.NewPoolService(poolRepo, proxyRepo, log)
 	alertWatcher := services.NewAlertWatcher(poolRepo, log)
 	cleanupSvc := services.NewProxyCleanupService(proxyRepo, settingsRepo, log)
-	logCleanupSvc := services.NewLogCleanupService(db, settingsRepo, log)
+	logCleanupSvc := services.NewLogCleanupService(eventStore, settingsRepo, log)
 
 	svcManager := services.NewManager(log, sourceSvc, poolSvc, alertWatcher, cleanupSvc, logCleanupSvc)
 
 	// Create servers
-	proxyServer, err := proxy.New(cfg.ProxyPort, log, db, proxyRepo, poolRepo, userRepo, settingsRepo)
+	proxyServer, err := proxy.New(cfg.ProxyPort, log, db, eventStore, proxyRepo, poolRepo, userRepo, settingsRepo)
 	if err != nil {
 		return fmt.Errorf("failed to create proxy server: %w", err)
 	}
 	apiServer := api.New(cfg, log, db, api.Deps{
 		ProxyRepo:         proxyRepo,
-		LogRepo:           logRepo,
+		EventStore:        eventStore,
 		SettingsRepo:      settingsRepo,
 		DashboardRepo:     dashboardRepo,
 		SourceRepo:        sourceRepo,

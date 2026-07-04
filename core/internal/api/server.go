@@ -11,6 +11,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/api/handlers"
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/proxy"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/services"
@@ -25,7 +26,7 @@ import (
 // constructs no repositories or background services.
 type Deps struct {
 	ProxyRepo         *repository.ProxyRepository
-	LogRepo           *repository.LogRepository
+	EventStore        events.Store
 	SettingsRepo      *repository.SettingsRepository
 	DashboardRepo     *repository.DashboardRepository
 	SourceRepo        *repository.SourceRepository
@@ -88,7 +89,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	}
 
 	// Usage tracker + health checker back only the on-demand proxy-test endpoint.
-	tracker := proxy.NewUsageTracker(deps.ProxyRepo)
+	tracker := proxy.NewUsageTracker(deps.EventStore, deps.ProxyRepo)
 	healthChecker := proxy.NewHealthChecker(deps.ProxyRepo, deps.SettingsRepo, tracker, log)
 
 	// Initialize handlers
@@ -96,9 +97,9 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	healthHandler := handlers.NewHealthHandler(db, deps.ProxyRepo, log)
 	dashboardHandler := handlers.NewDashboardHandler(deps.DashboardRepo, deps.ProxyRepo, log)
 	proxyHandler := handlers.NewProxyHandler(deps.ProxyRepo, healthChecker, log)
-	logsHandler := handlers.NewLogsHandler(deps.LogRepo, log)
+	logsHandler := handlers.NewLogsHandler(deps.EventStore, log)
 	settingsHandler := handlers.NewSettingsHandler(deps.SettingsRepo, log, nil) // onUpdate set below
-	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, deps.ProxyRepo, deps.LogRepo, log)
+	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, deps.ProxyRepo, deps.EventStore, log)
 	metricsHandler := handlers.NewMetricsHandler(log)
 	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.FormatHistoryRepo, deps.SourceSvc, log)
 	formatHistoryHandler := handlers.NewFormatHistoryHandler(deps.FormatHistoryRepo, log)

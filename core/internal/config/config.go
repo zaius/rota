@@ -16,6 +16,11 @@ type Config struct {
 	AdminUser string
 	AdminPass string
 
+	// EventStore selects the backend for time-series event data (system logs
+	// and per-request proxy history). Only "postgres" is supported today; a
+	// "clickhouse" backend is planned (EVENT_STORE).
+	EventStore string
+
 	// JWTSecret signs dashboard session tokens. Leave empty to generate a
 	// random secret on each boot (fine for single-node dev, but logs everyone
 	// out on restart and cannot work behind more than one replica). Set a
@@ -78,9 +83,10 @@ func Load() (*Config, error) {
 			Name:     getEnv("DB_NAME", "rota"),
 			SSLMode:  getEnv("DB_SSLMODE", "disable"),
 		},
-		AdminUser: getEnv("ROTA_ADMIN_USER", "admin"),
-		AdminPass: getEnv("ROTA_ADMIN_PASSWORD", "admin"),
-		JWTSecret: getEnv("JWT_SECRET", ""),
+		AdminUser:  getEnv("ROTA_ADMIN_USER", "admin"),
+		AdminPass:  getEnv("ROTA_ADMIN_PASSWORD", "admin"),
+		JWTSecret:  getEnv("JWT_SECRET", ""),
+		EventStore: getEnv("EVENT_STORE", "postgres"),
 
 		CORSAllowedOrigins: getEnvAsSlice("CORS_ALLOWED_ORIGINS", []string{"*"}),
 		WebDir:             getEnv("WEB_DIR", ""),
@@ -119,6 +125,10 @@ func (c *Config) Validate() error {
 	}
 	if !validLogLevels[c.LogLevel] {
 		return fmt.Errorf("invalid log level: %s (must be debug, info, warn, or error)", c.LogLevel)
+	}
+
+	if c.EventStore != "postgres" {
+		return fmt.Errorf("invalid event store: %s (must be postgres)", c.EventStore)
 	}
 
 	return nil

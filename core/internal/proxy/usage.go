@@ -5,18 +5,22 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/repository"
 )
 
-// UsageTracker tracks proxy usage and updates statistics
+// UsageTracker tracks proxy usage and updates statistics: request outcomes are
+// recorded as events in the event store, proxy state lives in the primary DB.
 type UsageTracker struct {
-	repo *repository.ProxyRepository
+	events events.Store
+	repo   *repository.ProxyRepository
 }
 
 // NewUsageTracker creates a new usage tracker
-func NewUsageTracker(repo *repository.ProxyRepository) *UsageTracker {
+func NewUsageTracker(eventStore events.Store, repo *repository.ProxyRepository) *UsageTracker {
 	return &UsageTracker{
-		repo: repo,
+		events: eventStore,
+		repo:   repo,
 	}
 }
 
@@ -35,8 +39,19 @@ type RequestRecord struct {
 
 // RecordRequest records a proxy request and updates statistics
 func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) error {
-	// Insert into proxy_requests hypertable
-	if err := t.insertProxyRequest(ctx, record); err != nil {
+	// Record the request outcome in the event store
+	err := t.events.InsertRequest(ctx, events.RequestEvent{
+		ProxyID:      record.ProxyID,
+		ProxyAddress: record.ProxyAddress,
+		Method:       record.Method,
+		URL:          record.RequestedURL,
+		StatusCode:   record.StatusCode,
+		ResponseTime: record.ResponseTime,
+		Success:      record.Success,
+		Error:        record.ErrorMessage,
+		Timestamp:    record.Timestamp,
+	})
+	if err != nil {
 		return fmt.Errorf("failed to insert proxy request: %w", err)
 	}
 
@@ -46,41 +61,6 @@ func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) 
 	}
 
 	return nil
-}
-
-// insertProxyRequest inserts a record into the proxy_requests hypertable
-func (t *UsageTracker) insertProxyRequest(ctx context.Context, record RequestRecord) error {
-	query := `
-		INSERT INTO proxy_requests (
-			proxy_id, proxy_address, method, url, status_code, success, response_time, error, timestamp
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`
-
-	var errorMsg *string
-	if record.ErrorMessage != "" {
-		errorMsg = &record.ErrorMessage
-	}
-
-	var statusCode *int
-	if record.StatusCode > 0 {
-		statusCode = &record.StatusCode
-	}
-
-	_, err := t.repo.GetDB().Pool.Exec(
-		ctx,
-		query,
-		record.ProxyID,
-		record.ProxyAddress,
-		record.Method,
-		record.RequestedURL,
-		statusCode,
-		record.Success,
-		record.ResponseTime,
-		errorMsg,
-		record.Timestamp,
-	)
-
-	return err
 }
 
 // updateProxyStats updates proxy statistics in the proxies table

@@ -8,22 +8,22 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
 // LogsHandler handles system logs endpoints
 type LogsHandler struct {
-	logRepo *repository.LogRepository
-	logger  *logger.Logger
+	events events.Store
+	logger *logger.Logger
 }
 
 // NewLogsHandler creates a new LogsHandler
-func NewLogsHandler(logRepo *repository.LogRepository, log *logger.Logger) *LogsHandler {
+func NewLogsHandler(eventStore events.Store, log *logger.Logger) *LogsHandler {
 	return &LogsHandler{
-		logRepo: logRepo,
-		logger:  log,
+		events: eventStore,
+		logger: log,
 	}
 }
 
@@ -72,7 +72,14 @@ func (h *LogsHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get logs
-	logs, total, err := h.logRepo.List(r.Context(), page, limit, level, search, source, startTime, endTime)
+	filter := events.LogFilter{
+		Level:     level,
+		Search:    search,
+		Source:    source,
+		StartTime: startTime,
+		EndTime:   endTime,
+	}
+	logs, total, err := h.events.ListLogs(r.Context(), filter, page, limit)
 	if err != nil {
 		h.logger.Error("failed to list logs", "error", err)
 		writeError(w, http.StatusInternalServerError, "Failed to list logs")
@@ -133,7 +140,13 @@ func (h *LogsHandler) Export(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get all logs matching filters
-	logs, _, err := h.logRepo.List(r.Context(), 1, 100000, level, "", source, startTime, endTime)
+	filter := events.LogFilter{
+		Level:     level,
+		Source:    source,
+		StartTime: startTime,
+		EndTime:   endTime,
+	}
+	logs, _, err := h.events.ListLogs(r.Context(), filter, 1, 100000)
 	if err != nil {
 		h.logger.Error("failed to get logs for export", "error", err)
 		writeError(w, http.StatusInternalServerError, "Failed to export logs")

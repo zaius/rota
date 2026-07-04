@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
@@ -98,6 +99,7 @@ func New(
 	port int,
 	log *logger.Logger,
 	db *database.DB,
+	eventStore events.Store,
 	proxyRepo *repository.ProxyRepository,
 	poolRepo *repository.PoolRepository,
 	userRepo *repository.UserRepository,
@@ -111,7 +113,7 @@ func New(
 	}
 
 	// Create usage tracker
-	tracker := NewUsageTracker(proxyRepo)
+	tracker := NewUsageTracker(eventStore, proxyRepo)
 
 	// Domain-scoped invalidations (process-wide, warmed from DB so they
 	// survive restarts)
