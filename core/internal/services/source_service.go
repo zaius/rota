@@ -6,154 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/lineformat"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
-
-// parsedProxy holds the extracted fields from a single proxy list line.
-type parsedProxy struct {
-	address  string  // host:port
-	protocol string  // http|https|socks4|socks4a|socks5 — empty means "use source default"
-	username *string // nil if not present
-	password *string // nil if not present
-}
-
-// parseProxyLine parses one line according to the source's format setting.
-//
-// Format "auto" accepts (auth is always optional):
-//
-//	host:port
-//	user:pass@host:port
-//	protocol://host:port
-//	protocol://user:pass@host:port
-//
-// The explicit formats handle lists whose field order auto-detection cannot
-// distinguish, e.g. host:port:user:pass (Webshare downloads). Lines that are
-// a bare host:port still parse under any explicit format, so mixed lists
-// don't break.
-func parseProxyLine(line string, format string) (parsedProxy, bool) {
-	line = strings.TrimSpace(line)
-	if line == "" || strings.HasPrefix(line, "#") {
-		return parsedProxy{}, false
-	}
-
-	var proto string
-	var user, pass *string
-
-	// ── 1. Strip protocol scheme if present ──────────────────────────────
-	if idx := strings.Index(line, "://"); idx != -1 {
-		scheme := strings.ToLower(line[:idx])
-		switch scheme {
-		case "http", "https", "socks4", "socks4a", "socks5":
-			proto = scheme
-		default:
-			// Unknown scheme — treat whole thing as address and hope for the best
-		}
-		line = line[idx+3:]
-	}
-
-	switch format {
-	case models.SourceFormatHostPortUserPass:
-		return parseColonFields(line, proto, false)
-	case models.SourceFormatUserPassHostPort:
-		return parseColonFields(line, proto, true)
-	case models.SourceFormatHostPortAtAuth:
-		return parseAddressAtAuth(line, proto)
-	}
-	// "auto" (and anything unrecognized) falls through to detection below.
-
-	// ── 2. Try url.Parse for user:pass@host:port ─────────────────────────
-	// Wrap with a fake scheme so url.Parse handles the userinfo correctly.
-	parsed, err := url.Parse("x://" + line)
-	if err == nil && parsed.Host != "" {
-		if ui := parsed.User; ui != nil {
-			u := ui.Username()
-			if u != "" {
-				user = &u
-			}
-			if p, ok := ui.Password(); ok && p != "" {
-				pass = &p
-			}
-		}
-		host := parsed.Host
-		// url.Parse puts host:port in Host
-		if !strings.Contains(host, ":") {
-			return parsedProxy{}, false // no port — unusable
-		}
-		return parsedProxy{
-			address:  host,
-			protocol: proto,
-			username: user,
-			password: pass,
-		}, true
-	}
-
-	// ── 3. Fallback: bare host:port (no userinfo) ─────────────────────────
-	if strings.Contains(line, ":") {
-		return parsedProxy{address: line, protocol: proto}, true
-	}
-
-	return parsedProxy{}, false
-}
-
-// parseColonFields handles 4-field colon-separated lines. authFirst picks
-// user:pass:host:port over host:port:user:pass. A 2-field line is treated as
-// a bare host:port.
-func parseColonFields(line, proto string, authFirst bool) (parsedProxy, bool) {
-	parts := strings.Split(line, ":")
-	switch len(parts) {
-	case 2:
-		if parts[0] == "" || parts[1] == "" {
-			return parsedProxy{}, false
-		}
-		return parsedProxy{address: line, protocol: proto}, true
-	case 4:
-		var host, port, user, pass string
-		if authFirst {
-			user, pass, host, port = parts[0], parts[1], parts[2], parts[3]
-		} else {
-			host, port, user, pass = parts[0], parts[1], parts[2], parts[3]
-		}
-		if host == "" || port == "" {
-			return parsedProxy{}, false
-		}
-		p := parsedProxy{address: host + ":" + port, protocol: proto}
-		if user != "" {
-			p.username = &user
-		}
-		if pass != "" {
-			p.password = &pass
-		}
-		return p, true
-	}
-	return parsedProxy{}, false
-}
-
-// parseAddressAtAuth handles host:port@user:pass lines (the reverse of the
-// URL userinfo convention). The @user:pass part is optional.
-func parseAddressAtAuth(line, proto string) (parsedProxy, bool) {
-	addr, auth, hasAuth := strings.Cut(line, "@")
-	if !strings.Contains(addr, ":") {
-		return parsedProxy{}, false
-	}
-	p := parsedProxy{address: addr, protocol: proto}
-	if hasAuth {
-		user, pass, _ := strings.Cut(auth, ":")
-		if user != "" {
-			p.username = &user
-		}
-		if pass != "" {
-			p.password = &pass
-		}
-	}
-	return p, true
-}
 
 // ProxyTester is the subset of HealthChecker used by SourceService.
 type ProxyTester interface {
@@ -304,17 +164,17 @@ func (s *SourceService) fetchAndImport(ctx context.Context, src *models.ProxySou
 	addresses := make([]string, 0, total)
 	for _, p := range parsed {
 		proto := src.Protocol
-		if p.protocol != "" {
-			proto = p.protocol
+		if p.Protocol != "" {
+			proto = p.Protocol
 		}
 		requests = append(requests, models.CreateProxyRequest{
-			Address:  p.address,
+			Address:  p.Address,
 			Protocol: proto,
-			Username: p.username,
-			Password: p.password,
+			Username: p.Username,
+			Password: p.Password,
 			SourceID: &src.ID,
 		})
-		addresses = append(addresses, p.address)
+		addresses = append(addresses, p.Address)
 	}
 
 	created, _ := s.bulkUpsert(ctx, requests)
@@ -401,12 +261,17 @@ func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
 }
 
 // parseProxyList parses a proxy list file, one entry per line, using the
-// source's format setting. Invalid lines are silently skipped.
-func parseProxyList(r io.Reader, format string) ([]parsedProxy, error) {
-	var proxies []parsedProxy
+// source's lineformat template. Lines that don't match the format are
+// silently skipped.
+func parseProxyList(r io.Reader, format string) ([]lineformat.Parsed, error) {
+	lf, err := lineformat.Compile(format)
+	if err != nil {
+		return nil, fmt.Errorf("invalid line format %q: %w", format, err)
+	}
+	var proxies []lineformat.Parsed
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		if p, ok := parseProxyLine(scanner.Text(), format); ok {
+		if p, ok := lf.Parse(scanner.Text()); ok {
 			proxies = append(proxies, p)
 		}
 	}

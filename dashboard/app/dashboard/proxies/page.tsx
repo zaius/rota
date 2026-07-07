@@ -74,140 +74,27 @@ import {
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api } from "@/lib/api"
-import { Proxy, AddProxyRequest, ProxyFilter, Job, SourceFormat, PROTOCOLS } from "@/lib/types"
+import { Proxy, AddProxyRequest, ProxyFilter, Job, PROTOCOLS } from "@/lib/types"
+import { compileLineFormat, FORMAT_URL } from "@/lib/lineformat"
+import { LineFormatField } from "@/components/line-format-field"
 import { Progress } from "@/components/ui/progress"
 import { toast } from "@/lib/toast"
 
-// Line formats an import file can use. Mirrors the backend source formats in
-// core/internal/models/source.go so both parsers stay consistent.
-const IMPORT_FORMATS: { value: SourceFormat; label: string; hint: string }[] = [
-  { value: "auto", label: "Auto-detect", hint: "host:port, user:pass@host:port, scheme://…" },
-  { value: "host:port:user:pass", label: "host:port:user:pass", hint: "e.g. Webshare downloads" },
-  { value: "user:pass:host:port", label: "user:pass:host:port", hint: "credentials first" },
-  { value: "host:port@user:pass", label: "host:port@user:pass", hint: "reversed @ notation" },
-]
-
-// parseProxyLine parses a single line from a bulk-import file into a proxy
-// request according to the chosen format. Protocol is read from an optional
-// scheme:// prefix in every format.
-//
-// "auto" accepts (auth and protocol optional):
-//
-//   host:port
-//   user:pass@host:port
-//   protocol://host:port
-//   protocol://user:pass@host:port
-//
-// The explicit formats handle lists whose field order auto-detection can't
-// distinguish (e.g. host:port:user:pass). A bare host:port still parses under
-// any explicit format so mixed lists don't break.
-//
-// Returns null for blank lines, comments (#...), and lines without a port.
-function parseProxyLine(raw: string, format: SourceFormat = "auto"): AddProxyRequest | null {
-  let line = raw.trim()
-  if (line === "" || line.startsWith("#")) return null
-
-  let protocol: AddProxyRequest["protocol"] = "http"
-
-  // Strip protocol scheme if present.
-  const schemeIdx = line.indexOf("://")
-  if (schemeIdx !== -1) {
-    const scheme = line.slice(0, schemeIdx).toLowerCase()
-    if ((PROTOCOLS as string[]).includes(scheme)) {
-      protocol = scheme as AddProxyRequest["protocol"]
-    }
-    line = line.slice(schemeIdx + 3)
-  }
-
-  switch (format) {
-    case "host:port:user:pass":
-      return parseColonFields(line, protocol, false)
-    case "user:pass:host:port":
-      return parseColonFields(line, protocol, true)
-    case "host:port@user:pass":
-      return parseAddressAtAuth(line, protocol)
-  }
-
-  // "auto": split optional user:pass@ userinfo from the host.
-  let hostPort = line
-  let username: string | undefined
-  let password: string | undefined
-  const atIdx = line.lastIndexOf("@")
-  if (atIdx !== -1) {
-    const userinfo = line.slice(0, atIdx)
-    hostPort = line.slice(atIdx + 1)
-    const colonIdx = userinfo.indexOf(":")
-    if (colonIdx !== -1) {
-      username = userinfo.slice(0, colonIdx) || undefined
-      password = userinfo.slice(colonIdx + 1) || undefined
-    } else {
-      username = userinfo || undefined
-    }
-  }
-
-  // Require host:port with a numeric port.
-  const portParts = hostPort.split(":")
-  if (portParts.length < 2 || !/^\d+$/.test(portParts[portParts.length - 1])) {
-    return null
-  }
-
-  return { address: hostPort, protocol, username, password }
-}
-
-// parseColonFields handles 4-field colon-separated lines. authFirst picks
-// user:pass:host:port over host:port:user:pass. A 2-field line is a bare
-// host:port. The port must be numeric.
-function parseColonFields(
-  line: string,
-  protocol: AddProxyRequest["protocol"],
-  authFirst: boolean,
+// parseImportLine parses one bulk-import line into a proxy request using the
+// shared lineformat engine (see lib/lineformat.ts), then fills in the default
+// protocol the import UI assumes when the line carries none.
+function parseImportLine(
+  raw: string,
+  parse: (line: string) => ReturnType<ReturnType<typeof compileLineFormat>["parse"]>,
 ): AddProxyRequest | null {
-  const parts = line.split(":")
-  if (parts.length === 2) {
-    if (!parts[0] || !/^\d+$/.test(parts[1])) return null
-    return { address: line, protocol }
+  const p = parse(raw)
+  if (!p) return null
+  return {
+    address: p.address,
+    protocol: (p.protocol ?? "http") as AddProxyRequest["protocol"],
+    username: p.username,
+    password: p.password,
   }
-  if (parts.length === 4) {
-    const [host, port, user, pass] = authFirst
-      ? [parts[2], parts[3], parts[0], parts[1]]
-      : [parts[0], parts[1], parts[2], parts[3]]
-    if (!host || !/^\d+$/.test(port)) return null
-    return {
-      address: `${host}:${port}`,
-      protocol,
-      username: user || undefined,
-      password: pass || undefined,
-    }
-  }
-  return null
-}
-
-// parseAddressAtAuth handles host:port@user:pass lines (the reverse of the URL
-// userinfo convention). The @user:pass part is optional; the port must be
-// numeric.
-function parseAddressAtAuth(
-  line: string,
-  protocol: AddProxyRequest["protocol"],
-): AddProxyRequest | null {
-  const atIdx = line.indexOf("@")
-  const addr = atIdx === -1 ? line : line.slice(0, atIdx)
-  const portParts = addr.split(":")
-  if (portParts.length < 2 || !/^\d+$/.test(portParts[portParts.length - 1])) {
-    return null
-  }
-  let username: string | undefined
-  let password: string | undefined
-  if (atIdx !== -1) {
-    const auth = line.slice(atIdx + 1)
-    const colonIdx = auth.indexOf(":")
-    if (colonIdx !== -1) {
-      username = auth.slice(0, colonIdx) || undefined
-      password = auth.slice(colonIdx + 1) || undefined
-    } else {
-      username = auth || undefined
-    }
-  }
-  return { address: addr, protocol, username, password }
 }
 
 export default function ProxiesPage() {
@@ -240,7 +127,7 @@ export default function ProxiesPage() {
   // Import modal states
   const [importFile, setImportFile] = React.useState<File | null>(null)
   const [importText, setImportText] = React.useState("")
-  const [importFormat, setImportFormat] = React.useState<SourceFormat>("auto")
+  const [importFormat, setImportFormat] = React.useState<string>(FORMAT_URL)
   const [parsedProxies, setParsedProxies] = React.useState<AddProxyRequest[]>([])
   const [isImporting, setIsImporting] = React.useState(false)
   const [importProgress, setImportProgress] = React.useState({ current: 0, total: 0, success: 0, failed: 0, skipped: 0 })
@@ -527,10 +414,13 @@ export default function ProxiesPage() {
     }
   }
 
-  const parseImportText = (text: string, format: SourceFormat) =>
-    text.split('\n')
-      .map(line => parseProxyLine(line, format))
+  const parseImportText = (text: string, format: string) => {
+    const compiled = compileLineFormat(format)
+    if (compiled.error) return []
+    return text.split('\n')
+      .map(line => parseImportLine(line, compiled.parse))
       .filter((proxy): proxy is AddProxyRequest => proxy !== null)
+  }
 
   const handleFileUpload = (file: File) => {
     if (!file.name.endsWith('.txt')) {
@@ -549,7 +439,7 @@ export default function ProxiesPage() {
   }
 
   // Re-parse the already-loaded file when the format selection changes.
-  const handleFormatChange = (format: SourceFormat) => {
+  const handleFormatChange = (format: string) => {
     setImportFormat(format)
     if (importText) {
       setParsedProxies(parseImportText(importText, format))
@@ -588,6 +478,10 @@ export default function ProxiesPage() {
     setIsImporting(true)
     setImportProgress({ current: 0, total: parsedProxies.length, success: 0, failed: 0, skipped: 0 })
     setImportResults([])
+
+    // Remember a custom format so it's offered next time (presets are no-ops
+    // server-side). Best-effort — never blocks the import.
+    api.recordFormat(importFormat).catch(() => {})
 
     const results: Array<{ address: string; status: string; error?: string }> = []
     let success = 0
@@ -644,7 +538,7 @@ export default function ProxiesPage() {
   const resetImportDialog = () => {
     setImportFile(null)
     setImportText("")
-    setImportFormat("auto")
+    setImportFormat(FORMAT_URL)
     setParsedProxies([])
     setIsImporting(false)
     setImportProgress({ current: 0, total: 0, success: 0, failed: 0, skipped: 0 })
@@ -1381,39 +1275,19 @@ export default function ProxiesPage() {
           <DialogHeader>
             <DialogTitle>Import Proxies from TXT</DialogTitle>
             <DialogDescription>
-              Upload a .txt file with one proxy per line. Choose how each line is
-              laid out below — leave it on auto-detect for URL-style lines like
-              {" "}<code>http://user:pass@host:port</code>.
+              Upload a .txt file with one proxy per line. The default format reads
+              URL-style lines like <code>http://user:pass@host:port</code>; adjust
+              it below if your list is laid out differently.
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label>Line format</Label>
-              <Select
-                value={importFormat}
-                onValueChange={(v) => handleFormatChange(v as SourceFormat)}
-                disabled={isImporting}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {IMPORT_FORMATS.map((f) => (
-                    <SelectItem key={f.value} value={f.value}>
-                      <span className="flex items-baseline gap-2">
-                        <code className="text-xs">{f.label}</code>
-                        <span className="text-xs text-muted-foreground">{f.hint}</span>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                How each line is parsed. Pick an explicit format when the list puts
-                credentials after the address, e.g. <code>ip:port:user:pass</code>.
-              </p>
-            </div>
+            <LineFormatField
+              value={importFormat}
+              onChange={handleFormatChange}
+              sampleLine={importText}
+              disabled={isImporting}
+            />
 
             {!importFile ? (
               // File Upload Area

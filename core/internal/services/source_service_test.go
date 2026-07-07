@@ -1,73 +1,64 @@
 package services
 
 import (
+	"strings"
 	"testing"
 
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/alpkeskin/rota/core/internal/lineformat"
 )
 
-func strval(p *string) string {
-	if p == nil {
-		return ""
+// Line-level parsing is covered in internal/lineformat; this exercises the
+// list-level behavior: skipping unparseable lines, custom templates, and
+// rejecting an invalid format up front.
+func TestParseProxyList(t *testing.T) {
+	list := strings.Join([]string{
+		"# comment",
+		"",
+		"1.2.3.4:8080",
+		"socks5://alice:s3cret@5.6.7.8:1080",
+		"not a proxy line",
+	}, "\n")
+
+	proxies, err := parseProxyList(strings.NewReader(list), lineformat.PresetURL)
+	if err != nil {
+		t.Fatalf("parseProxyList failed: %v", err)
 	}
-	return *p
+	if len(proxies) != 2 {
+		t.Fatalf("parsed %d proxies, want 2", len(proxies))
+	}
+	if proxies[0].Address != "1.2.3.4:8080" {
+		t.Errorf("first address = %q, want 1.2.3.4:8080", proxies[0].Address)
+	}
+	if proxies[1].Address != "5.6.7.8:1080" || proxies[1].Protocol != "socks5" {
+		t.Errorf("second = %q/%q, want 5.6.7.8:1080/socks5", proxies[1].Address, proxies[1].Protocol)
+	}
+	if proxies[1].Username == nil || *proxies[1].Username != "alice" {
+		t.Errorf("second username = %v, want alice", proxies[1].Username)
+	}
 }
 
-func TestParseProxyLineFormats(t *testing.T) {
-	tests := []struct {
-		name    string
-		line    string
-		format  string
-		ok      bool
-		address string
-		proto   string
-		user    string
-		pass    string
-	}{
-		// auto — existing behavior
-		{"auto host:port", "1.2.3.4:8080", models.SourceFormatAuto, true, "1.2.3.4:8080", "", "", ""},
-		{"auto user:pass@host:port", "alice:s3cret@1.2.3.4:8080", models.SourceFormatAuto, true, "1.2.3.4:8080", "", "alice", "s3cret"},
-		{"auto scheme", "socks5://1.2.3.4:1080", models.SourceFormatAuto, true, "1.2.3.4:1080", "socks5", "", ""},
-		{"auto comment", "# comment", models.SourceFormatAuto, false, "", "", "", ""},
+func TestParseProxyListCustomTemplate(t *testing.T) {
+	list := "1.2.3.4:8080:US:alice:s3cret\n5.6.7.8:1080\n"
 
-		// host:port:user:pass (Webshare download format)
-		{"hpup full", "1.2.3.4:8080:alice:s3cret", models.SourceFormatHostPortUserPass, true, "1.2.3.4:8080", "", "alice", "s3cret"},
-		{"hpup bare host:port", "1.2.3.4:8080", models.SourceFormatHostPortUserPass, true, "1.2.3.4:8080", "", "", ""},
-		{"hpup with scheme", "http://1.2.3.4:8080:alice:s3cret", models.SourceFormatHostPortUserPass, true, "1.2.3.4:8080", "http", "alice", "s3cret"},
-		{"hpup wrong field count", "1.2.3.4:8080:alice", models.SourceFormatHostPortUserPass, false, "", "", "", ""},
-		{"hpup empty host", ":8080:alice:s3cret", models.SourceFormatHostPortUserPass, false, "", "", "", ""},
-
-		// user:pass:host:port
-		{"uphp full", "alice:s3cret:1.2.3.4:8080", models.SourceFormatUserPassHostPort, true, "1.2.3.4:8080", "", "alice", "s3cret"},
-		{"uphp bare host:port", "1.2.3.4:8080", models.SourceFormatUserPassHostPort, true, "1.2.3.4:8080", "", "", ""},
-
-		// host:port@user:pass
-		{"hp@up full", "1.2.3.4:8080@alice:s3cret", models.SourceFormatHostPortAtAuth, true, "1.2.3.4:8080", "", "alice", "s3cret"},
-		{"hp@up bare host:port", "1.2.3.4:8080", models.SourceFormatHostPortAtAuth, true, "1.2.3.4:8080", "", "", ""},
-		{"hp@up no port", "1.2.3.4@alice:s3cret", models.SourceFormatHostPortAtAuth, false, "", "", "", ""},
+	proxies, err := parseProxyList(strings.NewReader(list), "host:port:*:user:pass")
+	if err != nil {
+		t.Fatalf("parseProxyList failed: %v", err)
 	}
+	if len(proxies) != 2 {
+		t.Fatalf("parsed %d proxies, want 2", len(proxies))
+	}
+	if proxies[0].Address != "1.2.3.4:8080" || proxies[0].Username == nil || *proxies[0].Username != "alice" {
+		t.Errorf("first = %+v, want 1.2.3.4:8080 with user alice", proxies[0])
+	}
+	// bare host:port still parses under an explicit template
+	if proxies[1].Address != "5.6.7.8:1080" {
+		t.Errorf("second address = %q, want 5.6.7.8:1080", proxies[1].Address)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p, ok := parseProxyLine(tt.line, tt.format)
-			if ok != tt.ok {
-				t.Fatalf("ok = %v, want %v", ok, tt.ok)
-			}
-			if !ok {
-				return
-			}
-			if p.address != tt.address {
-				t.Errorf("address = %q, want %q", p.address, tt.address)
-			}
-			if p.protocol != tt.proto {
-				t.Errorf("protocol = %q, want %q", p.protocol, tt.proto)
-			}
-			if strval(p.username) != tt.user {
-				t.Errorf("username = %q, want %q", strval(p.username), tt.user)
-			}
-			if strval(p.password) != tt.pass {
-				t.Errorf("password = %q, want %q", strval(p.password), tt.pass)
-			}
-		})
+func TestParseProxyListInvalidFormat(t *testing.T) {
+	_, err := parseProxyList(strings.NewReader("1.2.3.4:8080"), "host:port:country")
+	if err == nil {
+		t.Fatal("expected error for invalid format, got nil")
 	}
 }

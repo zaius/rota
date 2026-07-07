@@ -2,24 +2,8 @@ package models
 
 import "time"
 
-// Line formats a proxy source file can use. Auto covers host:port,
-// user:pass@host:port and scheme://… lines; the explicit formats exist for
-// lists that put credentials in positions auto-detection can't distinguish
-// (e.g. Webshare downloads use host:port:user:pass).
-const (
-	SourceFormatAuto             = "auto"
-	SourceFormatHostPortUserPass = "host:port:user:pass"
-	SourceFormatUserPassHostPort = "user:pass:host:port"
-	SourceFormatHostPortAtAuth   = "host:port@user:pass"
-)
-
-// ValidSourceFormats is the set of accepted values for ProxySource.Format.
-var ValidSourceFormats = map[string]bool{
-	SourceFormatAuto:             true,
-	SourceFormatHostPortUserPass: true,
-	SourceFormatUserPassHostPort: true,
-	SourceFormatHostPortAtAuth:   true,
-}
+// A source's Format is a lineformat template (see internal/lineformat), e.g.
+// "host:port:user:pass" or "[protocol://][user[:pass]@]host:port".
 
 // ProxySource represents a remote URL that provides a list of proxies
 type ProxySource struct {
@@ -45,7 +29,7 @@ type CreateProxySourceRequest struct {
 	Name            string `json:"name"     validate:"required"`
 	URL             string `json:"url"      validate:"required,url"`
 	Protocol        string `json:"protocol" validate:"required,oneof=http https socks4 socks4a socks5"`
-	Format          string `json:"format"   validate:"omitempty,oneof=auto host:port:user:pass user:pass:host:port host:port@user:pass"`
+	Format          string `json:"format"` // a lineformat template — validated in the handler
 	Enabled         bool   `json:"enabled"`
 	IntervalMinutes int    `json:"interval_minutes" validate:"omitempty,min=1"`
 	CleanupEnabled  bool   `json:"cleanup_enabled"`
@@ -57,9 +41,24 @@ type UpdateProxySourceRequest struct {
 	Name            string `json:"name"`
 	URL             string `json:"url"`
 	Protocol        string `json:"protocol" validate:"omitempty,oneof=http https socks4 socks4a socks5"`
-	Format          string `json:"format"   validate:"omitempty,oneof=auto host:port:user:pass user:pass:host:port host:port@user:pass"`
+	Format          string `json:"format"` // a lineformat template — validated in the handler
 	Enabled         *bool  `json:"enabled"`
 	IntervalMinutes int    `json:"interval_minutes" validate:"omitempty,min=1"`
 	CleanupEnabled  *bool  `json:"cleanup_enabled"`
 	CleanupDays     int    `json:"cleanup_days" validate:"omitempty,min=1,max=365"`
+}
+
+// FormatHistoryEntry is a custom line format the user has used before, kept so
+// it can be re-picked from the format dropdown. Built-in presets are never
+// recorded.
+type FormatHistoryEntry struct {
+	ID         int       `json:"id"`
+	Format     string    `json:"format"`
+	UseCount   int       `json:"use_count"`
+	LastUsedAt time.Time `json:"last_used_at"`
+}
+
+// RecordFormatRequest is the payload for recording a format into history.
+type RecordFormatRequest struct {
+	Format string `json:"format" validate:"required"`
 }

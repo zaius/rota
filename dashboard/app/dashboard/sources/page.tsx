@@ -6,7 +6,10 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
-import { ProxySource, CreateSourceRequest, SourceFormat, PROTOCOLS } from "@/lib/types"
+import { ProxySource, CreateSourceRequest, PROTOCOLS } from "@/lib/types"
+import { FORMAT_URL, compileLineFormat } from "@/lib/lineformat"
+import { useQueryClient } from "@tanstack/react-query"
+import { LineFormatField } from "@/components/line-format-field"
 import { useResourceQuery } from "@/hooks/use-resource-query"
 import { StatCard } from "@/components/crud/stat-card"
 import { EmptyState } from "@/components/crud/empty-state"
@@ -27,17 +30,11 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 
-const FORMATS: { value: SourceFormat; label: string; hint: string }[] = [
-  { value: "auto", label: "Auto-detect", hint: "host:port, user:pass@host:port, scheme://…" },
-  { value: "host:port:user:pass", label: "host:port:user:pass", hint: "e.g. Webshare downloads" },
-  { value: "user:pass:host:port", label: "user:pass:host:port", hint: "credentials first" },
-  { value: "host:port@user:pass", label: "host:port@user:pass", hint: "reversed @ notation" },
-]
 const DEFAULT_FORM: CreateSourceRequest = {
   name: "",
   url: "",
   protocol: "http",
-  format: "auto",
+  format: FORMAT_URL,
   enabled: true,
   interval_minutes: 60,
   cleanup_enabled: false,
@@ -45,6 +42,7 @@ const DEFAULT_FORM: CreateSourceRequest = {
 }
 
 export default function SourcesPage() {
+  const queryClient = useQueryClient()
   const sourcesQuery = useResourceQuery(["sources"], () => api.getSources().then(r => r.sources))
   const sources = sourcesQuery.data ?? []
   const loading = sourcesQuery.isLoading
@@ -70,7 +68,7 @@ export default function SourcesPage() {
       name: s.name,
       url: s.url,
       protocol: s.protocol,
-      format: s.format || "auto",
+      format: s.format || FORMAT_URL,
       enabled: s.enabled,
       interval_minutes: s.interval_minutes,
       cleanup_enabled: s.cleanup_enabled,
@@ -84,6 +82,11 @@ export default function SourcesPage() {
       toast.error("Name and URL are required")
       return
     }
+    const formatError = compileLineFormat(form.format ?? "").error
+    if (formatError) {
+      toast.error(`Invalid line format: ${formatError}`)
+      return
+    }
     setSaving(true)
     try {
       if (editSource) {
@@ -95,6 +98,8 @@ export default function SourcesPage() {
       }
       setDialogOpen(false)
       reload()
+      // A custom format may now be in history — refresh the picker.
+      queryClient.invalidateQueries({ queryKey: ["format-history"] })
     } catch (e: any) {
       toast.error(e.message || "Failed to save source")
     } finally {
@@ -229,8 +234,11 @@ export default function SourcesPage() {
                     <TableCell>
                       <div className="flex flex-col items-start gap-1">
                         <Badge variant="outline">{s.protocol.toUpperCase()}</Badge>
-                        {s.format && s.format !== "auto" && (
-                          <span className="text-[10px] text-muted-foreground" title="Line format of the source list">
+                        {s.format && s.format !== FORMAT_URL && (
+                          <span
+                            className="text-[10px] text-muted-foreground font-mono max-w-[140px] truncate"
+                            title={`Line format: ${s.format}`}
+                          >
                             {s.format}
                           </span>
                         )}
@@ -341,31 +349,10 @@ export default function SourcesPage() {
                 onChange={e => setForm({ ...form, url: e.target.value })}
               />
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Line format</Label>
-              <Select
-                value={form.format ?? "auto"}
-                onValueChange={v => setForm({ ...form, format: v as SourceFormat })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {FORMATS.map(f => (
-                    <SelectItem key={f.value} value={f.value}>
-                      <span className="flex items-baseline gap-2">
-                        <code className="text-xs">{f.label}</code>
-                        <span className="text-xs text-muted-foreground">{f.hint}</span>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                How each line of the file is parsed. Pick an explicit format when the
-                list puts credentials after the address, e.g. <code>ip:port:user:pass</code>.
-              </p>
-            </div>
+            <LineFormatField
+              value={form.format ?? FORMAT_URL}
+              onChange={format => setForm({ ...form, format })}
+            />
             <div className="flex flex-col gap-1.5">
               <Label>Protocol</Label>
               <Select

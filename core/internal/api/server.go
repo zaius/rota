@@ -24,14 +24,15 @@ import (
 // once by the composition root (main) and injected, so the API server itself
 // constructs no repositories or background services.
 type Deps struct {
-	ProxyRepo     *repository.ProxyRepository
-	LogRepo       *repository.LogRepository
-	SettingsRepo  *repository.SettingsRepository
-	DashboardRepo *repository.DashboardRepository
-	SourceRepo    *repository.SourceRepository
-	PoolRepo      *repository.PoolRepository
-	UserRepo      *repository.UserRepository
-	AdminRepo     *repository.AdminRepository
+	ProxyRepo         *repository.ProxyRepository
+	LogRepo           *repository.LogRepository
+	SettingsRepo      *repository.SettingsRepository
+	DashboardRepo     *repository.DashboardRepository
+	SourceRepo        *repository.SourceRepository
+	FormatHistoryRepo *repository.FormatHistoryRepository
+	PoolRepo          *repository.PoolRepository
+	UserRepo          *repository.UserRepository
+	AdminRepo         *repository.AdminRepository
 
 	SourceSvc *services.SourceService
 	PoolSvc   *services.PoolService
@@ -53,18 +54,19 @@ type Server struct {
 	proxyServer handlers.ProxyServer
 
 	// Handlers
-	authHandler         *handlers.AuthHandler
-	healthHandler       *handlers.HealthHandler
-	dashboardHandler    *handlers.DashboardHandler
-	proxyHandler        *handlers.ProxyHandler
-	logsHandler         *handlers.LogsHandler
-	settingsHandler     *handlers.SettingsHandler
-	websocketHandler    *handlers.WebSocketHandler
-	metricsHandler      *handlers.MetricsHandler
-	sourceHandler       *handlers.SourceHandler
-	poolHandler         *handlers.PoolHandler
-	userHandler         *handlers.UserHandler
-	proxyControlHandler *handlers.ProxyControlHandler
+	authHandler          *handlers.AuthHandler
+	healthHandler        *handlers.HealthHandler
+	dashboardHandler     *handlers.DashboardHandler
+	proxyHandler         *handlers.ProxyHandler
+	logsHandler          *handlers.LogsHandler
+	settingsHandler      *handlers.SettingsHandler
+	websocketHandler     *handlers.WebSocketHandler
+	metricsHandler       *handlers.MetricsHandler
+	sourceHandler        *handlers.SourceHandler
+	formatHistoryHandler *handlers.FormatHistoryHandler
+	poolHandler          *handlers.PoolHandler
+	userHandler          *handlers.UserHandler
+	proxyControlHandler  *handlers.ProxyControlHandler
 }
 
 // New creates a new API server instance from injected dependencies. It builds
@@ -98,7 +100,8 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	settingsHandler := handlers.NewSettingsHandler(deps.SettingsRepo, log, nil) // onUpdate set below
 	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, deps.ProxyRepo, deps.LogRepo, log)
 	metricsHandler := handlers.NewMetricsHandler(log)
-	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.SourceSvc, log)
+	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.FormatHistoryRepo, deps.SourceSvc, log)
+	formatHistoryHandler := handlers.NewFormatHistoryHandler(deps.FormatHistoryRepo, log)
 	poolHandler := handlers.NewPoolHandler(deps.PoolRepo, deps.PoolSvc, log)
 	userHandler := handlers.NewUserHandler(deps.UserRepo, deps.PoolRepo, log)
 	proxyControlHandler := handlers.NewProxyControlHandler(deps.ProxyRepo, log)
@@ -114,26 +117,27 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	)
 
 	s := &Server{
-		router:              chi.NewRouter(),
-		logger:              log,
-		db:                  db,
-		port:                cfg.APIPort,
-		jwtSecret:           jwtSecret,
-		corsOrigins:         cfg.CORSAllowedOrigins,
-		webDir:              cfg.WebDir,
-		authRL:              authRL,
-		authHandler:         authHandler,
-		healthHandler:       healthHandler,
-		dashboardHandler:    dashboardHandler,
-		proxyHandler:        proxyHandler,
-		logsHandler:         logsHandler,
-		settingsHandler:     settingsHandler,
-		websocketHandler:    websocketHandler,
-		metricsHandler:      metricsHandler,
-		sourceHandler:       sourceHandler,
-		poolHandler:         poolHandler,
-		userHandler:         userHandler,
-		proxyControlHandler: proxyControlHandler,
+		router:               chi.NewRouter(),
+		logger:               log,
+		db:                   db,
+		port:                 cfg.APIPort,
+		jwtSecret:            jwtSecret,
+		corsOrigins:          cfg.CORSAllowedOrigins,
+		webDir:               cfg.WebDir,
+		authRL:               authRL,
+		authHandler:          authHandler,
+		healthHandler:        healthHandler,
+		dashboardHandler:     dashboardHandler,
+		proxyHandler:         proxyHandler,
+		logsHandler:          logsHandler,
+		settingsHandler:      settingsHandler,
+		websocketHandler:     websocketHandler,
+		metricsHandler:       metricsHandler,
+		sourceHandler:        sourceHandler,
+		formatHistoryHandler: formatHistoryHandler,
+		poolHandler:          poolHandler,
+		userHandler:          userHandler,
+		proxyControlHandler:  proxyControlHandler,
 	}
 
 	// Wire settings reload: when settings are updated via API, reload proxy server
@@ -272,6 +276,11 @@ func (s *Server) setupRoutes() {
 		r.Delete("/sources/{id}", s.sourceHandler.Delete)
 		r.Post("/sources/{id}/fetch", s.sourceHandler.FetchNow)
 		r.Post("/sources/enrich-geo", s.sourceHandler.EnrichGeo)
+
+		// Line-format history (custom formats used for sources/imports)
+		r.Get("/format-history", s.formatHistoryHandler.List)
+		r.Post("/format-history", s.formatHistoryHandler.Record)
+		r.Delete("/format-history/{id}", s.formatHistoryHandler.Delete)
 
 		// Proxy Users (per-user pool authentication)
 		r.Get("/proxy-users", s.userHandler.List)

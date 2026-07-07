@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 
+	"github.com/alpkeskin/rota/core/internal/lineformat"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/services"
@@ -15,6 +17,7 @@ import (
 // SourceHandler handles proxy source CRUD + manual fetch
 type SourceHandler struct {
 	sourceRepo *repository.SourceRepository
+	formatRepo *repository.FormatHistoryRepository
 	sourceSvc  *services.SourceService
 	logger     *logger.Logger
 }
@@ -22,13 +25,26 @@ type SourceHandler struct {
 // NewSourceHandler creates a new SourceHandler
 func NewSourceHandler(
 	sourceRepo *repository.SourceRepository,
+	formatRepo *repository.FormatHistoryRepository,
 	sourceSvc *services.SourceService,
 	log *logger.Logger,
 ) *SourceHandler {
 	return &SourceHandler{
 		sourceRepo: sourceRepo,
+		formatRepo: formatRepo,
 		sourceSvc:  sourceSvc,
 		logger:     log,
+	}
+}
+
+// rememberFormat records a custom format into history (best-effort) so the
+// dashboard can offer it again. Built-in presets are not recorded.
+func (h *SourceHandler) rememberFormat(ctx context.Context, format string) {
+	if format == "" || lineformat.IsPreset(format) {
+		return
+	}
+	if err := h.formatRepo.Record(ctx, format); err != nil {
+		h.logger.Warn("failed to record format history", "format", format, "error", err)
 	}
 }
 
@@ -59,10 +75,10 @@ func (h *SourceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Format == "" {
-		req.Format = models.SourceFormatAuto
+		req.Format = lineformat.PresetURL
 	}
-	if !models.ValidSourceFormats[req.Format] {
-		writeError(w, http.StatusBadRequest, "invalid format")
+	if err := lineformat.Validate(req.Format); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid format: "+err.Error())
 		return
 	}
 	if req.IntervalMinutes <= 0 {
@@ -85,6 +101,7 @@ func (h *SourceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create source")
 		return
 	}
+	h.rememberFormat(r.Context(), req.Format)
 	writeJSON(w, http.StatusCreated, src)
 }
 
@@ -104,9 +121,11 @@ func (h *SourceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.Format != "" && !models.ValidSourceFormats[req.Format] {
-		writeError(w, http.StatusBadRequest, "invalid format")
-		return
+	if req.Format != "" {
+		if err := lineformat.Validate(req.Format); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid format: "+err.Error())
+			return
+		}
 	}
 	// cleanup_days bounds
 	if req.CleanupDays < 0 {
@@ -120,6 +139,7 @@ func (h *SourceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "source not found or update failed")
 		return
 	}
+	h.rememberFormat(r.Context(), req.Format)
 	writeJSON(w, http.StatusOK, src)
 }
 

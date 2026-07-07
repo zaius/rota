@@ -201,14 +201,18 @@ export interface ProxyTestResult {
 }
 
 // ── Proxy Sources ──────────────────────────────────────────────────────────
-// Line format of the source file. "auto" detects host:port /
-// user:pass@host:port / scheme://… — the explicit ones cover lists whose
-// field order can't be auto-detected (e.g. Webshare's host:port:user:pass).
-export type SourceFormat =
-  | "auto"
-  | "host:port:user:pass"
-  | "user:pass:host:port"
-  | "host:port@user:pass"
+// Line format of the source file: a lineformat template like
+// "host:port:user:pass" or "[protocol://][user[:pass]@]host:port" — see
+// lib/lineformat.ts.
+export type SourceFormat = string
+
+// A custom line format used before, offered for re-picking in the dashboard.
+export interface FormatHistoryEntry {
+  id: number
+  format: string
+  use_count: number
+  last_used_at: string
+}
 
 export interface ProxySource {
   id: number

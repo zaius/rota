@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
+	"github.com/alpkeskin/rota/core/internal/lineformat"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/jackc/pgx/v5"
 )
@@ -88,7 +89,7 @@ func (r *SourceRepository) Create(ctx context.Context, req models.CreateProxySou
 	}
 	format := req.Format
 	if format == "" {
-		format = models.SourceFormatAuto
+		format = lineformat.PresetURL
 	}
 	query := `
 		INSERT INTO proxy_sources (

@@ -17,6 +17,7 @@ import {
   ProxySource,
   CreateSourceRequest,
   UpdateSourceRequest,
+  FormatHistoryEntry,
   ProxyPool,
   PoolProxy,
   GeoSummaryItem,
@@ -394,6 +395,19 @@ class ApiClient {
 
   async enrichGeo(): Promise<{ enriched: number }> {
     return this.request("/api/v1/sources/enrich-geo", { method: "POST" })
+  }
+
+  // ── Line-format history ───────────────────────────────────────────────────
+  async getFormatHistory(): Promise<{ formats: FormatHistoryEntry[] }> {
+    return this.request("/api/v1/format-history")
+  }
+
+  async recordFormat(format: string): Promise<{ status: string }> {
+    return this.request("/api/v1/format-history", { method: "POST", body: JSON.stringify({ format }) })
+  }
+
+  async deleteFormatHistory(id: number): Promise<{ status: string }> {
+    return this.request(`/api/v1/format-history/${id}`, { method: "DELETE" })
   }
 
   // ── Proxy Pools ───────────────────────────────────────────────────────────

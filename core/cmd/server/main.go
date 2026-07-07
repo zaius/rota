@@ -82,6 +82,7 @@ func run() error {
 	userRepo := repository.NewUserRepository(db)
 	dashboardRepo := repository.NewDashboardRepository(db)
 	sourceRepo := repository.NewSourceRepository(db)
+	formatHistoryRepo := repository.NewFormatHistoryRepository(db)
 	adminRepo := repository.NewAdminRepository(db)
 
 	// Seed any missing default settings from the single Go-defined source of
@@ -156,16 +157,17 @@ func run() error {
 		return fmt.Errorf("failed to create proxy server: %w", err)
 	}
 	apiServer := api.New(cfg, log, db, api.Deps{
-		ProxyRepo:     proxyRepo,
-		LogRepo:       logRepo,
-		SettingsRepo:  settingsRepo,
-		DashboardRepo: dashboardRepo,
-		SourceRepo:    sourceRepo,
-		PoolRepo:      poolRepo,
-		UserRepo:      userRepo,
-		AdminRepo:     adminRepo,
-		SourceSvc:     sourceSvc,
-		PoolSvc:       poolSvc,
+		ProxyRepo:         proxyRepo,
+		LogRepo:           logRepo,
+		SettingsRepo:      settingsRepo,
+		DashboardRepo:     dashboardRepo,
+		SourceRepo:        sourceRepo,
+		FormatHistoryRepo: formatHistoryRepo,
+		PoolRepo:          poolRepo,
+		UserRepo:          userRepo,
+		AdminRepo:         adminRepo,
+		SourceSvc:         sourceSvc,
+		PoolSvc:           poolSvc,
 	})
 
 	// Set proxy server reference in API server for reload functionality

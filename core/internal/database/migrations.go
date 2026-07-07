@@ -580,6 +580,37 @@ var migrations = []Migration{
 			ALTER TABLE proxy_sources DROP COLUMN IF EXISTS format;
 		`,
 	},
+	{
+		Version:     25,
+		Description: "free-form line formats: widen proxy_sources.format, drop 'auto', add format_history",
+		Up: `
+			-- format is now a lineformat template, not an enum
+			ALTER TABLE proxy_sources ALTER COLUMN format TYPE TEXT;
+
+			-- 'auto' detection is gone; the URL template covers the same lines
+			UPDATE proxy_sources
+			SET format = '[protocol://][user[:pass]@]host:port'
+			WHERE format IS NULL OR format = '' OR format = 'auto';
+
+			ALTER TABLE proxy_sources
+			ALTER COLUMN format SET DEFAULT '[protocol://][user[:pass]@]host:port';
+
+			-- custom formats the user has used before, re-offered in the dashboard
+			CREATE TABLE IF NOT EXISTS format_history (
+				id           SERIAL PRIMARY KEY,
+				format       TEXT NOT NULL UNIQUE,
+				use_count    INTEGER NOT NULL DEFAULT 1,
+				last_used_at TIMESTAMP NOT NULL DEFAULT NOW(),
+				created_at   TIMESTAMP NOT NULL DEFAULT NOW()
+			);
+		`,
+		Down: `
+			DROP TABLE IF EXISTS format_history;
+			ALTER TABLE proxy_sources ALTER COLUMN format DROP DEFAULT;
+			ALTER TABLE proxy_sources ALTER COLUMN format TYPE VARCHAR(30) USING LEFT(format, 30);
+			ALTER TABLE proxy_sources ALTER COLUMN format SET DEFAULT 'auto';
+		`,
+	},
 }
 
 // migrationLockKey is an arbitrary constant identifying Rota's migration
