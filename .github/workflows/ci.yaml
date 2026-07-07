@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One run per ref; cancel superseded runs on the same branch/PR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+
+    services:
+      timescaledb:
+        image: timescale/timescaledb:2.22.1-pg17
+        env:
+          POSTGRES_USER: rota
+          POSTGRES_PASSWORD: rota_password
+          POSTGRES_DB: rota_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rota -d rota_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: Check formatting (gofmt)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean. Run 'gofmt -w .' in core/:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test (hermetic + integration, race detector)
+        env:
+          ROTA_TEST_DB: "1"
+          TEST_DB_HOST: localhost
+          TEST_DB_PORT: "5432"
+          TEST_DB_USER: rota
+          TEST_DB_PASSWORD: rota_password
+          TEST_DB_NAME: rota_test
+        run: go test -race ./...
+
+  dashboard:
+    name: Dashboard (Vite)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build (typecheck + bundle)
+        run: pnpm build
