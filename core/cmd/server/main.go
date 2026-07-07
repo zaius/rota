@@ -81,7 +81,7 @@ func run() error {
 	var eventStore events.Store
 	switch cfg.EventStore {
 	case "postgres":
-		eventStore = events.NewPostgresStore(db)
+		eventStore = events.NewPostgresStore(db, log)
 	default:
 		return fmt.Errorf("unsupported event store: %s", cfg.EventStore)
 	}

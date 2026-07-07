@@ -14,6 +14,11 @@ import (
 // or the settings cannot be read.
 const defaultCleanupInterval = time.Hour
 
+// requestRetentionDays is how long proxy request history is kept. It matches
+// the 90-day default the migrations use for the proxy_requests retention
+// policy; it becomes a user setting when request retention grows a UI knob.
+const requestRetentionDays = 90
+
 // LogCleanupService handles automatic log cleanup and retention
 type LogCleanupService struct {
 	events       events.Store
@@ -98,6 +103,7 @@ func (s *LogCleanupService) runCleanup(ctx context.Context) error {
 	err = s.events.ApplyRetention(ctx, events.RetentionConfig{
 		RetentionDays:        settings.LogRetention.RetentionDays,
 		CompressionAfterDays: settings.LogRetention.CompressionAfterDays,
+		RequestRetentionDays: requestRetentionDays,
 	})
 	if err != nil {
 		s.logger.Error("failed to apply retention config", "error", err)

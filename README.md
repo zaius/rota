@@ -155,7 +155,7 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `DASHBOARD_PORT` | `3000` | Host port for the web dashboard |
 | `ROTA_ADMIN_USER` | `admin` | Initial dashboard username (seeded once) |
 | `ROTA_ADMIN_PASSWORD` | `admin` | Initial dashboard password (seeded once, min 6 chars) |
-| `DB_PASSWORD` | `rota_password` | TimescaleDB password |
+| `DB_PASSWORD` | `rota_password` | Database password |
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `AUTH_IP_MAX_ATTEMPTS` | `10` | Failed login attempts before an IP is blocked |
 | `AUTH_IP_WINDOW_MINUTES` | `10` | Sliding window (minutes) to count per-IP failures |
@@ -215,7 +215,7 @@ Or run the whole stack (core + dashboard + TimescaleDB) with `docker compose up 
 ### From Source
 
 ```bash
-# Prerequisites: Go 1.25.3+, Node.js 20+, PostgreSQL 16+ with TimescaleDB
+# Prerequisites: Go 1.25.3+, Node.js 20+, PostgreSQL 14+ (TimescaleDB optional)
 
 # Clone the repository
 git clone https://github.com/alpkeskin/rota.git

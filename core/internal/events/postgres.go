@@ -5,25 +5,73 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
 // PostgresStore implements Store on the primary Postgres database. It works on
-// a plain Postgres server; when the TimescaleDB extension (with a TSL license)
-// is present, retention and compression are delegated to its policies.
+// a plain Postgres 14+ server; when the TimescaleDB extension (with a TSL
+// license) is present, retention and compression are delegated to its policies.
 type PostgresStore struct {
-	db *database.DB
+	db     *database.DB
+	logger *logger.Logger
+
+	// capabilities probe result, cached after the first successful probe.
+	capMu    sync.Mutex
+	capKnown bool
+	caps     pgCapabilities
+}
+
+// pgCapabilities describes which optional accelerators the connected Postgres
+// server offers.
+type pgCapabilities struct {
+	// timescale: the TimescaleDB extension is installed.
+	timescale bool
+	// tslPolicies: TSL-licensed features (retention/compression policies) are
+	// available. False on plain Postgres and on Apache-only TimescaleDB
+	// builds (e.g. Azure Flexible Server).
+	tslPolicies bool
 }
 
 // NewPostgresStore creates a Postgres-backed event store on the given pool.
-func NewPostgresStore(db *database.DB) *PostgresStore {
-	return &PostgresStore{db: db}
+func NewPostgresStore(db *database.DB, log *logger.Logger) *PostgresStore {
+	return &PostgresStore{db: db, logger: log}
 }
 
 var _ Store = (*PostgresStore)(nil)
+
+// capabilities probes the server for optional TimescaleDB features, caching
+// the result after the first success. Probe failures are returned (not
+// cached) so a transient error cannot pin the wrong mode.
+func (s *PostgresStore) capabilities(ctx context.Context) (pgCapabilities, error) {
+	s.capMu.Lock()
+	defer s.capMu.Unlock()
+	if s.capKnown {
+		return s.caps, nil
+	}
+
+	var caps pgCapabilities
+	err := s.db.Pool.QueryRow(ctx, `
+		SELECT
+			EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb'),
+			COALESCE(current_setting('timescaledb.license', true) = 'timescale', false)
+	`).Scan(&caps.timescale, &caps.tslPolicies)
+	if err != nil {
+		return pgCapabilities{}, fmt.Errorf("failed to probe database capabilities: %w", err)
+	}
+
+	s.caps = caps
+	s.capKnown = true
+	s.logger.Info("event store capabilities probed",
+		"timescaledb", caps.timescale,
+		"timescaledb_policies", caps.tslPolicies,
+	)
+	return caps, nil
+}
 
 // InsertLog records a system log event.
 func (s *PostgresStore) InsertLog(ctx context.Context, entry LogEntry) error {
@@ -267,21 +315,25 @@ func chartWindow(interval string) (bucketSize, lookback string) {
 
 // ResponseTimeChart returns average response time of successful requests
 // bucketed over time.
+//
+// date_bin is vanilla Postgres 14+ and behaves like Timescale's time_bucket
+// for these strides; the origin is time_bucket's default so buckets align
+// either way.
 func (s *PostgresStore) ResponseTimeChart(ctx context.Context, interval string) ([]models.ChartDataPoint, error) {
 	bucketSize, lookback := chartWindow(interval)
 
-	query := fmt.Sprintf(`
+	query := `
 		SELECT
-			time_bucket('%s', timestamp) as bucket,
+			date_bin($1::interval, timestamp, TIMESTAMP '2000-01-03') as bucket,
 			COALESCE(AVG(response_time), 0)::int as avg_response_time
 		FROM proxy_requests
-		WHERE timestamp >= NOW() - INTERVAL '%s'
+		WHERE timestamp >= NOW() - $2::interval
 		  AND success = true
 		GROUP BY bucket
 		ORDER BY bucket
-	`, bucketSize, lookback)
+	`
 
-	rows, err := s.db.Pool.Query(ctx, query)
+	rows, err := s.db.Pool.Query(ctx, query, bucketSize, lookback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get response time chart: %w", err)
 	}
@@ -309,18 +361,18 @@ func (s *PostgresStore) ResponseTimeChart(ctx context.Context, interval string) 
 func (s *PostgresStore) SuccessRateChart(ctx context.Context, interval string) ([]models.SuccessRateDataPoint, error) {
 	bucketSize, lookback := chartWindow(interval)
 
-	query := fmt.Sprintf(`
+	query := `
 		SELECT
-			time_bucket('%s', timestamp) as bucket,
+			date_bin($1::interval, timestamp, TIMESTAMP '2000-01-03') as bucket,
 			(COUNT(*) FILTER (WHERE success = true) * 100 / GREATEST(COUNT(*), 1))::int as success_rate,
 			(COUNT(*) FILTER (WHERE success = false) * 100 / GREATEST(COUNT(*), 1))::int as failure_rate
 		FROM proxy_requests
-		WHERE timestamp >= NOW() - INTERVAL '%s'
+		WHERE timestamp >= NOW() - $2::interval
 		GROUP BY bucket
 		ORDER BY bucket
-	`, bucketSize, lookback)
+	`
 
-	rows, err := s.db.Pool.Query(ctx, query)
+	rows, err := s.db.Pool.Query(ctx, query, bucketSize, lookback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get success rate chart: %w", err)
 	}
@@ -345,44 +397,90 @@ func (s *PostgresStore) SuccessRateChart(ctx context.Context, interval string) (
 	return data, rows.Err()
 }
 
-// ApplyRetention (re)applies retention and compression policies.
-//
-// Policies are a TSL-licensed TimescaleDB feature, unavailable on plain
-// Postgres and on Apache-only builds (e.g. Azure Flexible Server). The SQL is
-// guarded on the license so it is a no-op there instead of erroring on every
-// cleanup cycle — matching the guard the migrations use when creating the
-// policies.
+// ApplyRetention makes the retention configuration effective. Where
+// TimescaleDB's TSL-licensed policies are available (self-hosted community
+// builds) it (re)installs them and lets their background jobs do the work;
+// everywhere else — plain Postgres, Apache-only TimescaleDB builds (e.g.
+// Azure Flexible Server) — it enforces retention directly by deleting expired
+// rows. Compression is policy-only: without TSL there is no equivalent, and
+// CompressionAfterDays is ignored as documented.
 func (s *PostgresStore) ApplyRetention(ctx context.Context, cfg RetentionConfig) error {
-	retention := fmt.Sprintf(`
-		DO $ts$
-		BEGIN
-			IF current_setting('timescaledb.license', true) = 'timescale' THEN
-				PERFORM remove_retention_policy('logs', if_exists => true);
-				PERFORM add_retention_policy('logs', INTERVAL '%d days', if_not_exists => true);
-			END IF;
-		END
-		$ts$;
-	`, cfg.RetentionDays)
-
-	if _, err := s.db.Pool.Exec(ctx, retention); err != nil {
-		return fmt.Errorf("failed to update retention policy: %w", err)
+	caps, err := s.capabilities(ctx)
+	if err != nil {
+		return err
 	}
 
-	compression := fmt.Sprintf(`
-		DO $ts$
-		BEGIN
-			IF current_setting('timescaledb.license', true) = 'timescale' THEN
-				PERFORM remove_compression_policy('logs', if_exists => true);
-				PERFORM add_compression_policy('logs', INTERVAL '%d days', if_not_exists => true);
-			END IF;
-		END
-		$ts$;
-	`, cfg.CompressionAfterDays)
+	if caps.tslPolicies {
+		return s.applyRetentionPolicies(ctx, cfg)
+	}
+	return s.applyRetentionDeletes(ctx, cfg)
+}
 
-	if _, err := s.db.Pool.Exec(ctx, compression); err != nil {
-		return fmt.Errorf("failed to update compression policy: %w", err)
+// applyRetentionPolicies (re)installs TimescaleDB retention/compression
+// policies. Caller has verified they are available.
+func (s *PostgresStore) applyRetentionPolicies(ctx context.Context, cfg RetentionConfig) error {
+	// Values are integers formatted into DDL because policy intervals cannot
+	// be bind parameters; remove+add so period changes take effect.
+	statements := []string{}
+	if cfg.RetentionDays > 0 {
+		statements = append(statements, fmt.Sprintf(`
+			SELECT remove_retention_policy('logs', if_exists => true);
+			SELECT add_retention_policy('logs', INTERVAL '%d days', if_not_exists => true);
+		`, cfg.RetentionDays))
+	}
+	if cfg.CompressionAfterDays > 0 {
+		statements = append(statements, fmt.Sprintf(`
+			SELECT remove_compression_policy('logs', if_exists => true);
+			SELECT add_compression_policy('logs', INTERVAL '%d days', if_not_exists => true);
+		`, cfg.CompressionAfterDays))
+	}
+	if cfg.RequestRetentionDays > 0 {
+		statements = append(statements, fmt.Sprintf(`
+			SELECT remove_retention_policy('proxy_requests', if_exists => true);
+			SELECT add_retention_policy('proxy_requests', INTERVAL '%d days', if_not_exists => true);
+		`, cfg.RequestRetentionDays))
 	}
 
+	for _, sql := range statements {
+		if _, err := s.db.Pool.Exec(ctx, sql); err != nil {
+			return fmt.Errorf("failed to update retention policies: %w", err)
+		}
+	}
+	return nil
+}
+
+// applyRetentionDeletes enforces retention by deleting expired rows — the
+// portable fallback for servers without policy support. Non-positive periods
+// are skipped so a zero-value config can never delete everything.
+func (s *PostgresStore) applyRetentionDeletes(ctx context.Context, cfg RetentionConfig) error {
+	var logsDeleted, requestsDeleted int64
+
+	if cfg.RetentionDays > 0 {
+		res, err := s.db.Pool.Exec(ctx,
+			`DELETE FROM logs WHERE timestamp < NOW() - make_interval(days => $1)`,
+			cfg.RetentionDays)
+		if err != nil {
+			return fmt.Errorf("failed to delete expired logs: %w", err)
+		}
+		logsDeleted = res.RowsAffected()
+	}
+
+	if cfg.RequestRetentionDays > 0 {
+		res, err := s.db.Pool.Exec(ctx,
+			`DELETE FROM proxy_requests WHERE timestamp < NOW() - make_interval(days => $1)`,
+			cfg.RequestRetentionDays)
+		if err != nil {
+			return fmt.Errorf("failed to delete expired proxy requests: %w", err)
+		}
+		requestsDeleted = res.RowsAffected()
+	}
+
+	if logsDeleted > 0 || requestsDeleted > 0 {
+		s.logger.Info("applied event retention by deletion",
+			"logs_deleted", logsDeleted,
+			"requests_deleted", requestsDeleted,
+		)
+	}
 	return nil
 }
 

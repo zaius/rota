@@ -66,11 +66,13 @@ type RequestStats struct {
 	ResponseTimeYesterday int
 }
 
-// RetentionConfig controls how long event data is kept. CompressionAfterDays
-// is advisory: backends without a compression concept ignore it.
+// RetentionConfig controls how long event data is kept. Non-positive periods
+// disable that part of retention. CompressionAfterDays is advisory: backends
+// without a compression concept ignore it.
 type RetentionConfig struct {
-	RetentionDays        int
-	CompressionAfterDays int
+	RetentionDays        int // system logs
+	CompressionAfterDays int // system logs, advisory
+	RequestRetentionDays int // proxy request history
 }
 
 // Store is the event store. Implementations must be safe for concurrent use.

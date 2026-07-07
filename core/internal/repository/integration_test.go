@@ -18,8 +18,12 @@ import (
 // hermetic. To run them locally:
 //
 //	docker run -d --name pg -e POSTGRES_USER=rota -e POSTGRES_PASSWORD=rota_password \
-//	  -e POSTGRES_DB=rota_test -p 55432:5432 timescale/timescaledb:2.22.1-pg17
+//	  -e POSTGRES_DB=rota_test -p 55432:5432 timescale/timescaledb:2.22.1-pg17   # or postgres:17
 //	ROTA_TEST_DB=1 TEST_DB_PORT=55432 go test ./internal/repository/ -run Integration -v
+//
+// When running integration tests from multiple packages in one invocation,
+// pass `-p 1`: the packages share the test database and Go runs package
+// tests in parallel by default.
 
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {

@@ -12,14 +12,20 @@ import (
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
-// These tests exercise the event store against a real Postgres/TimescaleDB
-// instance and are the seed of the backend conformance suite: every Store
-// implementation must pass them. They are skipped unless ROTA_TEST_DB is set,
-// so `go test ./...` stays hermetic. To run them locally:
+// These tests exercise the event store against a real Postgres instance and
+// are the seed of the backend conformance suite: every Store implementation
+// must pass them. Both plain Postgres and TimescaleDB images work — the store
+// adapts at runtime. They are skipped unless ROTA_TEST_DB is set, so
+// `go test ./...` stays hermetic. To run them locally:
 //
 //	docker run -d --name pg -e POSTGRES_USER=rota -e POSTGRES_PASSWORD=rota_password \
-//	  -e POSTGRES_DB=rota_test -p 55432:5432 timescale/timescaledb:2.22.1-pg17
+//	  -e POSTGRES_DB=rota_test -p 55432:5432 timescale/timescaledb:2.22.1-pg17   # or postgres:17
 //	ROTA_TEST_DB=1 TEST_DB_PORT=55432 go test ./internal/events/ -run Integration -v
+//
+// When running integration tests from multiple packages in one invocation,
+// pass `-p 1`: the packages share the test database, and Go runs package
+// tests in parallel by default (repository tests delete proxies, which
+// cascades into rows these tests assert on).
 
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -59,7 +65,7 @@ func testStore(t *testing.T) (*PostgresStore, *database.DB) {
 		}
 	}
 
-	return NewPostgresStore(db), db
+	return NewPostgresStore(db, logger.New("error")), db
 }
 
 // testProxyID inserts a proxy row to satisfy the proxy_requests FK and
@@ -234,15 +240,75 @@ func TestIntegration_Requests_InsertStatsCharts(t *testing.T) {
 }
 
 func TestIntegration_ApplyRetention(t *testing.T) {
-	store, _ := testStore(t)
+	store, db := testStore(t)
+	ctx := context.Background()
+	proxyID := testProxyID(t, db)
 
-	// Must succeed on any backend: applies policies where supported, no-ops
-	// otherwise. Never errors just because the backend lacks the feature.
-	err := store.ApplyRetention(context.Background(), RetentionConfig{
+	// One fresh and one expired row in each event table.
+	if err := store.InsertLog(ctx, LogEntry{Level: "info", Message: "fresh"}); err != nil {
+		t.Fatalf("InsertLog: %v", err)
+	}
+	if _, err := db.Pool.Exec(ctx, `
+		INSERT INTO logs (timestamp, level, message) VALUES (NOW() - INTERVAL '20 days', 'info', 'stale')
+	`); err != nil {
+		t.Fatalf("insert stale log: %v", err)
+	}
+	for _, age := range []string{"0 hours", "20 days"} {
+		if _, err := db.Pool.Exec(ctx, `
+			INSERT INTO proxy_requests (timestamp, proxy_id, proxy_address, method, success, response_time)
+			VALUES (NOW() - $1::interval, $2, '127.0.0.1:9999', 'GET', true, 100)
+		`, age, proxyID); err != nil {
+			t.Fatalf("insert request: %v", err)
+		}
+	}
+
+	// Must succeed on any backend: installs policies where supported,
+	// deletes expired rows otherwise. Never errors just because the backend
+	// lacks a feature.
+	err := store.ApplyRetention(ctx, RetentionConfig{
 		RetentionDays:        14,
 		CompressionAfterDays: 3,
+		RequestRetentionDays: 14,
 	})
 	if err != nil {
 		t.Fatalf("ApplyRetention: %v", err)
 	}
+
+	caps, err := store.capabilities(ctx)
+	if err != nil {
+		t.Fatalf("capabilities: %v", err)
+	}
+	if caps.tslPolicies {
+		// Policy path: deletion is deferred to Timescale's background jobs,
+		// so only assert the policies landed with the configured periods.
+		var n int
+		err := db.Pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM timescaledb_information.jobs
+			WHERE proc_name = 'policy_retention'
+			  AND hypertable_name IN ('logs', 'proxy_requests')
+			  AND config->>'drop_after' = '14 days'
+		`).Scan(&n)
+		if err != nil {
+			t.Fatalf("query policies: %v", err)
+		}
+		if n != 2 {
+			t.Errorf("want retention policies on logs and proxy_requests with 14 days, got %d", n)
+		}
+		return
+	}
+
+	// Fallback path (plain Postgres / Apache-only builds): expired rows are
+	// deleted immediately, fresh rows survive.
+	assertRows := func(table string, want int) {
+		t.Helper()
+		var n int
+		if err := db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM "+table).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if n != want {
+			t.Errorf("%s: want %d rows after retention, got %d", table, want, n)
+		}
+	}
+	assertRows("logs", 1)
+	assertRows("proxy_requests", 1)
 }
