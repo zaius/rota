@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strconv"
 	"testing"
@@ -311,4 +312,85 @@ func mustProxy(t *testing.T, db *database.DB, address, country string) int {
 		t.Fatalf("insert proxy %s: %v", address, err)
 	}
 	return id
+}
+
+// mustPool inserts a bare pool row and returns its id.
+func mustPool(t *testing.T, db *database.DB, name string) int {
+	t.Helper()
+	var id int
+	err := db.Pool.QueryRow(context.Background(),
+		`INSERT INTO proxy_pools (name) VALUES ($1) RETURNING id`, name).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert pool %s: %v", name, err)
+	}
+	return id
+}
+
+// PUT /proxy-users must be a partial update: fields absent from the JSON
+// document keep their current values, explicit null clears. A bare
+// {"enabled":...} toggle (as the dashboard sends) must not wipe pool
+// assignments — it used to.
+func TestIntegration_UserUpdate_PartialFields(t *testing.T) {
+	db := testDB(t)
+	cleanTables(t, db)
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	p1 := mustPool(t, db, "main-pool")
+	p2 := mustPool(t, db, "fallback-pool")
+
+	created, err := repo.Create(ctx, models.CreateProxyUserRequest{
+		Username:        "alice",
+		Password:        "alicepw123",
+		Enabled:         true,
+		MainPoolID:      &p1,
+		FallbackPoolIDs: []int{p2},
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	// update decodes a wire document and applies it, mirroring the handler.
+	update := func(doc string) *models.ProxyUser {
+		t.Helper()
+		var req models.UpdateProxyUserRequest
+		if err := json.Unmarshal([]byte(doc), &req); err != nil {
+			t.Fatalf("unmarshal %s: %v", doc, err)
+		}
+		u, err := repo.Update(ctx, created.ID, req)
+		if err != nil || u == nil {
+			t.Fatalf("update %s: %v", doc, err)
+		}
+		return u
+	}
+
+	// A bare toggle keeps every other field.
+	u := update(`{"enabled":false}`)
+	if u.Enabled {
+		t.Error("toggle: enabled should be false")
+	}
+	if u.MainPoolID == nil || *u.MainPoolID != p1 {
+		t.Errorf("toggle: main_pool_id wiped, got %v want %d", u.MainPoolID, p1)
+	}
+	if len(u.FallbackPoolIDs) != 1 || u.FallbackPoolIDs[0] != p2 {
+		t.Errorf("toggle: fallback_pool_ids wiped, got %v want [%d]", u.FallbackPoolIDs, p2)
+	}
+
+	// Explicit null clears the main pool; omitted fallbacks stay.
+	u = update(`{"main_pool_id":null}`)
+	if u.MainPoolID != nil {
+		t.Errorf("null: main_pool_id should be cleared, got %v", *u.MainPoolID)
+	}
+	if len(u.FallbackPoolIDs) != 1 {
+		t.Errorf("null: fallback_pool_ids should be kept, got %v", u.FallbackPoolIDs)
+	}
+
+	// Explicit values apply; explicit empty list clears.
+	u = update(`{"main_pool_id":` + strconv.Itoa(p2) + `,"fallback_pool_ids":[]}`)
+	if u.MainPoolID == nil || *u.MainPoolID != p2 {
+		t.Errorf("set: main_pool_id got %v want %d", u.MainPoolID, p2)
+	}
+	if len(u.FallbackPoolIDs) != 0 {
+		t.Errorf("set: fallback_pool_ids should be empty, got %v", u.FallbackPoolIDs)
+	}
 }

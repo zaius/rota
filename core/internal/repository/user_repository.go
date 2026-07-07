@@ -145,7 +145,14 @@ func (r *UserRepository) Update(ctx context.Context, id int, req models.UpdatePr
 		hashPtr = &s
 	}
 
-	fbIDs := req.FallbackPoolIDs
+	// Partial-update semantics: a field absent from the request document keeps
+	// its current value. For the pool fields, present-and-null clears (main
+	// pool) or empties (fallbacks) — see UpdateProxyUserRequest.
+	var mainPoolID *int
+	if req.MainPoolID.Present && !req.MainPoolID.Null {
+		mainPoolID = &req.MainPoolID.Value
+	}
+	fbIDs := req.FallbackPoolIDs.Value
 	if fbIDs == nil {
 		fbIDs = []int{}
 	}
@@ -155,15 +162,16 @@ func (r *UserRepository) Update(ctx context.Context, id int, req models.UpdatePr
 		UPDATE proxy_users SET
 			password_hash      = CASE WHEN $1::TEXT IS NOT NULL THEN $1 ELSE password_hash END,
 			enabled            = COALESCE($2, enabled),
-			main_pool_id       = $3,
-			fallback_pool_ids  = $4,
-			max_retries        = CASE WHEN $5 > 0 THEN $5 ELSE max_retries END,
-			requests_per_minute= COALESCE($6, requests_per_minute),
+			main_pool_id       = CASE WHEN $3::BOOLEAN THEN $4::INTEGER   ELSE main_pool_id      END,
+			fallback_pool_ids  = CASE WHEN $5::BOOLEAN THEN $6::INTEGER[] ELSE fallback_pool_ids END,
+			max_retries        = CASE WHEN $7 > 0 THEN $7 ELSE max_retries END,
+			requests_per_minute= COALESCE($8, requests_per_minute),
 			updated_at         = NOW()
-		WHERE id = $7
+		WHERE id = $9
 		RETURNING id, username, enabled, main_pool_id, fallback_pool_ids, max_retries,
 		          COALESCE(requests_per_minute, 0), created_at, updated_at
-	`, hashPtr, req.Enabled, req.MainPoolID, fbIDs, req.MaxRetries, req.RequestsPerMinute, id,
+	`, hashPtr, req.Enabled, req.MainPoolID.Present, mainPoolID,
+		req.FallbackPoolIDs.Present, fbIDs, req.MaxRetries, req.RequestsPerMinute, id,
 	).Scan(&u.ID, &u.Username, &u.Enabled, &u.MainPoolID, &u.FallbackPoolIDs,
 		&u.MaxRetries, &u.RequestsPerMinute, &u.CreatedAt, &u.UpdatedAt)
 

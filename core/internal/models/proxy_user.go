@@ -38,14 +38,16 @@ type CreateProxyUserRequest struct {
 	RequestsPerMinute int    `json:"requests_per_minute"` // 0 = no limit
 }
 
-// UpdateProxyUserRequest is the payload for PUT /api/v1/proxy-users/{id}
+// UpdateProxyUserRequest is the payload for PUT /api/v1/proxy-users/{id}.
+// Partial updates: every field left out of the document keeps its current
+// value — only fields explicitly present are applied.
 type UpdateProxyUserRequest struct {
-	Password          string `json:"password,omitempty"`
-	Enabled           *bool  `json:"enabled,omitempty"`
-	MainPoolID        *int   `json:"main_pool_id"`      // null clears it
-	FallbackPoolIDs   []int  `json:"fallback_pool_ids"` // replaces list
-	MaxRetries        int    `json:"max_retries,omitempty"`
-	RequestsPerMinute *int   `json:"requests_per_minute,omitempty"`
+	Password          string          `json:"password,omitempty"`            // "" keeps
+	Enabled           *bool           `json:"enabled,omitempty"`             // omitted keeps
+	MainPoolID        Optional[int]   `json:"main_pool_id"`                  // omitted keeps, null clears
+	FallbackPoolIDs   Optional[[]int] `json:"fallback_pool_ids"`             // omitted keeps, null/[] clears, list replaces
+	MaxRetries        int             `json:"max_retries,omitempty"`         // 0 keeps
+	RequestsPerMinute *int            `json:"requests_per_minute,omitempty"` // omitted keeps
 }
 
 // proxyUserContextKey is used to pass the resolved ProxyUser through request context
