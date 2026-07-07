@@ -83,6 +83,17 @@ type RetentionConfig struct {
 	RequestRetentionDays int // proxy request history
 }
 
+// ProxyRequestStats aggregates request outcomes for one proxy over the event
+// retention window. AvgResponseTime covers successful requests only — failed
+// attempts (timeouts especially) would say more about the failure than about
+// the proxy's latency.
+type ProxyRequestStats struct {
+	ProxyID         int
+	Requests        int64
+	Successes       int64
+	AvgResponseTime int // milliseconds
+}
+
 // Store is the event store. Implementations must be safe for concurrent use.
 type Store interface {
 	// InsertLog records a system log event.
@@ -108,6 +119,16 @@ type Store interface {
 	// RequestStats returns today/yesterday request aggregates for the
 	// dashboard.
 	RequestStats(ctx context.Context) (*RequestStats, error)
+
+	// ProxyRollup returns per-proxy request aggregates over the whole event
+	// window. It feeds the stats refresher, which denormalizes these numbers
+	// onto the proxies table for list sorting and filtering.
+	ProxyRollup(ctx context.Context) ([]ProxyRequestStats, error)
+
+	// LowSuccessProxies returns the IDs of proxies whose success rate over
+	// the trailing window is below minRate percent, counting only proxies
+	// with at least minRequests requests in that window.
+	LowSuccessProxies(ctx context.Context, window time.Duration, minRate float64, minRequests int) ([]int, error)
 
 	// ResponseTimeChart returns average response time of successful requests
 	// bucketed over time. Interval is one of "1h", "4h", "1d".

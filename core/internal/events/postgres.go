@@ -320,6 +320,62 @@ func (s *PostgresStore) RequestStats(ctx context.Context) (*RequestStats, error)
 	return &stats, nil
 }
 
+// ProxyRollup returns per-proxy request aggregates over the whole event
+// window.
+func (s *PostgresStore) ProxyRollup(ctx context.Context) ([]ProxyRequestStats, error) {
+	rows, err := s.db.Pool.Query(ctx, `
+		SELECT proxy_id,
+		       COUNT(*),
+		       COUNT(*) FILTER (WHERE success),
+		       COALESCE((AVG(response_time) FILTER (WHERE success))::int, 0)
+		FROM proxy_requests
+		WHERE proxy_id IS NOT NULL
+		GROUP BY proxy_id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to roll up proxy requests: %w", err)
+	}
+	defer rows.Close()
+
+	stats := []ProxyRequestStats{}
+	for rows.Next() {
+		var st ProxyRequestStats
+		if err := rows.Scan(&st.ProxyID, &st.Requests, &st.Successes, &st.AvgResponseTime); err != nil {
+			return nil, fmt.Errorf("failed to scan proxy rollup: %w", err)
+		}
+		stats = append(stats, st)
+	}
+	return stats, rows.Err()
+}
+
+// LowSuccessProxies returns the IDs of proxies below minRate percent success
+// over the trailing window, with at least minRequests requests.
+func (s *PostgresStore) LowSuccessProxies(ctx context.Context, window time.Duration, minRate float64, minRequests int) ([]int, error) {
+	rows, err := s.db.Pool.Query(ctx, `
+		SELECT proxy_id
+		FROM proxy_requests
+		WHERE proxy_id IS NOT NULL
+		  AND timestamp >= NOW() - $1::interval
+		GROUP BY proxy_id
+		HAVING COUNT(*) >= $2
+		   AND (COUNT(*) FILTER (WHERE success))::float / COUNT(*)::float * 100 < $3
+	`, window, minRequests, minRate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query low-success proxies: %w", err)
+	}
+	defer rows.Close()
+
+	ids := []int{}
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan low-success proxy id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // chartWindow maps an API interval to a bucket size and lookback period.
 func chartWindow(interval string) (bucketSize, lookback string) {
 	switch interval {

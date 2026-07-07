@@ -70,59 +70,51 @@ func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) 
 	return nil
 }
 
-// updateProxyStats updates proxy statistics in the proxies table
+// updateProxyStats advances the proxy's control-plane state machine: status,
+// the consecutive-failure counter (failed_requests), last_check and
+// last_error. Metrics — request counts and response-time averages — are no
+// longer written here; they are derived from the event store by the stats
+// refresher (services.StatsRefresher).
+//
+// The success path only writes on an actual state transition (recovering
+// status, resetting a failure streak, clearing an error), so the common case
+// — a healthy proxy staying healthy — touches no row. A consequence is that
+// last_check advances on transitions and health checks, not on every request.
 func (t *UsageTracker) updateProxyStats(ctx context.Context, record RequestRecord) error {
-	// Use a single query to update all statistics atomically
-	// Note: We calculate avg_response_time correctly by using current requests value before increment
-	query := `
-		UPDATE proxies
-		SET
-			requests = requests + 1,
-			successful_requests = CASE
-				WHEN $2 THEN successful_requests + 1
-				ELSE successful_requests
-			END,
-			failed_requests = CASE
-				WHEN $2 THEN 0  -- Reset consecutive failures on success
-				ELSE failed_requests + 1
-			END,
-			avg_response_time = (
-				CASE
-					WHEN requests = 0 THEN $3
-					ELSE ((avg_response_time * requests) + $3) / (requests + 1)
-				END
-			)::INTEGER,
-			last_check = $4,
-			last_error = CASE
-				WHEN $2 THEN NULL  -- Clear error on success
-				ELSE $5
-			END,
-			status = CASE
-				WHEN $2 THEN 'active'  -- Success = active
-				ELSE CASE
-					WHEN (failed_requests + 1) >= 3 THEN 'failed'  -- 3 consecutive failures = failed
-					ELSE status
-				END
-			END,
-			updated_at = NOW()
-		WHERE id = $1
-	`
+	if record.Success {
+		query := `
+			UPDATE proxies
+			SET
+				failed_requests = 0,
+				last_error      = NULL,
+				status          = 'active',
+				last_check      = $2,
+				updated_at      = NOW()
+			WHERE id = $1
+			  AND (status <> 'active' OR failed_requests <> 0 OR last_error IS NOT NULL)
+		`
+		_, err := t.repo.GetDB().Pool.Exec(ctx, query, record.ProxyID, record.Timestamp)
+		return err
+	}
 
 	var errorMsg *string
 	if record.ErrorMessage != "" {
 		errorMsg = &record.ErrorMessage
 	}
 
-	_, err := t.repo.GetDB().Pool.Exec(
-		ctx,
-		query,
-		record.ProxyID,
-		record.Success,
-		record.ResponseTime,
-		record.Timestamp,
-		errorMsg,
-	)
-
+	// failed_requests counts *consecutive* failures (it resets on success);
+	// three in a row marks the proxy failed.
+	query := `
+		UPDATE proxies
+		SET
+			failed_requests = failed_requests + 1,
+			last_error      = $2,
+			last_check      = $3,
+			status          = CASE WHEN failed_requests + 1 >= 3 THEN 'failed' ELSE status END,
+			updated_at      = NOW()
+		WHERE id = $1
+	`
+	_, err := t.repo.GetDB().Pool.Exec(ctx, query, record.ProxyID, errorMsg, record.Timestamp)
 	return err
 }
 

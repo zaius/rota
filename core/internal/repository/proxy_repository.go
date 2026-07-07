@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -280,34 +281,80 @@ func (r *ProxyRepository) DeleteAll(ctx context.Context) (int, error) {
 	return int(tag.RowsAffected()), nil
 }
 
-// DeleteDeadProxies removes proxies that have been in failed status for more than maxDays days
-// and optionally those with success rate below minSuccessRate (0 = disabled)
-func (r *ProxyRepository) DeleteDeadProxies(ctx context.Context, maxFailedDays int, minSuccessRate float64) (int, error) {
+// DeleteDeadProxies removes proxies that have been in failed status for more
+// than maxDays days. Low-success-rate cleanup is handled by the caller
+// (ProxyCleanupService), which derives candidates from the event store over a
+// trailing window and deletes them via BulkDelete.
+func (r *ProxyRepository) DeleteDeadProxies(ctx context.Context, maxFailedDays int) (int, error) {
+	if maxFailedDays <= 0 {
+		return 0, nil
+	}
+	tag, err := r.db.Pool.Exec(ctx, `
+		DELETE FROM proxies
+		WHERE status = 'failed'
+		  AND last_check < NOW() - ($1 || ' days')::INTERVAL`,
+		maxFailedDays)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete dead proxies by age: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// ApplyRequestStats batch-writes event-derived request aggregates onto the
+// denormalized stats columns of proxies (requests, successful_requests,
+// avg_response_time), so list sorting/filtering keeps working from plain SQL.
+// Proxies absent from the rollup are zeroed: the columns mean "within the
+// event retention window", not lifetime totals. Rows whose values are already
+// current are left untouched. Returns the number of rows written.
+//
+// failed_requests is deliberately not written here — it is the state
+// machine's consecutive-failure counter, owned by the usage tracker.
+func (r *ProxyRepository) ApplyRequestStats(ctx context.Context, stats []events.ProxyRequestStats) (int, error) {
+	ids := make([]int, len(stats))
+	requests := make([]int64, len(stats))
+	successes := make([]int64, len(stats))
+	avgMs := make([]int, len(stats))
+	for i, st := range stats {
+		ids[i] = st.ProxyID
+		requests[i] = st.Requests
+		successes[i] = st.Successes
+		avgMs[i] = st.AvgResponseTime
+	}
+
 	var total int64
-	// Delete by failed duration
-	if maxFailedDays > 0 {
-		tag, err := r.db.Pool.Exec(ctx, `
-			DELETE FROM proxies
-			WHERE status = 'failed'
-			  AND last_check < NOW() - ($1 || ' days')::INTERVAL`,
-			maxFailedDays)
-		if err != nil {
-			return 0, fmt.Errorf("failed to delete dead proxies by age: %w", err)
-		}
-		total += tag.RowsAffected()
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE proxies p
+		SET requests            = s.requests,
+			successful_requests = s.successes,
+			avg_response_time   = s.avg_ms,
+			updated_at          = NOW()
+		FROM (
+			SELECT unnest($1::int[])    AS id,
+			       unnest($2::bigint[]) AS requests,
+			       unnest($3::bigint[]) AS successes,
+			       unnest($4::int[])    AS avg_ms
+		) s
+		WHERE p.id = s.id
+		  AND (p.requests            IS DISTINCT FROM s.requests
+		    OR p.successful_requests IS DISTINCT FROM s.successes
+		    OR p.avg_response_time   IS DISTINCT FROM s.avg_ms)
+	`, ids, requests, successes, avgMs)
+	if err != nil {
+		return 0, fmt.Errorf("failed to apply request stats: %w", err)
 	}
-	// Delete by success rate (only proxies with enough requests to be meaningful: >= 10)
-	if minSuccessRate > 0 {
-		tag, err := r.db.Pool.Exec(ctx, `
-			DELETE FROM proxies
-			WHERE requests >= 10
-			  AND (successful_requests::float / requests::float * 100) < $1`,
-			minSuccessRate)
-		if err != nil {
-			return 0, fmt.Errorf("failed to delete dead proxies by success rate: %w", err)
-		}
-		total += tag.RowsAffected()
+	total += tag.RowsAffected()
+
+	tag, err = r.db.Pool.Exec(ctx, `
+		UPDATE proxies
+		SET requests = 0, successful_requests = 0, avg_response_time = 0, updated_at = NOW()
+		WHERE NOT (id = ANY($1))
+		  AND (requests <> 0 OR successful_requests <> 0 OR COALESCE(avg_response_time, 0) <> 0)
+	`, ids)
+	if err != nil {
+		return 0, fmt.Errorf("failed to zero stale request stats: %w", err)
 	}
+	total += tag.RowsAffected()
+
 	return int(total), nil
 }
 

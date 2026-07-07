@@ -71,16 +71,22 @@ func testStore(t *testing.T) (*PostgresStore, *database.DB) {
 // testProxyID inserts a proxy row to satisfy the proxy_requests FK and
 // returns its id.
 func testProxyID(t *testing.T, db *database.DB) int {
+	return testProxyIDAt(t, db, "127.0.0.1:9999")
+}
+
+// testProxyIDAt is testProxyID with an explicit address, for tests that need
+// several distinct proxies.
+func testProxyIDAt(t *testing.T, db *database.DB, address string) int {
 	t.Helper()
 	var id int
 	err := db.Pool.QueryRow(context.Background(), `
 		INSERT INTO proxies (address, protocol)
-		VALUES ('127.0.0.1:9999', 'http')
+		VALUES ($1, 'http')
 		ON CONFLICT (address, protocol) DO UPDATE SET updated_at = NOW()
 		RETURNING id
-	`).Scan(&id)
+	`, address).Scan(&id)
 	if err != nil {
-		t.Fatalf("insert proxy: %v", err)
+		t.Fatalf("insert proxy %s: %v", address, err)
 	}
 	return id
 }
@@ -340,4 +346,67 @@ func TestIntegration_ApplyRetention(t *testing.T) {
 	}
 	assertRows("logs", 1)
 	assertRows("proxy_requests", 1)
+}
+
+func TestIntegration_ProxyRollupAndLowSuccess(t *testing.T) {
+	store, db := testStore(t)
+	ctx := context.Background()
+	good := testProxyIDAt(t, db, "127.0.0.1:9101")
+	bad := testProxyIDAt(t, db, "127.0.0.1:9102")
+
+	now := time.Now()
+	insert := func(proxyID int, success bool, respMs int, age time.Duration) {
+		t.Helper()
+		err := store.InsertRequest(ctx, RequestEvent{
+			ProxyID: proxyID, ProxyAddress: "x", Method: "GET",
+			Success: success, ResponseTime: respMs, Timestamp: now.Add(-age),
+		})
+		if err != nil {
+			t.Fatalf("insert request: %v", err)
+		}
+	}
+
+	// good: 3 requests, 2 successes (100ms, 200ms), 1 failure (900ms —
+	// must not pollute the success-only average).
+	insert(good, true, 100, 0)
+	insert(good, true, 200, time.Hour)
+	insert(good, false, 900, time.Hour)
+
+	// bad: 12 in-window requests with 2 successes (~17%), plus an ancient
+	// all-success streak outside the 7-day window that must not shield it.
+	for i := 0; i < 10; i++ {
+		insert(bad, false, 50, time.Duration(i)*time.Minute)
+	}
+	insert(bad, true, 50, time.Hour)
+	insert(bad, true, 50, 2*time.Hour)
+	for i := 0; i < 20; i++ {
+		insert(bad, true, 50, 8*24*time.Hour)
+	}
+
+	rollup, err := store.ProxyRollup(ctx)
+	if err != nil {
+		t.Fatalf("ProxyRollup: %v", err)
+	}
+	byID := map[int]ProxyRequestStats{}
+	for _, st := range rollup {
+		byID[st.ProxyID] = st
+	}
+	g := byID[good]
+	if g.Requests != 3 || g.Successes != 2 || g.AvgResponseTime != 150 {
+		t.Errorf("good rollup: want (3, 2, 150ms), got (%d, %d, %dms)", g.Requests, g.Successes, g.AvgResponseTime)
+	}
+	b := byID[bad]
+	if b.Requests != 32 || b.Successes != 22 {
+		t.Errorf("bad rollup: want (32, 22), got (%d, %d)", b.Requests, b.Successes)
+	}
+
+	// Low-success over 7 days at 50% minimum: bad qualifies (12 requests,
+	// ~17%), good does not (only 3 in-window requests, below minRequests).
+	ids, err := store.LowSuccessProxies(ctx, 7*24*time.Hour, 50, 10)
+	if err != nil {
+		t.Fatalf("LowSuccessProxies: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != bad {
+		t.Errorf("LowSuccessProxies: want [%d], got %v", bad, ids)
+	}
 }
