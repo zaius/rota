@@ -131,7 +131,7 @@ func New(
 	}
 
 	// Create upstream proxy handler (forwards through the request's PoolChain)
-	handler := NewUpstreamProxyHandler(tracker, &settings.Rotation, log)
+	handler := NewUpstreamProxyHandler(&settings.Rotation, log)
 
 	// Create middlewares
 	authMiddleware := NewAuthMiddleware(settings.Authentication)

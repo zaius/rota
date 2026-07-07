@@ -17,24 +17,23 @@ import (
 // UserAuthMiddleware attaches to each request — either a per-user chain or the
 // default pool chain for unauthenticated/legacy traffic. There is only one
 // request engine now (the pool chain); the former global-selector path is gone.
+// Request recording lives in the chain, which knows the serving pool, the
+// user, and per-attempt timing.
 //
 // settings is swapped by ReloadSettings concurrently with hot-path request
 // goroutines, so it is held in an atomic pointer and read via getSettings.
 type UpstreamProxyHandler struct {
-	tracker  *UsageTracker
 	settings atomic.Pointer[models.RotationSettings]
 	logger   *logger.Logger
 }
 
 // NewUpstreamProxyHandler creates a new upstream proxy handler.
 func NewUpstreamProxyHandler(
-	tracker *UsageTracker,
 	settings *models.RotationSettings,
 	log *logger.Logger,
 ) *UpstreamProxyHandler {
 	h := &UpstreamProxyHandler{
-		tracker: tracker,
-		logger:  log,
+		logger: log,
 	}
 	h.setSettings(settings)
 	return h
@@ -81,11 +80,8 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 		return
 	}
 
-	resp, proxyID, err := chain.SendWithRetry(r, reqCtx, h.getSettings(), h.logger)
+	resp, _, err := chain.SendWithRetry(r, reqCtx, h.getSettings(), h.logger)
 	duration := int(time.Since(startTime).Milliseconds())
-	if proxyID > 0 {
-		h.recordAsync(proxyID, "", r.URL.String(), r.Method, resp, err, duration, startTime)
-	}
 	if err != nil {
 		h.logger.Error("proxy request failed",
 			"source", "proxy",
@@ -110,7 +106,6 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 // connection, establishes an upstream tunnel, and copies data bidirectionally
 // using splice(2) on Linux.
 func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *http.Request) {
-	startTime := time.Now()
 	host := r.Host
 
 	h.logger.Debug("handling CONNECT request",
@@ -126,7 +121,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		return
 	}
 
-	upstreamConn, proxyID, err := chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
+	upstreamConn, _, err := chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
 	if err != nil {
 		h.logger.Error("CONNECT upstream failed",
 			"source", "proxy",
@@ -167,27 +162,8 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		}
 	}
 
-	// Record the successful CONNECT.
-	duration := int(time.Since(startTime).Milliseconds())
-	if proxyID > 0 {
-		go func() {
-			recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			record := RequestRecord{
-				ProxyID:      proxyID,
-				ProxyAddress: "",
-				RequestedURL: "CONNECT://" + host,
-				Method:       "CONNECT",
-				Success:      true,
-				ResponseTime: duration,
-				StatusCode:   200,
-				Timestamp:    startTime,
-			}
-			h.tracker.RecordRequest(recordCtx, record) //nolint:errcheck
-		}()
-	}
-
 	// Bidirectional copy — uses splice(2) on Linux for zero-copy.
+	// (The successful CONNECT was already recorded by the chain.)
 	BidirectionalCopy(clientConn, upstreamConn)
 }
 
@@ -236,28 +212,4 @@ func (h *UpstreamProxyHandler) removeHopByHopHeaders(req *http.Request) {
 			req.Header.Del(strings.TrimSpace(connection))
 		}
 	}
-}
-
-// recordAsync records a proxy request asynchronously.
-func (h *UpstreamProxyHandler) recordAsync(proxyID int, proxyAddr, url, method string, resp *http.Response, reqErr error, duration int, ts time.Time) {
-	record := RequestRecord{
-		ProxyID:      proxyID,
-		ProxyAddress: proxyAddr,
-		RequestedURL: url,
-		Method:       method,
-		Success:      reqErr == nil && resp != nil,
-		ResponseTime: duration,
-		Timestamp:    ts,
-	}
-	if resp != nil {
-		record.StatusCode = resp.StatusCode
-	}
-	if reqErr != nil {
-		record.ErrorMessage = reqErr.Error()
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		h.tracker.RecordRequest(ctx, record) //nolint:errcheck
-	}()
 }

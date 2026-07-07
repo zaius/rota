@@ -43,13 +43,21 @@ type LogFilter struct {
 }
 
 // RequestEvent is one proxied request outcome.
+//
+// PoolID, Username and Domain are dimensions, not relations: they capture who
+// and what the request was for at the time it happened, survive deletion of
+// the referenced pool/user, and zero values mean "not applicable" (e.g. the
+// default pool has ID 0 and no user).
 type RequestEvent struct {
 	ProxyID      int
 	ProxyAddress string
+	PoolID       int    // pool that served the request; 0 = default pool
+	Username     string // proxy user the request was authenticated as
 	Method       string
 	URL          string
-	StatusCode   int // 0 = no response
-	ResponseTime int // milliseconds
+	Domain       string // normalized target host (see NormalizeCooldownDomain)
+	StatusCode   int    // 0 = no response
+	ResponseTime int    // milliseconds
 	Success      bool
 	Error        string
 	Timestamp    time.Time

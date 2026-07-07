@@ -139,8 +139,13 @@ func TestIntegration_Logs_InsertListSince(t *testing.T) {
 	if len(since) != 3 {
 		t.Fatalf("LogsSince(0): want 3 logs, got %d", len(since))
 	}
-	if since[0].ID >= since[2].ID {
-		t.Errorf("LogsSince order: want ascending IDs, got %d..%d", since[0].ID, since[2].ID)
+	if since[0].ID >= since[1].ID || since[1].ID >= since[2].ID {
+		t.Errorf("LogsSince order: want strictly ascending IDs, got %d, %d, %d",
+			since[0].ID, since[1].ID, since[2].ID)
+	}
+	// IDs are app-generated (UnixNano-based), not from a database sequence.
+	if since[0].ID < 1<<60 {
+		t.Errorf("log ID %d looks sequence-generated; want app-generated UnixNano-scale ID", since[0].ID)
 	}
 	tail, err := store.LogsSince(ctx, since[0].ID, 10, "proxy")
 	if err != nil {
@@ -190,7 +195,8 @@ func TestIntegration_Requests_InsertStatsCharts(t *testing.T) {
 
 	now := time.Now()
 	reqs := []RequestEvent{
-		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9999", Method: "GET", URL: "http://example.com",
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9999", PoolID: 7, Username: "alice",
+			Method: "GET", URL: "http://example.com", Domain: "example.com",
 			StatusCode: 200, ResponseTime: 100, Success: true, Timestamp: now},
 		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9999", Method: "GET", URL: "http://example.com",
 			ResponseTime: 300, Success: false, Error: "connect timeout", Timestamp: now},
@@ -202,6 +208,29 @@ func TestIntegration_Requests_InsertStatsCharts(t *testing.T) {
 		if err := store.InsertRequest(ctx, r); err != nil {
 			t.Fatalf("InsertRequest: %v", err)
 		}
+	}
+
+	// Dimensions round-trip; zero values are stored as NULL, not ''/0.
+	var gotPool, gotUser, gotDomain any
+	err := db.Pool.QueryRow(ctx, `
+		SELECT pool_id, username, domain FROM proxy_requests WHERE success = true AND pool_id IS NOT NULL
+	`).Scan(&gotPool, &gotUser, &gotDomain)
+	if err != nil {
+		t.Fatalf("read dimensions: %v", err)
+	}
+	if gotPool != int32(7) || gotUser != "alice" || gotDomain != "example.com" {
+		t.Errorf("dimensions: want (7, alice, example.com), got (%v, %v, %v)", gotPool, gotUser, gotDomain)
+	}
+	var nullDims int
+	err = db.Pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM proxy_requests
+		WHERE pool_id IS NULL AND username IS NULL AND domain IS NULL
+	`).Scan(&nullDims)
+	if err != nil {
+		t.Fatalf("count null dims: %v", err)
+	}
+	if nullDims != 2 {
+		t.Errorf("want 2 rows with all-NULL dimensions, got %d", nullDims)
 	}
 
 	stats, err := store.RequestStats(ctx)

@@ -628,6 +628,29 @@ var migrations = []Migration{
 			ALTER TABLE proxy_sources ALTER COLUMN format SET DEFAULT 'auto';
 		`,
 	},
+	{
+		Version:     26,
+		Description: "Add pool/user/domain dimensions to proxy_requests",
+		// Dimension columns only — no foreign keys: request history is an
+		// event record that must survive pool/user deletion and stay portable
+		// across event-store backends. domain is normalized the same way as
+		// proxy_domain_cooldowns entries (NormalizeCooldownDomain), so the two
+		// can be joined for per-domain analytics. Historical rows stay NULL
+		// and age out with retention. Indexes come with the queries that need
+		// them.
+		Up: `
+			ALTER TABLE proxy_requests
+				ADD COLUMN IF NOT EXISTS pool_id  INTEGER,
+				ADD COLUMN IF NOT EXISTS username VARCHAR(255),
+				ADD COLUMN IF NOT EXISTS domain   VARCHAR(255);
+		`,
+		Down: `
+			ALTER TABLE proxy_requests
+				DROP COLUMN IF EXISTS domain,
+				DROP COLUMN IF EXISTS username,
+				DROP COLUMN IF EXISTS pool_id;
+		`,
+	},
 }
 
 // migrationLockKey is an arbitrary constant identifying Rota's migration

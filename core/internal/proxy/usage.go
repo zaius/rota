@@ -28,6 +28,8 @@ func NewUsageTracker(eventStore events.Store, repo *repository.ProxyRepository) 
 type RequestRecord struct {
 	ProxyID      int
 	ProxyAddress string
+	PoolID       int    // pool that served the request; 0 = default pool
+	Username     string // proxy user the request was authenticated as
 	RequestedURL string
 	Method       string
 	Success      bool
@@ -39,12 +41,17 @@ type RequestRecord struct {
 
 // RecordRequest records a proxy request and updates statistics
 func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) error {
-	// Record the request outcome in the event store
+	// Record the request outcome in the event store. The target domain is
+	// derived from the URL with the same normalization as domain cooldowns,
+	// so per-domain analytics line up with proxy_domain_cooldowns entries.
 	err := t.events.InsertRequest(ctx, events.RequestEvent{
 		ProxyID:      record.ProxyID,
 		ProxyAddress: record.ProxyAddress,
+		PoolID:       record.PoolID,
+		Username:     record.Username,
 		Method:       record.Method,
 		URL:          record.RequestedURL,
+		Domain:       NormalizeCooldownDomain(record.RequestedURL),
 		StatusCode:   record.StatusCode,
 		ResponseTime: record.ResponseTime,
 		Success:      record.Success,

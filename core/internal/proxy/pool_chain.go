@@ -17,15 +17,22 @@ import (
 // index 0 = main pool, index 1..N = fallback pools.
 // It refreshes pool selectors periodically and provides the high-level
 // SendWithRetry / ConnectWithRetry methods used by the proxy handler.
+//
+// The chain owns all request recording: it is the only place that knows which
+// pool served an attempt, which user the chain belongs to, and how long each
+// individual attempt took — so per-proxy stats are charged per attempt, not
+// per retry loop.
 type PoolChain struct {
 	selectors []*PoolSelector
 	tracker   *UsageTracker
 	logger    *logger.Logger
-	maxRetry  int // total upstream attempts across all pools
+	maxRetry  int    // total upstream attempts across all pools
+	username  string // proxy user this chain serves; "" for the default chain
 }
 
-// NewPoolChain builds a PoolChain from an ordered list of ProxyPool objects.
-func NewPoolChain(db *database.DB, pools []models.ProxyPool, maxRetry int, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
+// NewPoolChain builds a PoolChain from an ordered list of ProxyPool objects
+// for the named proxy user.
+func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, maxRetry int, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
 	selectors := make([]*PoolSelector, 0, len(pools))
 	for _, p := range pools {
 		selectors = append(selectors, NewPoolSelector(db, p, sessionMgr, domainCD))
@@ -35,21 +42,43 @@ func NewPoolChain(db *database.DB, pools []models.ProxyPool, maxRetry int, sessi
 		tracker:   tracker,
 		logger:    log,
 		maxRetry:  maxRetry,
+		username:  username,
 	}
 }
 
-// recordFailure asynchronously records a failed upstream attempt. Without this
-// the pool path only ever persists successes, so proxy failure stats and the
-// consecutive-failure auto-disable threshold (see updateProxyStats) never
-// advance for pooled proxies — a dead proxy would be retried forever. This
-// mirrors the per-attempt recording the legacy path does in the handler.
-func (c *PoolChain) recordFailure(proxyID int, address, url, method string, attemptStart time.Time, cause error) {
-	if c.tracker == nil || proxyID <= 0 {
+// poolID returns the pool ID behind selector index selIdx (0 for the default
+// pool or an out-of-range index).
+func (c *PoolChain) poolID(selIdx int) int {
+	if selIdx >= 0 && selIdx < len(c.selectors) {
+		return c.selectors[selIdx].poolID
+	}
+	return 0
+}
+
+// recordAttempt asynchronously records one upstream attempt outcome.
+func (c *PoolChain) recordAttempt(record RequestRecord) {
+	if c.tracker == nil || record.ProxyID <= 0 {
 		return
 	}
+	record.Username = c.username
+	go func() {
+		recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := c.tracker.RecordRequest(recordCtx, record); err != nil {
+			c.logger.Error("failed to record proxy request", "error", err)
+		}
+	}()
+}
+
+// recordFailure records a failed upstream attempt. Without this the pool path
+// would only ever persist successes, so proxy failure stats and the
+// consecutive-failure auto-disable threshold (see updateProxyStats) would
+// never advance for pooled proxies — a dead proxy would be retried forever.
+func (c *PoolChain) recordFailure(selIdx, proxyID int, address, url, method string, attemptStart time.Time, cause error) {
 	record := RequestRecord{
 		ProxyID:      proxyID,
 		ProxyAddress: address,
+		PoolID:       c.poolID(selIdx),
 		RequestedURL: url,
 		Method:       method,
 		Success:      false,
@@ -59,13 +88,22 @@ func (c *PoolChain) recordFailure(proxyID int, address, url, method string, atte
 	if cause != nil {
 		record.ErrorMessage = cause.Error()
 	}
-	go func() {
-		recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := c.tracker.RecordRequest(recordCtx, record); err != nil {
-			c.logger.Error("failed to record pool-chain failure", "error", err)
-		}
-	}()
+	c.recordAttempt(record)
+}
+
+// recordSuccess records a successful upstream attempt.
+func (c *PoolChain) recordSuccess(selIdx, proxyID int, address, url, method string, statusCode int, attemptStart time.Time) {
+	c.recordAttempt(RequestRecord{
+		ProxyID:      proxyID,
+		ProxyAddress: address,
+		PoolID:       c.poolID(selIdx),
+		RequestedURL: url,
+		Method:       method,
+		Success:      true,
+		StatusCode:   statusCode,
+		ResponseTime: int(time.Since(attemptStart).Milliseconds()),
+		Timestamp:    attemptStart,
+	})
 }
 
 // defaultPoolMethod maps a global rotation method onto the selector methods the
@@ -209,7 +247,7 @@ func (c *PoolChain) SendWithRetry(
 		transport, err := GetOrCreateTransport(selectedProxy)
 		if err != nil {
 			lastErr = err
-			c.recordFailure(selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
+			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
 			c.markFailed(selIdx, selectedProxy.ID)
 			continue
 		}
@@ -238,13 +276,14 @@ func (c *PoolChain) SendWithRetry(
 
 		resp, err := client.Do(cloned)
 		if err != nil {
-			c.recordFailure(selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
+			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
 			lastErr = fmt.Errorf("proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)
 			log.Warn("pool chain: proxy failed", "proxy", selectedProxy.Address, "err", err)
 			c.markFailed(selIdx, selectedProxy.ID)
 			continue
 		}
 
+		c.recordSuccess(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, resp.StatusCode, attemptStart)
 		log.Info("pool chain: success",
 			"proxy", selectedProxy.Address,
 			"status", resp.StatusCode,
@@ -285,13 +324,14 @@ func (c *PoolChain) ConnectWithRetry(
 
 		conn, err := connectViaProxyStandalone(selectedProxy, host, rotationSettings)
 		if err != nil {
-			c.recordFailure(selectedProxy.ID, selectedProxy.Address, "CONNECT://"+host, "CONNECT", attemptStart, err)
+			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, "CONNECT://"+host, "CONNECT", attemptStart, err)
 			lastErr = fmt.Errorf("CONNECT proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)
 			log.Warn("pool chain CONNECT: failed", "proxy", selectedProxy.Address, "err", err)
 			c.markFailed(selIdx, selectedProxy.ID)
 			continue
 		}
 
+		c.recordSuccess(selIdx, selectedProxy.ID, selectedProxy.Address, "CONNECT://"+host, "CONNECT", 200, attemptStart)
 		log.Info("pool chain CONNECT: success", "proxy", selectedProxy.Address, "host", host)
 		return conn, selectedProxy.ID, nil
 	}

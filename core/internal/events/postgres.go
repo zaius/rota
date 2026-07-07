@@ -73,11 +73,12 @@ func (s *PostgresStore) capabilities(ctx context.Context) (pgCapabilities, error
 	return caps, nil
 }
 
-// InsertLog records a system log event.
+// InsertLog records a system log event. The ID is generated in the
+// application (see nextLogID), not by the database.
 func (s *PostgresStore) InsertLog(ctx context.Context, entry LogEntry) error {
 	query := `
-		INSERT INTO logs (timestamp, level, message, details, metadata)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO logs (id, timestamp, level, message, details, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6)
 	`
 
 	// Source is stored inside the metadata document, which is what the list
@@ -100,7 +101,7 @@ func (s *PostgresStore) InsertLog(ctx context.Context, entry LogEntry) error {
 		}
 	}
 
-	if _, err := s.db.Pool.Exec(ctx, query, time.Now(), entry.Level, entry.Message, entry.Details, metadataJSON); err != nil {
+	if _, err := s.db.Pool.Exec(ctx, query, nextLogID(), time.Now(), entry.Level, entry.Message, entry.Details, metadataJSON); err != nil {
 		return fmt.Errorf("failed to create log: %w", err)
 	}
 
@@ -228,8 +229,9 @@ func (s *PostgresStore) DeleteLogsOlderThan(ctx context.Context, age time.Durati
 func (s *PostgresStore) InsertRequest(ctx context.Context, event RequestEvent) error {
 	query := `
 		INSERT INTO proxy_requests (
-			proxy_id, proxy_address, method, url, status_code, success, response_time, error, timestamp
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			proxy_id, proxy_address, pool_id, username, method, url, domain,
+			status_code, success, response_time, error, timestamp
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`
 
 	var errorMsg *string
@@ -242,13 +244,30 @@ func (s *PostgresStore) InsertRequest(ctx context.Context, event RequestEvent) e
 		statusCode = &event.StatusCode
 	}
 
+	// Zero-value dimensions are stored as NULL: "not applicable", not "".
+	var poolID *int
+	if event.PoolID > 0 {
+		poolID = &event.PoolID
+	}
+	var username *string
+	if event.Username != "" {
+		username = &event.Username
+	}
+	var domain *string
+	if event.Domain != "" {
+		domain = &event.Domain
+	}
+
 	_, err := s.db.Pool.Exec(
 		ctx,
 		query,
 		event.ProxyID,
 		event.ProxyAddress,
+		poolID,
+		username,
 		event.Method,
 		event.URL,
+		domain,
 		statusCode,
 		event.Success,
 		event.ResponseTime,
