@@ -163,11 +163,12 @@ func (h *AuthHandler) usernameFromRequest(r *http.Request) (string, error) {
 	return username, nil
 }
 
-// generateToken generates a JWT token for the user
+// generateToken generates a JWT token for the user. Tokens carry no exp
+// claim, so sessions last until the JWT secret changes or the token is
+// discarded client-side.
 func (h *AuthHandler) generateToken(username string) (string, error) {
 	claims := jwt.MapClaims{
 		"username": username,
-		"exp":      time.Now().Add(24 * time.Hour).Unix(),
 		"iat":      time.Now().Unix(),
 	}
 
