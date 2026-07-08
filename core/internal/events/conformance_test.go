@@ -67,6 +67,8 @@ func newTestBackend(t *testing.T) storeBackend {
 	switch backend := os.Getenv("EVENT_STORE_TEST"); backend {
 	case "", "postgres":
 		return newPGTestBackend(t)
+	case "clickhouse":
+		return newCHTestBackend(t)
 	default:
 		t.Fatalf("unknown EVENT_STORE_TEST %q", backend)
 		return nil

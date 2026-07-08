@@ -156,6 +156,8 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `ROTA_ADMIN_USER` | `admin` | Initial dashboard username (seeded once) |
 | `ROTA_ADMIN_PASSWORD` | `admin` | Initial dashboard password (seeded once, min 6 chars) |
 | `DB_PASSWORD` | `rota_password` | Database password |
+| `EVENT_STORE` | `postgres` | Backend for logs + request history: `postgres` or `clickhouse` |
+| `CLICKHOUSE_PASSWORD` | `rota_password` | ClickHouse password (when `EVENT_STORE=clickhouse`) |
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `AUTH_IP_MAX_ATTEMPTS` | `10` | Failed login attempts before an IP is blocked |
 | `AUTH_IP_WINDOW_MINUTES` | `10` | Sliding window (minutes) to count per-IP failures |

@@ -76,12 +76,19 @@ func run() error {
 	}
 
 	// Create the event store — the single boundary for time-series event data
-	// (system logs, per-request history). Config selects the backend; only
-	// Postgres exists today, ClickHouse is planned.
+	// (system logs, per-request history). Config selects the backend: events
+	// in the primary Postgres database (default), or in ClickHouse.
 	var eventStore events.Store
 	switch cfg.EventStore {
 	case "postgres":
 		eventStore = events.NewPostgresStore(db, log)
+	case "clickhouse":
+		ch, err := events.NewClickHouseStore(ctx, &cfg.ClickHouse, log)
+		if err != nil {
+			return fmt.Errorf("failed to connect to clickhouse event store: %w", err)
+		}
+		defer ch.Close()
+		eventStore = ch
 	default:
 		return fmt.Errorf("unsupported event store: %s", cfg.EventStore)
 	}

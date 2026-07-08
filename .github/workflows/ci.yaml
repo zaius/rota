@@ -83,6 +83,52 @@ jobs:
           TEST_DB_NAME: rota_test
         run: go test -race -p 1 -count=1 -run Integration ./internal/events/ ./internal/repository/
 
+  events-clickhouse:
+    name: Event store (ClickHouse)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.3
+        env:
+          CLICKHOUSE_USER: rota
+          CLICKHOUSE_PASSWORD: rota_password
+          CLICKHOUSE_DB: rota_test
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "clickhouse-client --user rota --password rota_password -q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --ulimit nofile=262144:262144
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      # The same conformance suite the Postgres matrix runs, pointed at the
+      # ClickHouse backend via EVENT_STORE_TEST.
+      - name: Conformance suite (ClickHouse)
+        env:
+          ROTA_TEST_DB: "1"
+          EVENT_STORE_TEST: clickhouse
+          TEST_CH_HOST: localhost
+          TEST_CH_PORT: "9000"
+          TEST_CH_USER: rota
+          TEST_CH_PASSWORD: rota_password
+          TEST_CH_NAME: rota_test
+        run: go test -race -count=1 -run Integration ./internal/events/
+
   dashboard:
     name: Dashboard (Vite)
     runs-on: ubuntu-latest
