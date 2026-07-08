@@ -12,15 +12,24 @@ concurrency:
 
 jobs:
   core:
-    name: Core (Go)
+    name: Core (Go, ${{ matrix.database }})
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: core
 
+    # The event store must work on plain Postgres AND TimescaleDB — the
+    # integration/conformance suites run against both.
+    strategy:
+      fail-fast: false
+      matrix:
+        database:
+          - postgres:17-alpine
+          - timescale/timescaledb:2.22.1-pg17
+
     services:
-      timescaledb:
-        image: timescale/timescaledb:2.22.1-pg17
+      database:
+        image: ${{ matrix.database }}
         env:
           POSTGRES_USER: rota
           POSTGRES_PASSWORD: rota_password
@@ -58,7 +67,13 @@ jobs:
       - name: Build
         run: go build ./...
 
-      - name: Test (hermetic + integration, race detector)
+      - name: Test (hermetic, race detector)
+        run: go test -race ./...
+
+      # -p 1 because the integration packages share one test database and Go
+      # runs package tests in parallel by default (see the suites' doc
+      # comments); -count=1 defeats caching so both matrix legs really run.
+      - name: Integration tests (${{ matrix.database }})
         env:
           ROTA_TEST_DB: "1"
           TEST_DB_HOST: localhost
@@ -66,7 +81,7 @@ jobs:
           TEST_DB_USER: rota
           TEST_DB_PASSWORD: rota_password
           TEST_DB_NAME: rota_test
-        run: go test -race ./...
+        run: go test -race -p 1 -count=1 -run Integration ./internal/events/ ./internal/repository/
 
   dashboard:
     name: Dashboard (Vite)

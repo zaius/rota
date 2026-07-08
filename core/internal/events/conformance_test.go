@@ -3,20 +3,18 @@ package events
 import (
 	"context"
 	"os"
-	"strconv"
 	"testing"
 	"time"
-
-	"github.com/alpkeskin/rota/core/internal/config"
-	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
-// These tests exercise the event store against a real Postgres instance and
-// are the seed of the backend conformance suite: every Store implementation
-// must pass them. Both plain Postgres and TimescaleDB images work — the store
-// adapts at runtime. They are skipped unless ROTA_TEST_DB is set, so
-// `go test ./...` stays hermetic. To run them locally:
+// This file is the event-store conformance suite: every Store implementation
+// must pass it. Test bodies talk only to the Store interface plus the small
+// storeBackend hook set below — no backend-specific SQL — so a new backend
+// (e.g. ClickHouse) joins by adding a case to newTestBackend, with zero new
+// tests.
+//
+// The suite needs a real database and is skipped unless ROTA_TEST_DB is set,
+// so `go test ./...` stays hermetic. To run it locally:
 //
 //	docker run -d --name pg -e POSTGRES_USER=rota -e POSTGRES_PASSWORD=rota_password \
 //	  -e POSTGRES_DB=rota_test -p 55432:5432 timescale/timescaledb:2.22.1-pg17   # or postgres:17
@@ -27,72 +25,57 @@ import (
 // tests in parallel by default (repository tests delete proxies, which
 // cascades into rows these tests assert on).
 
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
+// rawRequestDims is the stored dimension tuple of one request event. Nil
+// means the backend stored "not applicable" (NULL or its equivalent).
+type rawRequestDims struct {
+	PoolID   *int
+	Username *string
+	Domain   *string
 }
 
-func testStore(t *testing.T) (*PostgresStore, *database.DB) {
+// storeBackend gives the conformance suite out-of-band access to the backend
+// under test, for the few things the Store interface deliberately does not
+// expose.
+type storeBackend interface {
+	// Store returns the store under test, with empty event tables.
+	Store() Store
+
+	// SeedProxy ensures a proxy with the given address exists for request
+	// events to reference, returning its ID. Backends without referential
+	// integrity may simply fabricate a unique ID.
+	SeedProxy(t *testing.T, address string) int
+
+	// RequestDims returns the stored (pool, username, domain) dimensions of
+	// every request event, in any order.
+	RequestDims(t *testing.T) []rawRequestDims
+
+	// VerifyRetentionApplied asserts that cfg took effect after an
+	// ApplyRetention call: delete-based backends check that only the
+	// unexpired rows remain (wantLogs/wantRequests), policy- or TTL-based
+	// backends check their native mechanism is configured with cfg's
+	// periods.
+	VerifyRetentionApplied(t *testing.T, cfg RetentionConfig, wantLogs, wantRequests int)
+}
+
+// newTestBackend returns the backend selected by EVENT_STORE_TEST (default
+// "postgres"), skipping unless ROTA_TEST_DB is set.
+func newTestBackend(t *testing.T) storeBackend {
 	t.Helper()
 	if os.Getenv("ROTA_TEST_DB") == "" {
-		t.Skip("set ROTA_TEST_DB=1 (with a running Postgres) to run event store integration tests")
+		t.Skip("set ROTA_TEST_DB=1 (with a running database) to run event store conformance tests")
 	}
-	port, _ := strconv.Atoi(getenv("TEST_DB_PORT", "55432"))
-	cfg := &config.DatabaseConfig{
-		Host:     getenv("TEST_DB_HOST", "localhost"),
-		Port:     port,
-		User:     getenv("TEST_DB_USER", "rota"),
-		Password: getenv("TEST_DB_PASSWORD", "rota_password"),
-		Name:     getenv("TEST_DB_NAME", "rota_test"),
-		SSLMode:  "disable",
+	switch backend := os.Getenv("EVENT_STORE_TEST"); backend {
+	case "", "postgres":
+		return newPGTestBackend(t)
+	default:
+		t.Fatalf("unknown EVENT_STORE_TEST %q", backend)
+		return nil
 	}
-	db, err := database.New(context.Background(), cfg, database.DefaultConfig(), logger.New("error"))
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(db.Close)
-	if err := db.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	// Each test starts from empty event tables.
-	ctx := context.Background()
-	for _, table := range []string{"logs", "proxy_requests"} {
-		if _, err := db.Pool.Exec(ctx, "DELETE FROM "+table); err != nil {
-			t.Fatalf("truncate %s: %v", table, err)
-		}
-	}
-
-	return NewPostgresStore(db, logger.New("error")), db
-}
-
-// testProxyID inserts a proxy row to satisfy the proxy_requests FK and
-// returns its id.
-func testProxyID(t *testing.T, db *database.DB) int {
-	return testProxyIDAt(t, db, "127.0.0.1:9999")
-}
-
-// testProxyIDAt is testProxyID with an explicit address, for tests that need
-// several distinct proxies.
-func testProxyIDAt(t *testing.T, db *database.DB, address string) int {
-	t.Helper()
-	var id int
-	err := db.Pool.QueryRow(context.Background(), `
-		INSERT INTO proxies (address, protocol)
-		VALUES ($1, 'http')
-		ON CONFLICT (address, protocol) DO UPDATE SET updated_at = NOW()
-		RETURNING id
-	`, address).Scan(&id)
-	if err != nil {
-		t.Fatalf("insert proxy %s: %v", address, err)
-	}
-	return id
 }
 
 func TestIntegration_Logs_InsertListSince(t *testing.T) {
-	store, _ := testStore(t)
+	backend := newTestBackend(t)
+	store := backend.Store()
 	ctx := context.Background()
 
 	details := "some details"
@@ -165,17 +148,17 @@ func TestIntegration_Logs_InsertListSince(t *testing.T) {
 }
 
 func TestIntegration_Logs_DeleteOlderThan(t *testing.T) {
-	store, db := testStore(t)
+	backend := newTestBackend(t)
+	store := backend.Store()
 	ctx := context.Background()
 
 	if err := store.InsertLog(ctx, LogEntry{Level: "info", Message: "fresh"}); err != nil {
 		t.Fatalf("InsertLog: %v", err)
 	}
-	// Backdate a second log beyond the cutoff.
-	if _, err := db.Pool.Exec(ctx, `
-		INSERT INTO logs (timestamp, level, message) VALUES (NOW() - INTERVAL '3 days', 'info', 'stale')
-	`); err != nil {
-		t.Fatalf("insert stale log: %v", err)
+	// A second log backdated beyond the cutoff.
+	stale := LogEntry{Level: "info", Message: "stale", Timestamp: time.Now().Add(-3 * 24 * time.Hour)}
+	if err := store.InsertLog(ctx, stale); err != nil {
+		t.Fatalf("InsertLog(stale): %v", err)
 	}
 
 	deleted, err := store.DeleteLogsOlderThan(ctx, 24*time.Hour)
@@ -195,9 +178,10 @@ func TestIntegration_Logs_DeleteOlderThan(t *testing.T) {
 }
 
 func TestIntegration_Requests_InsertStatsCharts(t *testing.T) {
-	store, db := testStore(t)
+	backend := newTestBackend(t)
+	store := backend.Store()
 	ctx := context.Background()
-	proxyID := testProxyID(t, db)
+	proxyID := backend.SeedProxy(t, "127.0.0.1:9999")
 
 	now := time.Now()
 	reqs := []RequestEvent{
@@ -216,27 +200,25 @@ func TestIntegration_Requests_InsertStatsCharts(t *testing.T) {
 		}
 	}
 
-	// Dimensions round-trip; zero values are stored as NULL, not ''/0.
-	var gotPool, gotUser, gotDomain any
-	err := db.Pool.QueryRow(ctx, `
-		SELECT pool_id, username, domain FROM proxy_requests WHERE success = true AND pool_id IS NOT NULL
-	`).Scan(&gotPool, &gotUser, &gotDomain)
-	if err != nil {
-		t.Fatalf("read dimensions: %v", err)
+	// Dimensions round-trip; zero values are stored as "not applicable".
+	dims := backend.RequestDims(t)
+	var withDims, nullDims int
+	for _, d := range dims {
+		switch {
+		case d.PoolID != nil && d.Username != nil && d.Domain != nil:
+			withDims++
+			if *d.PoolID != 7 || *d.Username != "alice" || *d.Domain != "example.com" {
+				t.Errorf("dimensions: want (7, alice, example.com), got (%v, %v, %v)",
+					*d.PoolID, *d.Username, *d.Domain)
+			}
+		case d.PoolID == nil && d.Username == nil && d.Domain == nil:
+			nullDims++
+		default:
+			t.Errorf("mixed dimension tuple: %+v", d)
+		}
 	}
-	if gotPool != int32(7) || gotUser != "alice" || gotDomain != "example.com" {
-		t.Errorf("dimensions: want (7, alice, example.com), got (%v, %v, %v)", gotPool, gotUser, gotDomain)
-	}
-	var nullDims int
-	err = db.Pool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM proxy_requests
-		WHERE pool_id IS NULL AND username IS NULL AND domain IS NULL
-	`).Scan(&nullDims)
-	if err != nil {
-		t.Fatalf("count null dims: %v", err)
-	}
-	if nullDims != 2 {
-		t.Errorf("want 2 rows with all-NULL dimensions, got %d", nullDims)
+	if withDims != 1 || nullDims != 2 {
+		t.Errorf("want 1 dimensioned + 2 null-dimension rows, got %d + %d", withDims, nullDims)
 	}
 
 	stats, err := store.RequestStats(ctx)
@@ -275,84 +257,49 @@ func TestIntegration_Requests_InsertStatsCharts(t *testing.T) {
 }
 
 func TestIntegration_ApplyRetention(t *testing.T) {
-	store, db := testStore(t)
+	backend := newTestBackend(t)
+	store := backend.Store()
 	ctx := context.Background()
-	proxyID := testProxyID(t, db)
+	proxyID := backend.SeedProxy(t, "127.0.0.1:9999")
 
 	// One fresh and one expired row in each event table.
 	if err := store.InsertLog(ctx, LogEntry{Level: "info", Message: "fresh"}); err != nil {
 		t.Fatalf("InsertLog: %v", err)
 	}
-	if _, err := db.Pool.Exec(ctx, `
-		INSERT INTO logs (timestamp, level, message) VALUES (NOW() - INTERVAL '20 days', 'info', 'stale')
-	`); err != nil {
-		t.Fatalf("insert stale log: %v", err)
+	staleLog := LogEntry{Level: "info", Message: "stale", Timestamp: time.Now().Add(-20 * 24 * time.Hour)}
+	if err := store.InsertLog(ctx, staleLog); err != nil {
+		t.Fatalf("InsertLog(stale): %v", err)
 	}
-	for _, age := range []string{"0 hours", "20 days"} {
-		if _, err := db.Pool.Exec(ctx, `
-			INSERT INTO proxy_requests (timestamp, proxy_id, proxy_address, method, success, response_time)
-			VALUES (NOW() - $1::interval, $2, '127.0.0.1:9999', 'GET', true, 100)
-		`, age, proxyID); err != nil {
-			t.Fatalf("insert request: %v", err)
+	for _, age := range []time.Duration{0, 20 * 24 * time.Hour} {
+		err := store.InsertRequest(ctx, RequestEvent{
+			ProxyID: proxyID, ProxyAddress: "127.0.0.1:9999", Method: "GET",
+			Success: true, ResponseTime: 100, Timestamp: time.Now().Add(-age),
+		})
+		if err != nil {
+			t.Fatalf("InsertRequest: %v", err)
 		}
 	}
 
-	// Must succeed on any backend: installs policies where supported,
-	// deletes expired rows otherwise. Never errors just because the backend
-	// lacks a feature.
-	err := store.ApplyRetention(ctx, RetentionConfig{
+	// Must succeed on any backend; how retention takes effect is the
+	// backend's business, checked by VerifyRetentionApplied.
+	cfg := RetentionConfig{
 		RetentionDays:        14,
 		CompressionAfterDays: 3,
 		RequestRetentionDays: 14,
-	})
-	if err != nil {
+	}
+	if err := store.ApplyRetention(ctx, cfg); err != nil {
 		t.Fatalf("ApplyRetention: %v", err)
 	}
 
-	caps, err := store.capabilities(ctx)
-	if err != nil {
-		t.Fatalf("capabilities: %v", err)
-	}
-	if caps.tslPolicies {
-		// Policy path: deletion is deferred to Timescale's background jobs,
-		// so only assert the policies landed with the configured periods.
-		var n int
-		err := db.Pool.QueryRow(ctx, `
-			SELECT COUNT(*) FROM timescaledb_information.jobs
-			WHERE proc_name = 'policy_retention'
-			  AND hypertable_name IN ('logs', 'proxy_requests')
-			  AND config->>'drop_after' = '14 days'
-		`).Scan(&n)
-		if err != nil {
-			t.Fatalf("query policies: %v", err)
-		}
-		if n != 2 {
-			t.Errorf("want retention policies on logs and proxy_requests with 14 days, got %d", n)
-		}
-		return
-	}
-
-	// Fallback path (plain Postgres / Apache-only builds): expired rows are
-	// deleted immediately, fresh rows survive.
-	assertRows := func(table string, want int) {
-		t.Helper()
-		var n int
-		if err := db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM "+table).Scan(&n); err != nil {
-			t.Fatalf("count %s: %v", table, err)
-		}
-		if n != want {
-			t.Errorf("%s: want %d rows after retention, got %d", table, want, n)
-		}
-	}
-	assertRows("logs", 1)
-	assertRows("proxy_requests", 1)
+	backend.VerifyRetentionApplied(t, cfg, 1, 1)
 }
 
 func TestIntegration_ProxyRollupAndLowSuccess(t *testing.T) {
-	store, db := testStore(t)
+	backend := newTestBackend(t)
+	store := backend.Store()
 	ctx := context.Background()
-	good := testProxyIDAt(t, db, "127.0.0.1:9101")
-	bad := testProxyIDAt(t, db, "127.0.0.1:9102")
+	good := backend.SeedProxy(t, "127.0.0.1:9101")
+	bad := backend.SeedProxy(t, "127.0.0.1:9102")
 
 	now := time.Now()
 	insert := func(proxyID int, success bool, respMs int, age time.Duration) {

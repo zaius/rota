@@ -25,12 +25,14 @@ import (
 // Source identifies the subsystem that produced the log (e.g. "proxy") and is
 // a first-class field so backends can index or column-ize it; how it is stored
 // is the backend's business. Metadata carries free-form attributes for display.
+// A zero Timestamp means "now".
 type LogEntry struct {
-	Level    string
-	Message  string
-	Details  *string
-	Source   string
-	Metadata map[string]any
+	Level     string
+	Message   string
+	Details   *string
+	Source    string
+	Metadata  map[string]any
+	Timestamp time.Time
 }
 
 // LogFilter narrows log listings. Zero values mean "no filter".

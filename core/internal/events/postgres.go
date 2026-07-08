@@ -101,7 +101,12 @@ func (s *PostgresStore) InsertLog(ctx context.Context, entry LogEntry) error {
 		}
 	}
 
-	if _, err := s.db.Pool.Exec(ctx, query, nextLogID(), time.Now(), entry.Level, entry.Message, entry.Details, metadataJSON); err != nil {
+	ts := entry.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+
+	if _, err := s.db.Pool.Exec(ctx, query, nextLogID(), ts, entry.Level, entry.Message, entry.Details, metadataJSON); err != nil {
 		return fmt.Errorf("failed to create log: %w", err)
 	}
 
