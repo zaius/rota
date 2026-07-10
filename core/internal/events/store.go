@@ -132,6 +132,12 @@ type Store interface {
 	// with at least minRequests requests in that window.
 	LowSuccessProxies(ctx context.Context, window time.Duration, minRate float64, minRequests int) ([]int, error)
 
+	// TrafficSeries returns request volume and latency percentiles bucketed
+	// over the trailing range (one of "1h", "6h", "24h", "7d", "30d" — see
+	// SeriesWindow). Buckets with no traffic are zero-filled, so the series
+	// is dense and chart-ready.
+	TrafficSeries(ctx context.Context, rng string) ([]models.TrafficPoint, error)
+
 	// ResponseTimeChart returns average response time of successful requests
 	// bucketed over time. Interval is one of "1h", "4h", "1d".
 	ResponseTimeChart(ctx context.Context, interval string) ([]models.ChartDataPoint, error)

@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/alpkeskin/rota/core/internal/models"
 )
 
 // This file is the event-store conformance suite: every Store implementation
@@ -357,5 +359,97 @@ func TestIntegration_ProxyRollupAndLowSuccess(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != bad {
 		t.Errorf("LowSuccessProxies: want [%d], got %v", bad, ids)
+	}
+}
+
+func TestIntegration_TrafficSeries(t *testing.T) {
+	backend := newTestBackend(t)
+	store := backend.Store()
+	ctx := context.Background()
+	proxyID := backend.SeedProxy(t, "127.0.0.1:9103")
+
+	// Plant deterministic traffic inside two known 30m buckets ("24h" range).
+	// Offsets keep every event inside its bucket regardless of when the test
+	// runs.
+	bucketA := time.Now().UTC().Truncate(30 * time.Minute)
+	bucketB := bucketA.Add(-2 * time.Hour)
+
+	insert := func(at time.Time, success bool, respMs int) {
+		t.Helper()
+		err := store.InsertRequest(ctx, RequestEvent{
+			ProxyID: proxyID, ProxyAddress: "x", Method: "GET",
+			Success: success, ResponseTime: respMs, Timestamp: at,
+		})
+		if err != nil {
+			t.Fatalf("insert request: %v", err)
+		}
+	}
+
+	// Bucket A: four successes (100/200/200/300ms) and one failure whose huge
+	// latency must not leak into the percentiles. One success carries a
+	// local-zone timestamp (same instant as bucketA's window): backends must
+	// store instants, not wall-clock digits, or it lands in the wrong bucket
+	// on any non-UTC host.
+	insert(bucketA.Add(1*time.Minute), true, 100)
+	insert(bucketA.Add(2*time.Minute), true, 200)
+	insert(time.Now(), true, 200)
+	insert(bucketA.Add(3*time.Minute), true, 300)
+	insert(bucketA.Add(4*time.Minute), false, 9000)
+	// Bucket B: failures only — volume without percentiles.
+	insert(bucketB.Add(1*time.Minute), false, 50)
+	insert(bucketB.Add(2*time.Minute), false, 50)
+
+	series, err := store.TrafficSeries(ctx, "24h")
+	if err != nil {
+		t.Fatalf("TrafficSeries: %v", err)
+	}
+
+	// Dense series: ~49 buckets of 30m across 24h, strictly ascending, no gaps.
+	if len(series) < 47 {
+		t.Fatalf("series not dense: got %d points", len(series))
+	}
+	for i := 1; i < len(series); i++ {
+		if got := series[i].Time.Sub(series[i-1].Time); got != 30*time.Minute {
+			t.Fatalf("gap between points %d and %d: %v", i-1, i, got)
+		}
+	}
+
+	byTime := map[int64]models.TrafficPoint{}
+	var zeroes int
+	for _, p := range series {
+		byTime[p.Time.Unix()] = p
+		if p.Requests == 0 {
+			zeroes++
+		}
+	}
+	if zeroes == 0 {
+		t.Error("expected zero-filled quiet buckets in the series")
+	}
+
+	a, ok := byTime[bucketA.Unix()]
+	if !ok {
+		t.Fatalf("bucket A (%v) missing from series", bucketA)
+	}
+	if a.Requests != 5 || a.Successes != 4 {
+		t.Errorf("bucket A volume: want (5, 4), got (%d, %d)", a.Requests, a.Successes)
+	}
+	if a.P50Ms != 200 {
+		t.Errorf("bucket A p50: want 200, got %d", a.P50Ms)
+	}
+	// Inclusive interpolation puts p95 of [100,200,200,300] at 285; allow a
+	// few ms so backend rounding differences don't matter.
+	if a.P95Ms < 280 || a.P95Ms > 300 {
+		t.Errorf("bucket A p95: want ~285, got %d", a.P95Ms)
+	}
+
+	b, ok := byTime[bucketB.Unix()]
+	if !ok {
+		t.Fatalf("bucket B (%v) missing from series", bucketB)
+	}
+	if b.Requests != 2 || b.Successes != 0 {
+		t.Errorf("bucket B volume: want (2, 0), got (%d, %d)", b.Requests, b.Successes)
+	}
+	if b.P50Ms != 0 || b.P95Ms != 0 {
+		t.Errorf("bucket B percentiles: want zeros (no successes), got (%d, %d)", b.P50Ms, b.P95Ms)
 	}
 }

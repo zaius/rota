@@ -44,6 +44,14 @@ func NewPostgresStore(db *database.DB, log *logger.Logger) *PostgresStore {
 
 var _ Store = (*PostgresStore)(nil)
 
+// pgTime prepares a timestamp for binding against the naive TIMESTAMP
+// columns: pgx keeps the time's wall-clock digits and drops the zone, while
+// the server compares against NOW() in UTC — so a local-zone time.Time would
+// land offset by the host's UTC offset. Converting first makes the stored
+// wall clock BE the UTC reading. (Docker deployments never noticed: the app
+// container runs UTC, so local == UTC.)
+func pgTime(t time.Time) time.Time { return t.UTC() }
+
 // capabilities probes the server for optional TimescaleDB features, caching
 // the result after the first success. Probe failures are returned (not
 // cached) so a transient error cannot pin the wrong mode.
@@ -106,7 +114,7 @@ func (s *PostgresStore) InsertLog(ctx context.Context, entry LogEntry) error {
 		ts = time.Now()
 	}
 
-	if _, err := s.db.Pool.Exec(ctx, query, nextLogID(), ts, entry.Level, entry.Message, entry.Details, metadataJSON); err != nil {
+	if _, err := s.db.Pool.Exec(ctx, query, nextLogID(), pgTime(ts), entry.Level, entry.Message, entry.Details, metadataJSON); err != nil {
 		return fmt.Errorf("failed to create log: %w", err)
 	}
 
@@ -140,13 +148,13 @@ func (s *PostgresStore) ListLogs(ctx context.Context, filter LogFilter, page, li
 
 	if filter.StartTime != nil {
 		whereClauses = append(whereClauses, fmt.Sprintf("timestamp >= $%d", argPos))
-		args = append(args, *filter.StartTime)
+		args = append(args, pgTime(*filter.StartTime))
 		argPos++
 	}
 
 	if filter.EndTime != nil {
 		whereClauses = append(whereClauses, fmt.Sprintf("timestamp <= $%d", argPos))
-		args = append(args, *filter.EndTime)
+		args = append(args, pgTime(*filter.EndTime))
 		argPos++
 	}
 
@@ -220,7 +228,7 @@ func (s *PostgresStore) LogsSince(ctx context.Context, lastID int64, limit int, 
 // DeleteLogsOlderThan removes logs older than the given age.
 func (s *PostgresStore) DeleteLogsOlderThan(ctx context.Context, age time.Duration) (int64, error) {
 	query := `DELETE FROM logs WHERE timestamp < $1`
-	cutoff := time.Now().Add(-age)
+	cutoff := pgTime(time.Now().Add(-age))
 
 	result, err := s.db.Pool.Exec(ctx, query, cutoff)
 	if err != nil {
@@ -277,7 +285,7 @@ func (s *PostgresStore) InsertRequest(ctx context.Context, event RequestEvent) e
 		event.Success,
 		event.ResponseTime,
 		errorMsg,
-		event.Timestamp,
+		pgTime(event.Timestamp),
 	)
 
 	return err
@@ -379,6 +387,52 @@ func (s *PostgresStore) LowSuccessProxies(ctx context.Context, window time.Durat
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// TrafficSeries returns request volume and latency percentiles bucketed over
+// the trailing range, zero-filled to a dense series.
+func (s *PostgresStore) TrafficSeries(ctx context.Context, rng string) ([]models.TrafficPoint, error) {
+	bucket, lookback := SeriesWindow(rng)
+
+	// Percentiles cover successful requests only — failure latencies say
+	// more about timeouts than about the proxy. The date_bin origin is
+	// midnight-aligned so buckets match fillTrafficGaps' epoch-aligned grid.
+	query := `
+		SELECT
+			date_bin(make_interval(secs => $1), timestamp, TIMESTAMP '2000-01-03') AS bucket,
+			COUNT(*),
+			COUNT(*) FILTER (WHERE success),
+			COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY response_time) FILTER (WHERE success), 0),
+			COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY response_time) FILTER (WHERE success), 0)
+		FROM proxy_requests
+		WHERE timestamp >= NOW() - make_interval(secs => $2)
+		GROUP BY bucket
+		ORDER BY bucket
+	`
+
+	rows, err := s.db.Pool.Query(ctx, query, bucket.Seconds(), lookback.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get traffic series: %w", err)
+	}
+	defer rows.Close()
+
+	points := []models.TrafficPoint{}
+	for rows.Next() {
+		var p models.TrafficPoint
+		var p50, p95 float64
+		if err := rows.Scan(&p.Time, &p.Requests, &p.Successes, &p50, &p95); err != nil {
+			return nil, fmt.Errorf("failed to scan traffic series: %w", err)
+		}
+		p.Time = p.Time.UTC()
+		p.P50Ms = int(p50)
+		p.P95Ms = int(p95)
+		points = append(points, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read traffic series: %w", err)
+	}
+
+	return fillTrafficGaps(points, bucket, lookback, time.Now()), nil
 }
 
 // chartWindow maps an API interval to a bucket size and lookback period.

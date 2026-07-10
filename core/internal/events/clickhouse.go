@@ -335,6 +335,59 @@ func (s *ClickHouseStore) RequestStats(ctx context.Context) (*RequestStats, erro
 	return stats, nil
 }
 
+// TrafficSeries returns request volume and latency percentiles bucketed over
+// the trailing range, zero-filled to a dense series.
+func (s *ClickHouseStore) TrafficSeries(ctx context.Context, rng string) ([]models.TrafficPoint, error) {
+	bucket, lookback := SeriesWindow(rng)
+
+	// quantilesExactInclusive matches Postgres' percentile_cont
+	// interpolation, keeping the two backends chart-identical. Percentiles
+	// cover successful requests only.
+	query := `
+		SELECT
+			toStartOfInterval(timestamp, toIntervalSecond(?)) AS bucket,
+			count(),
+			countIf(success),
+			quantilesExactInclusiveIf(0.5, 0.95)(response_time, success)
+		FROM proxy_requests
+		WHERE timestamp >= now() - toIntervalSecond(?)
+		GROUP BY bucket
+		ORDER BY bucket
+	`
+
+	rows, err := s.conn.Query(ctx, query, int64(bucket.Seconds()), int64(lookback.Seconds()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get traffic series: %w", err)
+	}
+	defer rows.Close()
+
+	points := []models.TrafficPoint{}
+	for rows.Next() {
+		var ts time.Time
+		var requests, successes uint64
+		var pcts []float64
+		if err := rows.Scan(&ts, &requests, &successes, &pcts); err != nil {
+			return nil, fmt.Errorf("failed to scan traffic series: %w", err)
+		}
+		p := models.TrafficPoint{
+			Time:      ts.UTC(),
+			Requests:  int64(requests),
+			Successes: int64(successes),
+		}
+		// The quantiles are NaN when the bucket has no successful requests.
+		if successes > 0 && len(pcts) == 2 {
+			p.P50Ms = int(pcts[0])
+			p.P95Ms = int(pcts[1])
+		}
+		points = append(points, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read traffic series: %w", err)
+	}
+
+	return fillTrafficGaps(points, bucket, lookback, time.Now()), nil
+}
+
 // chChartWindow maps an API interval to ClickHouse bucket/lookback interval
 // expressions. Values are from a fixed set, never user input.
 func chChartWindow(interval string) (bucket, lookback string) {

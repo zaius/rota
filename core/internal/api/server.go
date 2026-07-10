@@ -236,6 +236,7 @@ func (s *Server) setupRoutes() {
 
 		// Dashboard endpoints
 		r.Get("/dashboard/stats", s.dashboardHandler.GetStats)
+		r.Get("/dashboard/charts/traffic", s.dashboardHandler.GetTrafficChart)
 		r.Get("/dashboard/charts/response-time", s.dashboardHandler.GetResponseTimeChart)
 		r.Get("/dashboard/charts/success-rate", s.dashboardHandler.GetSuccessRateChart)
 

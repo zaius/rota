@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
@@ -42,6 +43,46 @@ func (h *DashboardHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// trafficRanges is the set of ranges the traffic chart accepts.
+var trafficRanges = map[string]bool{"1h": true, "6h": true, "24h": true, "7d": true, "30d": true}
+
+// GetTrafficChart handles traffic series requests: request volume and latency
+// percentiles in shared time buckets.
+//
+//	@Summary		Traffic chart
+//	@Description	Get request volume and latency percentiles bucketed over a trailing range
+//	@Tags			dashboard
+//	@Produce		json
+//	@Param			range	query		string					false	"Trailing range (1h, 6h, 24h, 7d, 30d)"	default(24h)
+//	@Success		200		{object}	models.TrafficChartData	"Traffic series"
+//	@Failure		400		{object}	models.ErrorResponse
+//	@Failure		500		{object}	models.ErrorResponse
+//	@Router			/dashboard/charts/traffic [get]
+func (h *DashboardHandler) GetTrafficChart(w http.ResponseWriter, r *http.Request) {
+	rng := r.URL.Query().Get("range")
+	if rng == "" {
+		rng = "24h"
+	}
+	if !trafficRanges[rng] {
+		writeError(w, http.StatusBadRequest, "Invalid range (use 1h, 6h, 24h, 7d or 30d)")
+		return
+	}
+
+	data, err := h.dashboardRepo.GetTrafficChart(r.Context(), rng)
+	if err != nil {
+		h.logger.Error("failed to get traffic chart", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to get traffic chart")
+		return
+	}
+
+	bucket, _ := events.SeriesWindow(rng)
+	writeJSON(w, http.StatusOK, models.TrafficChartData{
+		Range:         rng,
+		BucketSeconds: int(bucket.Seconds()),
+		Data:          data,
+	})
 }
 
 // GetResponseTimeChart handles response time chart requests

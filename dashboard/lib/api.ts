@@ -3,6 +3,7 @@ import {
   ProxiesResponse,
   DashboardStats,
   ChartResponse,
+  TrafficChartResponse,
   LogsResponse,
   SystemMetrics,
   Settings,
@@ -140,6 +141,12 @@ class ApiClient {
   // Dashboard
   async getDashboardStats(): Promise<DashboardStats> {
     return this.request<DashboardStats>("/api/v1/dashboard/stats")
+  }
+
+  async getTrafficChart(range: string = "24h"): Promise<TrafficChartResponse> {
+    return this.request<TrafficChartResponse>(
+      `/api/v1/dashboard/charts/traffic?range=${range}`
+    )
   }
 
   async getResponseTimeChart(interval: string = "4h"): Promise<ChartResponse> {
