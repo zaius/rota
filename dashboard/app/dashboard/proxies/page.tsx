@@ -176,6 +176,14 @@ export default function ProxiesPage() {
   const data = proxiesQuery.data?.proxies ?? []
   const isLoading = proxiesQuery.isLoading
 
+  // rowSelection is keyed by row index. A refetch can shrink `data` while a
+  // selection is still held, so indexing it blindly throws on the missing rows.
+  const selectedProxyIds = () =>
+    Object.keys(rowSelection)
+      .map(key => data[Number(key)])
+      .filter(row => row != null)
+      .map(row => row.id)
+
   // refetchProxies is stable (it doesn't close over the filters), so the
   // bulk-test poller can call it on completion without being torn down when
   // filters change — this replaces the old fetchProxiesRef workaround.
@@ -297,7 +305,7 @@ export default function ProxiesPage() {
       const res = selectAllMatching
         ? await api.bulkDeleteProxies({ all: true, filter: currentFilter() })
         : await api.bulkDeleteProxies({
-            ids: Object.keys(rowSelection).map(key => data[Number(key)].id),
+            ids: selectedProxyIds(),
           })
       setRowSelection({})
       setSelectAllMatching(false)
@@ -362,7 +370,7 @@ export default function ProxiesPage() {
   }, [startBulkTestPolling])
 
   const handleBulkTest = async () => {
-    const selectedIds = Object.keys(rowSelection).map(key => data[Number(key)].id)
+    const selectedIds = selectedProxyIds()
     if (!selectAllMatching && selectedIds.length === 0) return
 
     stopBulkTestPoll()
@@ -430,10 +438,18 @@ export default function ProxiesPage() {
 
     const reader = new FileReader()
     reader.onload = (e) => {
-      const text = e.target?.result as string
+      const text = e.target?.result
+      if (typeof text !== "string") {
+        toast.error("Could not read file", "The file did not contain text")
+        return
+      }
       setImportText(text)
       setParsedProxies(parseImportText(text, importFormat))
       setImportFile(file)
+    }
+    reader.onerror = () => {
+      // Without this a read failure leaves the dialog silently empty.
+      toast.error("Could not read file", reader.error?.message ?? "Unknown error")
     }
     reader.readAsText(file)
   }
@@ -689,6 +705,19 @@ export default function ProxiesPage() {
     {
       accessorKey: "last_check",
       header: "Last Check",
+      cell: ({ row }) => {
+        // A proxy that has never been checked carries an empty or zero-value
+        // timestamp; rendering it raw showed "0001-01-01T00:00:00Z" in the table.
+        const value = row.getValue("last_check")
+        if (typeof value !== "string" || value === "") {
+          return <div className="text-muted-foreground">—</div>
+        }
+        const date = new Date(value)
+        if (Number.isNaN(date.getTime()) || date.getFullYear() <= 1) {
+          return <div className="text-muted-foreground">—</div>
+        }
+        return <div>{date.toLocaleString()}</div>
+      },
     },
     {
       id: "actions",
