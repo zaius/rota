@@ -312,6 +312,12 @@ func (c *PoolChain) SendWithRetry(
 
 		resp, err := client.Do(cloned)
 		if err != nil {
+			// When CheckRedirect rejects — the redirect limit above, for instance —
+			// client.Do returns both a response and an error. That body still owns
+			// a connection, and nothing downstream will close it.
+			if resp != nil {
+				resp.Body.Close()
+			}
 			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
 			lastErr = fmt.Errorf("proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)
 			log.Warn("pool chain: proxy failed", "proxy", selectedProxy.Address, "err", err)
