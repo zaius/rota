@@ -17,6 +17,7 @@ import {
   LogOut,
   Activity
 } from "lucide-react"
+import { api } from "@/lib/api"
 
 export function CommandPalette() {
   const [open, setOpen] = React.useState(false)
@@ -78,7 +79,14 @@ export function CommandPalette() {
         </CommandGroup>
         <CommandGroup heading="Actions">
           <CommandItem
-            onSelect={() => runCommand(() => navigate("/login"))}
+            onSelect={() =>
+              runCommand(() => {
+                // Navigating alone left the token in localStorage, so the next
+                // visit to /dashboard walked straight back in.
+                api.clearToken()
+                navigate("/login")
+              })
+            }
           >
             <LogOut className="mr-2 h-4 w-4" />
             <span>Logout</span>
