@@ -27,6 +27,13 @@ func NewAuthMiddleware(settings models.AuthenticationSettings) *AuthMiddleware {
 	}
 }
 
+// IsEnabled reports whether legacy single-user auth is currently enforcing.
+func (m *AuthMiddleware) IsEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.enabled
+}
+
 // UpdateSettings updates the authentication settings
 func (m *AuthMiddleware) UpdateSettings(settings models.AuthenticationSettings) {
 	m.mu.Lock()
