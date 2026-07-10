@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,10 @@ type cacheEntry struct {
 	cachedAt time.Time
 }
 
+// ipAPIBatchSize is the maximum number of queries ip-api.com accepts in one
+// batch request.
+const ipAPIBatchSize = 100
+
 // GeoIPService performs IP geolocation lookups via ip-api.com (free, no key needed)
 // It caches results for 24 h and batches requests in groups of 100.
 type GeoIPService struct {
@@ -40,6 +45,15 @@ type GeoIPService struct {
 	mu       sync.RWMutex
 	logger   *logger.Logger
 	cacheTTL time.Duration
+
+	// reqMu serialises outbound batch requests and spaces them out to stay
+	// under ip-api.com's free-tier rate limit.
+	reqMu       sync.Mutex
+	lastReq     time.Time
+	minInterval time.Duration
+
+	// endpoint overrides the batch URL in tests.
+	endpoint string
 }
 
 // NewGeoIPService creates a new GeoIPService
@@ -48,10 +62,68 @@ func NewGeoIPService(log *logger.Logger) *GeoIPService {
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
-		cache:    make(map[string]cacheEntry),
-		logger:   log,
-		cacheTTL: 24 * time.Hour,
+		cache:       make(map[string]cacheEntry),
+		logger:      log,
+		cacheTTL:    24 * time.Hour,
+		minInterval: 1500 * time.Millisecond, // ~40 batch req/min, under the free-tier cap
 	}
+}
+
+// Name identifies the service for the lifecycle manager.
+func (g *GeoIPService) Name() string { return "geoip-cache-sweep" }
+
+// Run evicts expired cache entries every hour until ctx is cancelled. Without
+// it the cache only ever grows: entries past their TTL are skipped on read but
+// never removed.
+func (g *GeoIPService) Run(ctx context.Context) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			g.sweep(time.Now())
+		}
+	}
+}
+
+// sweep drops every cache entry that has outlived the TTL as of now.
+func (g *GeoIPService) sweep(now time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for ip, entry := range g.cache {
+		if now.Sub(entry.cachedAt) >= g.cacheTTL {
+			delete(g.cache, ip)
+		}
+	}
+}
+
+// throttle blocks until at least minInterval has elapsed since the previous
+// outbound request. Respects context cancellation.
+func (g *GeoIPService) throttle(ctx context.Context) error {
+	g.reqMu.Lock()
+	defer g.reqMu.Unlock()
+	if !g.lastReq.IsZero() {
+		if wait := g.minInterval - time.Since(g.lastReq); wait > 0 {
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	g.lastReq = time.Now()
+	return nil
+}
+
+// parseRetryAfter reads a Retry-After header in delta-seconds form, falling
+// back when it is absent or unparseable.
+func parseRetryAfter(h string, fallback time.Duration) time.Duration {
+	if secs, err := strconv.Atoi(strings.TrimSpace(h)); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return fallback
 }
 
 // extractIP parses "host:port" and returns just the host IP.
@@ -95,9 +167,11 @@ func (g *GeoIPService) LookupOne(ctx context.Context, address string) (*models.G
 func (g *GeoIPService) LookupBatch(ctx context.Context, addresses []string) map[string]models.GeoInfo {
 	result := make(map[string]models.GeoInfo)
 
-	// deduplicate & separate cached vs needed
+	// Deduplicate by IP and separate cached from needed. Two proxies can share
+	// an address, so `needed` is keyed off the map to avoid asking for the same
+	// IP twice in one batch.
 	ipToAddr := make(map[string]string) // ip -> original address
-	var needed []string
+	pending := make(map[string]struct{})
 
 	g.mu.RLock()
 	for _, addr := range addresses {
@@ -109,60 +183,37 @@ func (g *GeoIPService) LookupBatch(ctx context.Context, addresses []string) map[
 		if entry, ok := g.cache[ip]; ok && time.Since(entry.cachedAt) < g.cacheTTL {
 			result[addr] = entry.geo
 		} else {
-			needed = append(needed, ip)
+			pending[ip] = struct{}{}
 		}
 	}
 	g.mu.RUnlock()
 
-	if len(needed) == 0 {
+	if len(pending) == 0 {
 		return result
 	}
 
-	// ip-api.com free tier allows 100 queries/min; batch max = 100
-	const batchSize = 100
-	for i := 0; i < len(needed); i += batchSize {
-		end := i + batchSize
-		if end > len(needed) {
-			end = len(needed)
-		}
+	needed := make([]string, 0, len(pending))
+	for ip := range pending {
+		needed = append(needed, ip)
+	}
+
+	// The batch endpoint caps each request at 100 queries, so chunk to fit.
+	// lookupBatchRaw already writes successful lookups into the cache.
+	for i := 0; i < len(needed); i += ipAPIBatchSize {
+		end := min(i+ipAPIBatchSize, len(needed))
 		batch := needed[i:end]
 
-		geos, err := g.lookupBatch(ctx, batch)
+		raw, err := g.lookupBatchRaw(ctx, batch)
 		if err != nil {
-			g.logger.Warn("geoip batch lookup failed", "error", err)
+			g.logger.Warn("geoip batch lookup failed", "error", err, "ips", len(batch))
 			continue
 		}
-		for _, geo := range geos {
-			ip := geo.CountryCode // we store query ip separately below
-			_ = ip
-		}
-		// map back by query field
-		for _, geo := range geos {
-			addr := ipToAddr[geo.CityName] // placeholder - we rebuild from raw
-			_ = addr
-		}
-		// We need the raw ip from the batch response — handled inside lookupBatch
-		for _, geo := range geos {
-			// geo.CityName was set as IP in the temporary struct trick; we use a proper workaround below
-			_ = geo
+		for ip, geo := range raw {
+			if addr, ok := ipToAddr[ip]; ok {
+				result[addr] = geo
+			}
 		}
 	}
-
-	// simpler: refactor to use raw response
-	rawGeos, err := g.lookupBatchRaw(ctx, needed)
-	if err != nil {
-		g.logger.Warn("geoip batch lookup failed", "error", err)
-		return result
-	}
-
-	g.mu.Lock()
-	for ip, geo := range rawGeos {
-		g.cache[ip] = cacheEntry{geo: geo, cachedAt: time.Now()}
-		if origAddr, ok := ipToAddr[ip]; ok {
-			result[origAddr] = geo
-		}
-	}
-	g.mu.Unlock()
 
 	return result
 }
@@ -178,6 +229,64 @@ func (g *GeoIPService) lookupBatch(ctx context.Context, ips []string) ([]models.
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// doBatchRequest POSTs a marshalled batch body, applying the outbound throttle
+// and backing off when the API answers 429.
+func (g *GeoIPService) doBatchRequest(ctx context.Context, body []byte) ([]ipAPIResponse, error) {
+	const maxAttempts = 3
+	var lastErr error
+	for range maxAttempts {
+		if err := g.throttle(ctx); err != nil {
+			return nil, err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.batchURL(), strings.NewReader(string(body)))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := g.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("geoip request failed: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			wait := parseRetryAfter(resp.Header.Get("Retry-After"), 2*g.minInterval)
+			resp.Body.Close()
+			g.logger.Warn("geoip rate limited (429), backing off", "wait", wait.String())
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			lastErr = fmt.Errorf("geoip api returned 429")
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("geoip api returned %d", resp.StatusCode)
+		}
+
+		var responses []ipAPIResponse
+		if err := json.NewDecoder(resp.Body).Decode(&responses); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode geoip response: %w", err)
+		}
+		resp.Body.Close()
+		return responses, nil
+	}
+	return nil, lastErr
+}
+
+// batchURL is the ip-api.com batch endpoint, overridable in tests.
+func (g *GeoIPService) batchURL() string {
+	if g.endpoint != "" {
+		return g.endpoint
+	}
+	return "http://ip-api.com/batch"
 }
 
 // lookupBatchRaw fetches geo data and returns map[ip] -> GeoInfo
@@ -202,25 +311,9 @@ func (g *GeoIPService) lookupBatchRaw(ctx context.Context, ips []string) (map[st
 		return nil, fmt.Errorf("failed to marshal geoip request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://ip-api.com/batch", strings.NewReader(string(body)))
+	responses, err := g.doBatchRequest(ctx, body)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("geoip request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("geoip api returned %d", resp.StatusCode)
-	}
-
-	var responses []ipAPIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&responses); err != nil {
-		return nil, fmt.Errorf("failed to decode geoip response: %w", err)
 	}
 
 	result := make(map[string]models.GeoInfo, len(responses))
@@ -285,12 +378,8 @@ func (g *GeoIPService) EnrichProxies(ctx context.Context, addresses []string) ma
 		return result
 	}
 
-	const batchSize = 100
-	for i := 0; i < len(needed); i += batchSize {
-		end := i + batchSize
-		if end > len(needed) {
-			end = len(needed)
-		}
+	for i := 0; i < len(needed); i += ipAPIBatchSize {
+		end := min(i+ipAPIBatchSize, len(needed))
 		batch := needed[i:end]
 
 		raw, err := g.lookupBatchRaw(ctx, batch)

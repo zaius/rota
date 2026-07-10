@@ -175,7 +175,7 @@ func run() error {
 	logCleanupSvc := services.NewLogCleanupService(eventStore, settingsRepo, log)
 	statsRefresher := services.NewStatsRefresher(eventStore, proxyRepo, time.Minute, log)
 
-	svcManager := services.NewManager(log, sourceSvc, poolSvc, alertWatcher, cleanupSvc, logCleanupSvc, statsRefresher)
+	svcManager := services.NewManager(log, geoSvc, sourceSvc, poolSvc, alertWatcher, cleanupSvc, logCleanupSvc, statsRefresher)
 
 	// Create servers
 	proxyServer, err := proxy.New(cfg.ProxyPort, log, db, eventStore, proxyRepo, poolRepo, userRepo, settingsRepo)
