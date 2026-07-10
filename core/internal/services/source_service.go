@@ -30,8 +30,9 @@ type SourceService struct {
 	logger     *logger.Logger
 	client     *http.Client
 
-	mu     sync.Mutex
-	stopCh chan struct{}
+	mu       sync.Mutex
+	fetching bool // guarded by mu: true while a fetchDueSources batch is running
+	stopCh   chan struct{}
 }
 
 // NewSourceService creates a new SourceService.
@@ -92,8 +93,21 @@ func (s *SourceService) FetchNow(ctx context.Context, sourceID int) (*models.Pro
 
 // fetchDueSources finds all sources that are overdue and fetches them.
 func (s *SourceService) fetchDueSources(ctx context.Context) {
+	// The mutex guards only the "already fetching" flag. Holding it across the
+	// fetch/import loop below would block every other caller for as long as the
+	// slowest remote source takes, and let ticks queue up behind one another.
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.fetching {
+		s.mu.Unlock()
+		return
+	}
+	s.fetching = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.fetching = false
+		s.mu.Unlock()
+	}()
 
 	sources, err := s.sourceRepo.GetDueForFetch(ctx)
 	if err != nil {
@@ -260,6 +274,13 @@ func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
 	return len(geos), nil
 }
 
+// Bounds on how much is read from a single (possibly hostile) proxy source,
+// and how long one line may be.
+const (
+	maxSourceBytes = 32 << 20 // 32 MiB total per source response
+	maxLineBytes   = 1 << 20  // 1 MiB per line (bufio's default is 64 KiB)
+)
+
 // parseProxyList parses a proxy list file, one entry per line, using the
 // source's lineformat template. Lines that don't match the format are
 // silently skipped.
@@ -269,7 +290,11 @@ func parseProxyList(r io.Reader, format string) ([]lineformat.Parsed, error) {
 		return nil, fmt.Errorf("invalid line format %q: %w", format, err)
 	}
 	var proxies []lineformat.Parsed
-	scanner := bufio.NewScanner(r)
+	// A proxy source is a remote URL an operator pasted in; bound what it can
+	// make us allocate. The raised per-line buffer keeps one long line from
+	// tripping bufio.ErrTooLong (64 KiB by default) and failing the whole fetch.
+	scanner := bufio.NewScanner(io.LimitReader(r, maxSourceBytes))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 	for scanner.Scan() {
 		if p, ok := lf.Parse(scanner.Text()); ok {
 			proxies = append(proxies, p)
