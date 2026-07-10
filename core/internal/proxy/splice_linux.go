@@ -113,7 +113,7 @@ func pollFD(fd int, write bool) error {
 	}
 	fds := []unix.PollFd{{Fd: int32(fd), Events: events}}
 	for {
-		n, err := unix.Poll(fds, 60000) // 60s timeout
+		n, err := unix.Poll(fds, 60000)
 		if err != nil {
 			if err == unix.EINTR {
 				continue
@@ -121,7 +121,14 @@ func pollFD(fd int, write bool) error {
 			return err
 		}
 		if n == 0 {
-			return unix.ETIMEDOUT
+			// Nothing ready within the poll window. An idle tunnel is not a dead
+			// one — websockets and long-polling can sit quiet for far longer than
+			// this — so renew the wait rather than tearing it down. The io.Copy
+			// fallback imposes no idle limit either, so this keeps the two paths
+			// behaving alike. POLLERR/POLLHUP/POLLNVAL are reported regardless of
+			// Events, so a genuinely closed fd still wakes the poll and the next
+			// splice observes the error.
+			continue
 		}
 		return nil
 	}
