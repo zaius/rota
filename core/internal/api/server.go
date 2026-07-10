@@ -99,7 +99,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	proxyHandler := handlers.NewProxyHandler(deps.ProxyRepo, healthChecker, log)
 	logsHandler := handlers.NewLogsHandler(deps.EventStore, log)
 	settingsHandler := handlers.NewSettingsHandler(deps.SettingsRepo, log, nil) // onUpdate set below
-	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, deps.ProxyRepo, deps.EventStore, log)
+	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, deps.ProxyRepo, deps.EventStore, log, cfg.CORSAllowedOrigins)
 	metricsHandler := handlers.NewMetricsHandler(log)
 	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.FormatHistoryRepo, deps.SourceSvc, log)
 	formatHistoryHandler := handlers.NewFormatHistoryHandler(deps.FormatHistoryRepo, log)

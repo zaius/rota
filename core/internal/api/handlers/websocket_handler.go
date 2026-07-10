@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,42 +15,71 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		// Allow all origins for development
-		// In production, implement proper origin checking
-		return true
-	},
-}
-
 // WebSocketHandler handles WebSocket connections
 type WebSocketHandler struct {
-	dashboardRepo *repository.DashboardRepository
-	proxyRepo     *repository.ProxyRepository
-	events        events.Store
-	logger        *logger.Logger
+	dashboardRepo  *repository.DashboardRepository
+	proxyRepo      *repository.ProxyRepository
+	events         events.Store
+	logger         *logger.Logger
+	allowedOrigins []string
+	upgrader       websocket.Upgrader
 }
 
-// NewWebSocketHandler creates a new WebSocketHandler
+// NewWebSocketHandler creates a new WebSocketHandler. allowedOrigins is the
+// configured CORS allowlist, consulted by the origin check on upgrade.
 func NewWebSocketHandler(
 	dashboardRepo *repository.DashboardRepository,
 	proxyRepo *repository.ProxyRepository,
 	eventStore events.Store,
 	log *logger.Logger,
+	allowedOrigins []string,
 ) *WebSocketHandler {
-	return &WebSocketHandler{
-		dashboardRepo: dashboardRepo,
-		proxyRepo:     proxyRepo,
-		events:        eventStore,
-		logger:        log,
+	h := &WebSocketHandler{
+		dashboardRepo:  dashboardRepo,
+		proxyRepo:      proxyRepo,
+		events:         eventStore,
+		logger:         log,
+		allowedOrigins: allowedOrigins,
 	}
+	h.upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     h.checkOrigin,
+	}
+	return h
+}
+
+// checkOrigin guards against cross-site WebSocket hijacking. The same-origin
+// policy does not apply to WebSocket upgrades, so without this check any page
+// the victim visits could open an authenticated socket to the dashboard.
+//
+// It permits requests with no Origin header (non-browser clients such as CLI
+// tools cannot be victims of CSWSH), same-origin requests, and origins present
+// in the configured CORS allowlist.
+func (h *WebSocketHandler) checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+	for _, allowed := range h.allowedOrigins {
+		if allowed == "*" || strings.EqualFold(allowed, origin) {
+			return true
+		}
+	}
+	h.logger.Warn("rejected websocket upgrade from disallowed origin", "origin", origin)
+	return false
 }
 
 // DashboardWebSocket handles dashboard real-time updates
 func (h *WebSocketHandler) DashboardWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.logger.Error("failed to upgrade websocket connection", "error", err)
 		return
@@ -114,7 +145,7 @@ func (h *WebSocketHandler) sendDashboardUpdate(ctx context.Context, conn *websoc
 
 // LogsWebSocket handles real-time log streaming
 func (h *WebSocketHandler) LogsWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.logger.Error("failed to upgrade websocket connection", "error", err)
 		return
