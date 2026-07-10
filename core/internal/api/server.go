@@ -41,15 +41,16 @@ type Deps struct {
 
 // Server represents the API server
 type Server struct {
-	router      *chi.Mux
-	server      *http.Server
-	logger      *logger.Logger
-	db          *database.DB
-	port        int
-	jwtSecret   string
-	corsOrigins []string
-	webDir      string
-	authRL      *authRateLimiter
+	router            *chi.Mux
+	server            *http.Server
+	logger            *logger.Logger
+	db                *database.DB
+	port              int
+	jwtSecret         string
+	corsOrigins       []string
+	webDir            string
+	trustProxyHeaders bool
+	authRL            *authRateLimiter
 
 	// Proxy server reference for reloading
 	proxyServer handlers.ProxyServer
@@ -114,6 +115,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		cfg.AuthIPBlockMinutes,
 		cfg.AuthGlobalMaxPerMinute,
 		cfg.AuthGlobalLockoutMin,
+		cfg.TrustProxyHeaders,
 		log,
 	)
 
@@ -125,6 +127,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		jwtSecret:            jwtSecret,
 		corsOrigins:          cfg.CORSAllowedOrigins,
 		webDir:               cfg.WebDir,
+		trustProxyHeaders:    cfg.TrustProxyHeaders,
 		authRL:               authRL,
 		authHandler:          authHandler,
 		healthHandler:        healthHandler,
@@ -203,7 +206,13 @@ func (s *Server) setupMiddleware() {
 	}))
 
 	s.router.Use(middleware.RequestID)
-	s.router.Use(middleware.RealIP)
+	// RealIP rewrites RemoteAddr from X-Forwarded-For / X-Real-IP. Only do that
+	// when an upstream reverse proxy is trusted to set them; otherwise a directly
+	// exposed API would let a client choose its own apparent address, which the
+	// login rate limiter keys on.
+	if s.trustProxyHeaders {
+		s.router.Use(middleware.RealIP)
+	}
 	s.router.Use(LoggerMiddleware(s.logger))
 	s.router.Use(middleware.Recoverer)
 	// No global timeout — health-check routes need minutes; individual routes handle their own timeouts
