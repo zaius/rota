@@ -306,24 +306,45 @@ func (m *UserAuthMiddleware) buildChain(ctx context.Context, user *models.ProxyU
 	return chain, nil
 }
 
-// refreshLoop periodically refreshes all cached chains so new proxies become available.
+// refreshLoop periodically refreshes the chains that are still live so new
+// proxies become available, and evicts entries whose TTL has passed so the
+// cache cannot grow without bound as users come and go.
 func (m *UserAuthMiddleware) refreshLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		now := time.Now()
+
 		m.mu.RLock()
-		entries := make(map[string]userEntry, len(m.cache))
+		live := make([]userEntry, 0, len(m.cache))
+		var expired []string
 		for k, v := range m.cache {
-			entries[k] = v
+			if now.After(v.expiresAt) {
+				expired = append(expired, k)
+				continue
+			}
+			live = append(live, v)
 		}
 		def := m.defaultChain
 		m.mu.RUnlock()
 
+		if len(expired) > 0 {
+			m.mu.Lock()
+			for _, k := range expired {
+				// Re-check under the write lock: the entry may have been
+				// refreshed by an in-flight request since the snapshot.
+				if e, ok := m.cache[k]; ok && now.After(e.expiresAt) {
+					delete(m.cache, k)
+				}
+			}
+			m.mu.Unlock()
+		}
+
 		if def != nil {
 			def.Refresh(ctx)
 		}
-		for _, entry := range entries {
+		for _, entry := range live {
 			entry.chain.Refresh(ctx)
 		}
 		cancel()
