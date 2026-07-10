@@ -2,9 +2,8 @@ package proxy
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
-	"math/big"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -208,11 +207,11 @@ func (ps *PoolSelector) Select(ctx context.Context) (*models.Proxy, error) {
 func (ps *PoolSelector) selectLocked(ctx context.Context, host string) (*models.Proxy, error) {
 	switch ps.method {
 	case "random":
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(ps.proxies))))
-		if err != nil {
-			return nil, fmt.Errorf("random selection failed: %w", err)
-		}
-		p := ps.proxies[n.Int64()]
+		// Load balancing is not a security decision, so the non-cryptographic
+		// generator is the right tool here: it needs no syscall, cannot fail, and
+		// keeps the selection path allocation-free. Select() guarantees the slice
+		// is non-empty, so IntN cannot be called with zero.
+		p := ps.proxies[rand.IntN(len(ps.proxies))]
 		if !ps.cooledForHost(p.ID, host) {
 			return p, nil
 		}
@@ -226,11 +225,7 @@ func (ps *PoolSelector) selectLocked(ctx context.Context, host string) (*models.
 		if len(eligible) == 0 {
 			return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
 		}
-		n, err = rand.Int(rand.Reader, big.NewInt(int64(len(eligible))))
-		if err != nil {
-			return nil, fmt.Errorf("random selection failed: %w", err)
-		}
-		return eligible[n.Int64()], nil
+		return eligible[rand.IntN(len(eligible))], nil
 
 	case "session":
 		// Bind a proxy to the client's session token and hold it until the
