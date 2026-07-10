@@ -9,6 +9,7 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
@@ -18,8 +19,12 @@ import (
 // hermetic. To run them locally:
 //
 //	docker run -d --name pg -e POSTGRES_USER=rota -e POSTGRES_PASSWORD=rota_password \
-//	  -e POSTGRES_DB=rota_test -p 55432:5432 timescale/timescaledb:2.22.1-pg17
+//	  -e POSTGRES_DB=rota_test -p 55432:5432 timescale/timescaledb:2.22.1-pg17   # or postgres:17
 //	ROTA_TEST_DB=1 TEST_DB_PORT=55432 go test ./internal/repository/ -run Integration -v
+//
+// When running integration tests from multiple packages in one invocation,
+// pass `-p 1`: the packages share the test database and Go runs package
+// tests in parallel by default.
 
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -392,5 +397,64 @@ func TestIntegration_UserUpdate_PartialFields(t *testing.T) {
 	}
 	if len(u.FallbackPoolIDs) != 0 {
 		t.Errorf("set: fallback_pool_ids should be empty, got %v", u.FallbackPoolIDs)
+	}
+}
+
+// ApplyRequestStats denormalizes event-derived aggregates onto proxies:
+// listed proxies get the new numbers, unlisted proxies are zeroed (the
+// columns mean "within the event window"), and a second identical apply
+// writes nothing.
+func TestIntegration_ApplyRequestStats(t *testing.T) {
+	db := testDB(t)
+	cleanTables(t, db)
+	repo := NewProxyRepository(db)
+	ctx := context.Background()
+
+	p1 := mustProxy(t, db, "10.0.0.1:1", "US")
+	p2 := mustProxy(t, db, "10.0.0.2:1", "US")
+
+	// p2 has stale nonzero counters from a previous era; the rollup no
+	// longer contains it, so they must be zeroed.
+	if _, err := db.Pool.Exec(ctx,
+		`UPDATE proxies SET requests = 500, successful_requests = 400, avg_response_time = 80 WHERE id = $1`,
+		p2); err != nil {
+		t.Fatalf("seed stale stats: %v", err)
+	}
+
+	stats := []events.ProxyRequestStats{
+		{ProxyID: p1, Requests: 42, Successes: 40, AvgResponseTime: 123},
+	}
+	written, err := repo.ApplyRequestStats(ctx, stats)
+	if err != nil {
+		t.Fatalf("ApplyRequestStats: %v", err)
+	}
+	if written != 2 { // p1 updated + p2 zeroed
+		t.Errorf("first apply: want 2 rows written, got %d", written)
+	}
+
+	assertStats := func(id int, wantReq, wantOK int64, wantAvg int) {
+		t.Helper()
+		var req, ok int64
+		var avg int
+		err := db.Pool.QueryRow(ctx,
+			`SELECT requests, successful_requests, COALESCE(avg_response_time,0) FROM proxies WHERE id = $1`,
+			id).Scan(&req, &ok, &avg)
+		if err != nil {
+			t.Fatalf("read stats: %v", err)
+		}
+		if req != wantReq || ok != wantOK || avg != wantAvg {
+			t.Errorf("proxy %d: want (%d, %d, %d), got (%d, %d, %d)", id, wantReq, wantOK, wantAvg, req, ok, avg)
+		}
+	}
+	assertStats(p1, 42, 40, 123)
+	assertStats(p2, 0, 0, 0)
+
+	// Idempotent: unchanged values write no rows.
+	written, err = repo.ApplyRequestStats(ctx, stats)
+	if err != nil {
+		t.Fatalf("ApplyRequestStats (repeat): %v", err)
+	}
+	if written != 0 {
+		t.Errorf("repeat apply: want 0 rows written, got %d", written)
 	}
 }

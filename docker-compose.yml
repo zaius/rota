@@ -22,6 +22,15 @@ services:
       - ROTA_ADMIN_PASSWORD=${ROTA_ADMIN_PASSWORD:-admin}
       # Set a stable value in production so dashboard sessions survive restarts.
       - JWT_SECRET=${JWT_SECRET:-}
+      # Event store: "postgres" (default) keeps logs + request history in the
+      # primary database; "clickhouse" moves them to the clickhouse service
+      # (start it with: docker compose --profile clickhouse up -d).
+      - EVENT_STORE=${EVENT_STORE:-postgres}
+      - CLICKHOUSE_HOST=${CLICKHOUSE_HOST:-clickhouse}
+      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT:-9000}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-rota}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-rota_password}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-rota}
     networks:
       - rota-network
     healthcheck:
@@ -63,8 +72,47 @@ services:
       start_period: 10s
       retries: 5
 
+  # Optional event-store backend — only starts with the "clickhouse" profile:
+  #   EVENT_STORE=clickhouse docker compose --profile clickhouse up -d
+  # rota fail-fasts and restarts until ClickHouse is healthy on first boot.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3
+    container_name: rota-clickhouse
+    restart: unless-stopped
+    profiles: [clickhouse]
+    # Port intentionally NOT exposed to host — internal only.
+    environment:
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-rota}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-rota_password}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-rota}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks:
+      - rota-network
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    # ClickHouse sizes itself to the machine by default; on small VMs cap it,
+    # e.g. add:  mem_limit: 1g
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "clickhouse-client",
+          "--user", "${CLICKHOUSE_USER:-rota}",
+          "--password", "${CLICKHOUSE_PASSWORD:-rota_password}",
+          "-q", "SELECT 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
 volumes:
   timescaledb-data:
+    driver: local
+  clickhouse-data:
     driver: local
 
 networks:

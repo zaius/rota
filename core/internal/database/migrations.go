@@ -35,15 +35,18 @@ var migrations = []Migration{
 	},
 	{
 		Version:     2,
-		Description: "Enable TimescaleDB extension",
+		Description: "Enable TimescaleDB extension when available",
+		// TimescaleDB is an optional accelerator: rota runs on plain Postgres,
+		// so only create the extension where the server actually ships it.
 		// On managed Postgres (e.g. Azure Flexible Server) CREATE EXTENSION is
 		// admin-only, and the permission check fires before IF NOT EXISTS gets
-		// a chance to skip — so only issue it when the extension is actually
-		// missing (an admin pre-creates it there).
+		// a chance to skip — so also only issue it when the extension is
+		// actually missing (an admin pre-creates it there).
 		Up: `
 			DO $do$
 			BEGIN
-				IF NOT EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb') THEN
+				IF NOT EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb')
+				   AND EXISTS (SELECT FROM pg_available_extensions WHERE name = 'timescaledb') THEN
 					CREATE EXTENSION timescaledb;
 				END IF;
 			END
@@ -103,7 +106,7 @@ var migrations = []Migration{
 	},
 	{
 		Version:     5,
-		Description: "Create logs table as hypertable",
+		Description: "Create logs table (hypertable when TimescaleDB is available)",
 		Up: `
 			CREATE TABLE IF NOT EXISTS logs (
 				id BIGSERIAL,
@@ -114,8 +117,15 @@ var migrations = []Migration{
 				metadata JSONB
 			);
 
-			-- Create hypertable
-			SELECT create_hypertable('logs', 'timestamp', if_not_exists => TRUE);
+			-- Convert to hypertable where TimescaleDB exists; a plain table
+			-- (with the timestamp indexes below) works fine on stock Postgres.
+			DO $ts$
+			BEGIN
+				IF EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb') THEN
+					PERFORM create_hypertable('logs', 'timestamp', if_not_exists => TRUE);
+				END IF;
+			END
+			$ts$;
 
 			-- Create indexes
 			CREATE INDEX idx_logs_level ON logs(level, timestamp DESC);
@@ -145,7 +155,7 @@ var migrations = []Migration{
 	},
 	{
 		Version:     6,
-		Description: "Create proxy_requests table as hypertable",
+		Description: "Create proxy_requests table (hypertable when TimescaleDB is available)",
 		Up: `
 			CREATE TABLE IF NOT EXISTS proxy_requests (
 				id BIGSERIAL,
@@ -160,8 +170,15 @@ var migrations = []Migration{
 				error TEXT
 			);
 
-			-- Create hypertable
-			SELECT create_hypertable('proxy_requests', 'timestamp', if_not_exists => TRUE);
+			-- Convert to hypertable where TimescaleDB exists; a plain table
+			-- (with the timestamp indexes below) works fine on stock Postgres.
+			DO $ts$
+			BEGIN
+				IF EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb') THEN
+					PERFORM create_hypertable('proxy_requests', 'timestamp', if_not_exists => TRUE);
+				END IF;
+			END
+			$ts$;
 
 			-- Create indexes
 			CREATE INDEX idx_proxy_requests_proxy_id ON proxy_requests(proxy_id, timestamp DESC);
@@ -609,6 +626,29 @@ var migrations = []Migration{
 			ALTER TABLE proxy_sources ALTER COLUMN format DROP DEFAULT;
 			ALTER TABLE proxy_sources ALTER COLUMN format TYPE VARCHAR(30) USING LEFT(format, 30);
 			ALTER TABLE proxy_sources ALTER COLUMN format SET DEFAULT 'auto';
+		`,
+	},
+	{
+		Version:     26,
+		Description: "Add pool/user/domain dimensions to proxy_requests",
+		// Dimension columns only — no foreign keys: request history is an
+		// event record that must survive pool/user deletion and stay portable
+		// across event-store backends. domain is normalized the same way as
+		// proxy_domain_cooldowns entries (NormalizeCooldownDomain), so the two
+		// can be joined for per-domain analytics. Historical rows stay NULL
+		// and age out with retention. Indexes come with the queries that need
+		// them.
+		Up: `
+			ALTER TABLE proxy_requests
+				ADD COLUMN IF NOT EXISTS pool_id  INTEGER,
+				ADD COLUMN IF NOT EXISTS username VARCHAR(255),
+				ADD COLUMN IF NOT EXISTS domain   VARCHAR(255);
+		`,
+		Down: `
+			ALTER TABLE proxy_requests
+				DROP COLUMN IF EXISTS domain,
+				DROP COLUMN IF EXISTS username,
+				DROP COLUMN IF EXISTS pool_id;
 		`,
 	},
 }

@@ -248,7 +248,7 @@ func (m *UserAuthMiddleware) buildChain(ctx context.Context, user *models.ProxyU
 		maxRetry = 5
 	}
 
-	chain := NewPoolChain(m.db, pools, maxRetry, m.sessionMgr, m.domainCD, m.tracker, m.logger)
+	chain := NewPoolChain(m.db, pools, user.Username, maxRetry, m.sessionMgr, m.domainCD, m.tracker, m.logger)
 	chain.Refresh(ctx)
 	return chain, nil
 }

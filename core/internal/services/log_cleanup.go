@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
@@ -15,21 +14,26 @@ import (
 // or the settings cannot be read.
 const defaultCleanupInterval = time.Hour
 
+// requestRetentionDays is how long proxy request history is kept. It matches
+// the 90-day default the migrations use for the proxy_requests retention
+// policy; it becomes a user setting when request retention grows a UI knob.
+const requestRetentionDays = 90
+
 // LogCleanupService handles automatic log cleanup and retention
 type LogCleanupService struct {
-	db           *database.DB
+	events       events.Store
 	settingsRepo *repository.SettingsRepository
 	logger       *logger.Logger
 }
 
 // NewLogCleanupService creates a new log cleanup service
 func NewLogCleanupService(
-	db *database.DB,
+	eventStore events.Store,
 	settingsRepo *repository.SettingsRepository,
 	log *logger.Logger,
 ) *LogCleanupService {
 	return &LogCleanupService{
-		db:           db,
+		events:       eventStore,
 		settingsRepo: settingsRepo,
 		logger:       log,
 	}
@@ -95,16 +99,15 @@ func (s *LogCleanupService) runCleanup(ctx context.Context) error {
 		return nil
 	}
 
-	// Update retention policy
-	if err := s.updateRetentionPolicy(ctx, settings.LogRetention); err != nil {
-		s.logger.Error("failed to update retention policy", "error", err)
-		// Don't return error, continue with other tasks
-	}
-
-	// Update compression policy
-	if err := s.updateCompressionPolicy(ctx, settings.LogRetention); err != nil {
-		s.logger.Error("failed to update compression policy", "error", err)
-		// Don't return error, continue with other tasks
+	// (Re)apply retention config; the event store decides the mechanism.
+	err = s.events.ApplyRetention(ctx, events.RetentionConfig{
+		RetentionDays:        settings.LogRetention.RetentionDays,
+		CompressionAfterDays: settings.LogRetention.CompressionAfterDays,
+		RequestRetentionDays: requestRetentionDays,
+	})
+	if err != nil {
+		s.logger.Error("failed to apply retention config", "error", err)
+		return nil // logged, not fatal — retried next cycle
 	}
 
 	s.logger.Info("log cleanup completed",
@@ -112,56 +115,5 @@ func (s *LogCleanupService) runCleanup(ctx context.Context) error {
 		"compression_after_days", settings.LogRetention.CompressionAfterDays,
 	)
 
-	return nil
-}
-
-// updateRetentionPolicy updates the TimescaleDB retention policy.
-//
-// Retention policies are a TSL-licensed TimescaleDB feature, unavailable on
-// Apache-only builds (e.g. Azure Flexible Server). The SQL is guarded on the
-// license so it is a no-op there instead of erroring on every cleanup cycle —
-// matching the guard the migrations use when creating the policies.
-func (s *LogCleanupService) updateRetentionPolicy(ctx context.Context, config models.LogRetentionSettings) error {
-	query := `
-		DO $ts$
-		BEGIN
-			IF current_setting('timescaledb.license', true) = 'timescale' THEN
-				PERFORM remove_retention_policy('logs', if_exists => true);
-				PERFORM add_retention_policy('logs', INTERVAL '%d days', if_not_exists => true);
-			END IF;
-		END
-		$ts$;
-	`
-	sql := fmt.Sprintf(query, config.RetentionDays)
-
-	if _, err := s.db.Pool.Exec(ctx, sql); err != nil {
-		return fmt.Errorf("failed to update retention policy: %w", err)
-	}
-
-	s.logger.Info("updated retention policy", "retention_days", config.RetentionDays)
-	return nil
-}
-
-// updateCompressionPolicy updates the TimescaleDB compression policy. Like the
-// retention policy above it is TSL-licensed, so it is guarded on the license
-// and becomes a no-op on Apache-only builds.
-func (s *LogCleanupService) updateCompressionPolicy(ctx context.Context, config models.LogRetentionSettings) error {
-	query := `
-		DO $ts$
-		BEGIN
-			IF current_setting('timescaledb.license', true) = 'timescale' THEN
-				PERFORM remove_compression_policy('logs', if_exists => true);
-				PERFORM add_compression_policy('logs', INTERVAL '%d days', if_not_exists => true);
-			END IF;
-		END
-		$ts$;
-	`
-	sql := fmt.Sprintf(query, config.CompressionAfterDays)
-
-	if _, err := s.db.Pool.Exec(ctx, sql); err != nil {
-		return fmt.Errorf("failed to update compression policy: %w", err)
-	}
-
-	s.logger.Info("updated compression policy", "compression_after_days", config.CompressionAfterDays)
 	return nil
 }

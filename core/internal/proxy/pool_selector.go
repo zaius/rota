@@ -37,6 +37,13 @@ type PoolSelector struct {
 	rrIdx       int
 	stickIdx    int
 	stickServed int
+
+	// useCounts tracks how often each proxy was selected by this selector
+	// since process start. least_conn balances on it — an in-memory
+	// approximation of current load, instead of the lifetime request totals
+	// it used to read from the database (which are now event-window-derived
+	// and refreshed out-of-band).
+	useCounts map[int]int64
 }
 
 // NewPoolSelector creates a PoolSelector for the given pool.
@@ -93,6 +100,19 @@ func (ps *PoolSelector) Refresh(ctx context.Context) error {
 	if ps.stickIdx >= len(proxies) {
 		ps.stickIdx = 0
 		ps.stickServed = 0
+	}
+	// drop usage counts for proxies that left the set, so the map doesn't
+	// accumulate dead IDs across refreshes
+	if ps.useCounts != nil {
+		current := make(map[int]bool, len(proxies))
+		for _, p := range proxies {
+			current[p.ID] = true
+		}
+		for id := range ps.useCounts {
+			if !current[id] {
+				delete(ps.useCounts, id)
+			}
+		}
 	}
 	ps.mu.Unlock()
 	return nil
@@ -172,6 +192,20 @@ func (ps *PoolSelector) Select(ctx context.Context) (*models.Proxy, error) {
 
 	host, _ := ctx.Value(TargetHostContextKey).(string)
 
+	p, err := ps.selectLocked(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if ps.useCounts == nil {
+		ps.useCounts = make(map[int]int64)
+	}
+	ps.useCounts[p.ID]++
+	return p, nil
+}
+
+// selectLocked dispatches to the pool's rotation method. Caller must hold
+// ps.mu.
+func (ps *PoolSelector) selectLocked(ctx context.Context, host string) (*models.Proxy, error) {
 	switch ps.method {
 	case "random":
 		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(ps.proxies))))
@@ -254,14 +288,16 @@ func (ps *PoolSelector) Select(ctx context.Context) (*models.Proxy, error) {
 		return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
 
 	case "least_conn", "least-conn", "least_connections":
-		// Pick the eligible proxy with the fewest total requests.
+		// Pick the eligible proxy this selector has used least (see
+		// useCounts) — current-process load, not lifetime totals.
 		var best *models.Proxy
+		var bestCount int64
 		for _, p := range ps.proxies {
 			if ps.cooledForHost(p.ID, host) {
 				continue
 			}
-			if best == nil || p.Requests < best.Requests {
-				best = p
+			if c := ps.useCounts[p.ID]; best == nil || c < bestCount {
+				best, bestCount = p, c
 			}
 		}
 		if best == nil {

@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 // DashboardStats represents dashboard statistics
 type DashboardStats struct {
 	ActiveProxies     int     `json:"active_proxies"`
@@ -23,6 +25,25 @@ type SuccessRateDataPoint struct {
 	Time    string `json:"time"`
 	Success int    `json:"success"`
 	Failure int    `json:"failure"`
+}
+
+// TrafficPoint is one time bucket of the traffic series: request volume plus
+// latency percentiles of the successful requests in the bucket. P50Ms/P95Ms
+// are 0 when the bucket has no successful requests.
+type TrafficPoint struct {
+	Time      time.Time `json:"time"` // bucket start, RFC3339
+	Requests  int64     `json:"requests"`
+	Successes int64     `json:"successes"`
+	P50Ms     int       `json:"p50_ms"`
+	P95Ms     int       `json:"p95_ms"`
+}
+
+// TrafficChartData is the traffic-series chart payload. BucketSeconds tells
+// the client the bucket width without having to re-derive the range mapping.
+type TrafficChartData struct {
+	Range         string         `json:"range"`
+	BucketSeconds int            `json:"bucket_seconds"`
+	Data          []TrafficPoint `json:"data"`
 }
 
 // ResponseTimeChartData represents response time chart data

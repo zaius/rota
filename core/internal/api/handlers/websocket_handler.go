@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/gorilla/websocket"
@@ -26,7 +27,7 @@ var upgrader = websocket.Upgrader{
 type WebSocketHandler struct {
 	dashboardRepo *repository.DashboardRepository
 	proxyRepo     *repository.ProxyRepository
-	logRepo       *repository.LogRepository
+	events        events.Store
 	logger        *logger.Logger
 }
 
@@ -34,13 +35,13 @@ type WebSocketHandler struct {
 func NewWebSocketHandler(
 	dashboardRepo *repository.DashboardRepository,
 	proxyRepo *repository.ProxyRepository,
-	logRepo *repository.LogRepository,
+	eventStore events.Store,
 	log *logger.Logger,
 ) *WebSocketHandler {
 	return &WebSocketHandler{
 		dashboardRepo: dashboardRepo,
 		proxyRepo:     proxyRepo,
-		logRepo:       logRepo,
+		events:        eventStore,
 		logger:        log,
 	}
 }
@@ -219,7 +220,7 @@ func (h *WebSocketHandler) LogsWebSocket(w http.ResponseWriter, r *http.Request)
 	// Get the current maximum log ID to start streaming from
 	// This ensures we only stream new logs from the moment the connection starts
 	lastLogID := int64(0)
-	currentLogs, _, err := h.logRepo.List(ctx, 1, 1, "", "", filterSource, nil, nil)
+	currentLogs, _, err := h.events.ListLogs(ctx, events.LogFilter{Source: filterSource}, 1, 1)
 	if err == nil && len(currentLogs) > 0 {
 		lastLogID = currentLogs[0].ID
 		h.logger.Info("starting log stream from current position", "last_log_id", lastLogID)
@@ -242,7 +243,7 @@ func (h *WebSocketHandler) LogsWebSocket(w http.ResponseWriter, r *http.Request)
 			filterMutex.RUnlock()
 
 			// Get recent logs ordered by ID ascending to get new logs properly
-			logs, _, err := h.logRepo.GetNewLogs(ctx, lastLogID, 100, currentFilterSource)
+			logs, err := h.events.LogsSince(ctx, lastLogID, 100, currentFilterSource)
 			if err != nil {
 				h.logger.Error("failed to get logs", "error", err)
 				continue

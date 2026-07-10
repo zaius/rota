@@ -53,6 +53,22 @@ export interface ChartResponse {
   data: ChartDataPoint[]
 }
 
+export type ChartRange = "1h" | "6h" | "24h" | "7d" | "30d"
+
+export interface TrafficPoint {
+  time: string // bucket start, RFC3339
+  requests: number
+  successes: number
+  p50_ms: number
+  p95_ms: number
+}
+
+export interface TrafficChartResponse {
+  range: ChartRange
+  bucket_seconds: number
+  data: TrafficPoint[]
+}
+
 export interface LogEntry {
   id: string
   timestamp: string

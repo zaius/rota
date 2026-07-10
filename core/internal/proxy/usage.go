@@ -5,18 +5,22 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/repository"
 )
 
-// UsageTracker tracks proxy usage and updates statistics
+// UsageTracker tracks proxy usage and updates statistics: request outcomes are
+// recorded as events in the event store, proxy state lives in the primary DB.
 type UsageTracker struct {
-	repo *repository.ProxyRepository
+	events events.Store
+	repo   *repository.ProxyRepository
 }
 
 // NewUsageTracker creates a new usage tracker
-func NewUsageTracker(repo *repository.ProxyRepository) *UsageTracker {
+func NewUsageTracker(eventStore events.Store, repo *repository.ProxyRepository) *UsageTracker {
 	return &UsageTracker{
-		repo: repo,
+		events: eventStore,
+		repo:   repo,
 	}
 }
 
@@ -24,6 +28,8 @@ func NewUsageTracker(repo *repository.ProxyRepository) *UsageTracker {
 type RequestRecord struct {
 	ProxyID      int
 	ProxyAddress string
+	PoolID       int    // pool that served the request; 0 = default pool
+	Username     string // proxy user the request was authenticated as
 	RequestedURL string
 	Method       string
 	Success      bool
@@ -35,8 +41,24 @@ type RequestRecord struct {
 
 // RecordRequest records a proxy request and updates statistics
 func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) error {
-	// Insert into proxy_requests hypertable
-	if err := t.insertProxyRequest(ctx, record); err != nil {
+	// Record the request outcome in the event store. The target domain is
+	// derived from the URL with the same normalization as domain cooldowns,
+	// so per-domain analytics line up with proxy_domain_cooldowns entries.
+	err := t.events.InsertRequest(ctx, events.RequestEvent{
+		ProxyID:      record.ProxyID,
+		ProxyAddress: record.ProxyAddress,
+		PoolID:       record.PoolID,
+		Username:     record.Username,
+		Method:       record.Method,
+		URL:          record.RequestedURL,
+		Domain:       NormalizeCooldownDomain(record.RequestedURL),
+		StatusCode:   record.StatusCode,
+		ResponseTime: record.ResponseTime,
+		Success:      record.Success,
+		Error:        record.ErrorMessage,
+		Timestamp:    record.Timestamp,
+	})
+	if err != nil {
 		return fmt.Errorf("failed to insert proxy request: %w", err)
 	}
 
@@ -48,94 +70,51 @@ func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) 
 	return nil
 }
 
-// insertProxyRequest inserts a record into the proxy_requests hypertable
-func (t *UsageTracker) insertProxyRequest(ctx context.Context, record RequestRecord) error {
-	query := `
-		INSERT INTO proxy_requests (
-			proxy_id, proxy_address, method, url, status_code, success, response_time, error, timestamp
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`
+// updateProxyStats advances the proxy's control-plane state machine: status,
+// the consecutive-failure counter (failed_requests), last_check and
+// last_error. Metrics — request counts and response-time averages — are no
+// longer written here; they are derived from the event store by the stats
+// refresher (services.StatsRefresher).
+//
+// The success path only writes on an actual state transition (recovering
+// status, resetting a failure streak, clearing an error), so the common case
+// — a healthy proxy staying healthy — touches no row. A consequence is that
+// last_check advances on transitions and health checks, not on every request.
+func (t *UsageTracker) updateProxyStats(ctx context.Context, record RequestRecord) error {
+	if record.Success {
+		query := `
+			UPDATE proxies
+			SET
+				failed_requests = 0,
+				last_error      = NULL,
+				status          = 'active',
+				last_check      = $2,
+				updated_at      = NOW()
+			WHERE id = $1
+			  AND (status <> 'active' OR failed_requests <> 0 OR last_error IS NOT NULL)
+		`
+		_, err := t.repo.GetDB().Pool.Exec(ctx, query, record.ProxyID, record.Timestamp)
+		return err
+	}
 
 	var errorMsg *string
 	if record.ErrorMessage != "" {
 		errorMsg = &record.ErrorMessage
 	}
 
-	var statusCode *int
-	if record.StatusCode > 0 {
-		statusCode = &record.StatusCode
-	}
-
-	_, err := t.repo.GetDB().Pool.Exec(
-		ctx,
-		query,
-		record.ProxyID,
-		record.ProxyAddress,
-		record.Method,
-		record.RequestedURL,
-		statusCode,
-		record.Success,
-		record.ResponseTime,
-		errorMsg,
-		record.Timestamp,
-	)
-
-	return err
-}
-
-// updateProxyStats updates proxy statistics in the proxies table
-func (t *UsageTracker) updateProxyStats(ctx context.Context, record RequestRecord) error {
-	// Use a single query to update all statistics atomically
-	// Note: We calculate avg_response_time correctly by using current requests value before increment
+	// failed_requests counts *consecutive* failures (it resets on success);
+	// three in a row marks the proxy failed.
 	query := `
 		UPDATE proxies
 		SET
-			requests = requests + 1,
-			successful_requests = CASE
-				WHEN $2 THEN successful_requests + 1
-				ELSE successful_requests
-			END,
-			failed_requests = CASE
-				WHEN $2 THEN 0  -- Reset consecutive failures on success
-				ELSE failed_requests + 1
-			END,
-			avg_response_time = (
-				CASE
-					WHEN requests = 0 THEN $3
-					ELSE ((avg_response_time * requests) + $3) / (requests + 1)
-				END
-			)::INTEGER,
-			last_check = $4,
-			last_error = CASE
-				WHEN $2 THEN NULL  -- Clear error on success
-				ELSE $5
-			END,
-			status = CASE
-				WHEN $2 THEN 'active'  -- Success = active
-				ELSE CASE
-					WHEN (failed_requests + 1) >= 3 THEN 'failed'  -- 3 consecutive failures = failed
-					ELSE status
-				END
-			END,
-			updated_at = NOW()
+			failed_requests = failed_requests + 1,
+			last_error      = $2,
+			last_check      = $3,
+			status          = CASE WHEN failed_requests + 1 >= 3 THEN 'failed' ELSE status END,
+			updated_at      = NOW()
 		WHERE id = $1
 	`
-
-	var errorMsg *string
-	if record.ErrorMessage != "" {
-		errorMsg = &record.ErrorMessage
-	}
-
-	_, err := t.repo.GetDB().Pool.Exec(
-		ctx,
-		query,
-		record.ProxyID,
-		record.Success,
-		record.ResponseTime,
-		record.Timestamp,
-		errorMsg,
-	)
-
+	_, err := t.repo.GetDB().Pool.Exec(ctx, query, record.ProxyID, errorMsg, record.Timestamp)
 	return err
 }
 
