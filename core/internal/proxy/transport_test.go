@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -109,5 +110,112 @@ func TestCreateProxyTransport_WithAuth(t *testing.T) {
 	}
 	if tr.Proxy == nil {
 		t.Fatal("should have Proxy set")
+	}
+}
+
+func strptr(s string) *string { return &s }
+
+// A credential rotation must not keep serving the transport built with the old
+// credentials.
+func TestGetOrCreateTransport_CredentialChangeYieldsNewTransport(t *testing.T) {
+	ClearTransportCache()
+
+	old := &models.Proxy{ID: 1, Address: "127.0.0.1:8081", Protocol: "http", Username: strptr("u"), Password: strptr("old")}
+	rotated := &models.Proxy{ID: 1, Address: "127.0.0.1:8081", Protocol: "http", Username: strptr("u"), Password: strptr("new")}
+
+	t1, err := GetOrCreateTransport(old)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	t2, err := GetOrCreateTransport(rotated)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if t1 == t2 {
+		t.Fatal("expected a rotated credential to produce a distinct transport")
+	}
+}
+
+// Two proxies on the same host:port with different credentials must not share
+// a transport.
+func TestGetOrCreateTransport_DistinctCredentialsDoNotCollide(t *testing.T) {
+	ClearTransportCache()
+
+	a := &models.Proxy{ID: 1, Address: "127.0.0.1:8082", Protocol: "http", Username: strptr("alice"), Password: strptr("pw")}
+	b := &models.Proxy{ID: 2, Address: "127.0.0.1:8082", Protocol: "http", Username: strptr("bob"), Password: strptr("pw")}
+
+	ta, err := GetOrCreateTransport(a)
+	if err != nil {
+		t.Fatalf("alice: %v", err)
+	}
+	tb, err := GetOrCreateTransport(b)
+	if err != nil {
+		t.Fatalf("bob: %v", err)
+	}
+	if ta == tb {
+		t.Fatal("expected different credentials to key different transports")
+	}
+}
+
+func TestInvalidateTransport_DropsEveryCredentialForEndpoint(t *testing.T) {
+	ClearTransportCache()
+
+	old := &models.Proxy{ID: 1, Address: "127.0.0.1:8083", Protocol: "http", Username: strptr("u"), Password: strptr("old")}
+	rotated := &models.Proxy{ID: 1, Address: "127.0.0.1:8083", Protocol: "http", Username: strptr("u"), Password: strptr("new")}
+
+	if _, err := GetOrCreateTransport(old); err != nil {
+		t.Fatalf("cache old: %v", err)
+	}
+	if _, err := GetOrCreateTransport(rotated); err != nil {
+		t.Fatalf("cache rotated: %v", err)
+	}
+
+	InvalidateTransport(rotated)
+
+	for _, p := range []*models.Proxy{old, rotated} {
+		if _, ok := transportCache.Load(transportCacheKey(p)); ok {
+			t.Fatalf("expected transport for %q to be evicted", transportCacheKey(p))
+		}
+	}
+}
+
+// Invalidating one endpoint must leave other proxies' warm pools alone.
+func TestInvalidateTransport_LeavesOtherEndpointsCached(t *testing.T) {
+	ClearTransportCache()
+
+	target := &models.Proxy{ID: 1, Address: "127.0.0.1:8084", Protocol: "http"}
+	other := &models.Proxy{ID: 2, Address: "127.0.0.1:8085", Protocol: "http"}
+
+	if _, err := GetOrCreateTransport(target); err != nil {
+		t.Fatalf("cache target: %v", err)
+	}
+	kept, err := GetOrCreateTransport(other)
+	if err != nil {
+		t.Fatalf("cache other: %v", err)
+	}
+
+	InvalidateTransport(target)
+
+	if _, ok := transportCache.Load(transportCacheKey(target)); ok {
+		t.Fatal("expected the target transport to be evicted")
+	}
+	got, ok := transportCache.Load(transportCacheKey(other))
+	if !ok || got.(*http.Transport) != kept {
+		t.Fatal("expected the untouched endpoint to keep its cached transport")
+	}
+}
+
+func TestClearTransportCache(t *testing.T) {
+	ClearTransportCache()
+
+	p := &models.Proxy{ID: 1, Address: "127.0.0.1:8086", Protocol: "http"}
+	if _, err := GetOrCreateTransport(p); err != nil {
+		t.Fatalf("cache: %v", err)
+	}
+
+	ClearTransportCache()
+
+	if _, ok := transportCache.Load(transportCacheKey(p)); ok {
+		t.Fatal("expected the cache to be empty")
 	}
 }

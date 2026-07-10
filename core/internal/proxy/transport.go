@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,14 +14,36 @@ import (
 	"h12.io/socks"
 )
 
-// transportCache caches *http.Transport per proxy address+protocol to avoid
-// creating a new transport (and new connection pool) for every request.
+// transportCache caches *http.Transport per proxy to avoid creating a new
+// transport (and a new connection pool) for every request.
 var transportCache sync.Map
+
+// transportCacheKey builds the cache key for a proxy. Credentials are part of
+// the key so that two proxies sharing a host:port but authenticating differently
+// do not collide, and so rotating a credential yields a different key rather
+// than silently reusing a transport that still carries the old one.
+func transportCacheKey(p *models.Proxy) string {
+	user := ""
+	if p.Username != nil {
+		user = *p.Username
+	}
+	pass := ""
+	if p.Password != nil {
+		pass = *p.Password
+	}
+	return fmt.Sprintf("%s://%s|%s:%s", p.Protocol, p.Address, user, pass)
+}
+
+// transportCacheKeyPrefix matches every cached key for a proxy endpoint,
+// whatever credentials it was cached under.
+func transportCacheKeyPrefix(p *models.Proxy) string {
+	return p.Protocol + "://" + p.Address + "|"
+}
 
 // GetOrCreateTransport returns a cached transport for the given proxy,
 // or creates and caches a new one.
 func GetOrCreateTransport(p *models.Proxy) (*http.Transport, error) {
-	key := p.Protocol + "://" + p.Address
+	key := transportCacheKey(p)
 	if t, ok := transportCache.Load(key); ok {
 		return t.(*http.Transport), nil
 	}
@@ -30,6 +53,38 @@ func GetOrCreateTransport(p *models.Proxy) (*http.Transport, error) {
 	}
 	actual, _ := transportCache.LoadOrStore(key, t)
 	return actual.(*http.Transport), nil
+}
+
+// dropTransport removes a cache entry and releases the keep-alive connections
+// its transport is still holding open.
+func dropTransport(key any) {
+	if t, ok := transportCache.LoadAndDelete(key); ok {
+		if tr, ok := t.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	}
+}
+
+// InvalidateTransport drops every cached transport for a proxy endpoint,
+// whatever credentials it was cached under. Call this when a proxy is updated
+// or deleted so the next request rebuilds from current settings.
+func InvalidateTransport(p *models.Proxy) {
+	prefix := transportCacheKeyPrefix(p)
+	transportCache.Range(func(k, _ any) bool {
+		if ks, ok := k.(string); ok && strings.HasPrefix(ks, prefix) {
+			dropTransport(ks)
+		}
+		return true
+	})
+}
+
+// ClearTransportCache drops all cached transports. Used after bulk mutations,
+// where tracking individual endpoints is not worth the bookkeeping.
+func ClearTransportCache() {
+	transportCache.Range(func(k, _ any) bool {
+		dropTransport(k)
+		return true
+	})
 }
 
 // CreateProxyTransport creates an HTTP transport configured for the given proxy
