@@ -27,7 +27,7 @@ import (
 // since the goal is to blunt online attacks, not forensic accounting.
 type authRateLimiter struct {
 	mu  sync.Mutex
-	log logger.Logger
+	log *logger.Logger
 
 	// trustProxyHeaders honours X-Forwarded-For / X-Real-IP only when the API is
 	// behind a trusted reverse proxy. Otherwise they are ignored, since a client
@@ -57,7 +57,7 @@ func newAuthRateLimiter(
 	log *logger.Logger,
 ) *authRateLimiter {
 	rl := &authRateLimiter{
-		log:               *log,
+		log:               log,
 		trustProxyHeaders: trustProxyHeaders,
 		ipAttempts:        make(map[string][]time.Time),
 		ipBlocked:         make(map[string]time.Time),
