@@ -13,6 +13,10 @@ import (
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
+// chainFailureThreshold is how many consecutive failures a proxy must
+// accumulate within a chain before it is evicted from its pool.
+const chainFailureThreshold = 3
+
 // PoolChain holds an ordered list of pool selectors for a user:
 // index 0 = main pool, index 1..N = fallback pools.
 // It refreshes pool selectors periodically and provides the high-level
@@ -28,6 +32,11 @@ type PoolChain struct {
 	logger    *logger.Logger
 	maxRetry  int    // total upstream attempts across all pools
 	username  string // proxy user this chain serves; "" for the default chain
+
+	// failCounts tracks consecutive failures per proxy id, so a single transient
+	// error doesn't evict an otherwise-healthy proxy from the pool.
+	mu         sync.Mutex
+	failCounts map[int]int
 }
 
 // NewPoolChain builds a PoolChain from an ordered list of ProxyPool objects
@@ -38,11 +47,12 @@ func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, ma
 		selectors = append(selectors, NewPoolSelector(db, p, sessionMgr, domainCD))
 	}
 	return &PoolChain{
-		selectors: selectors,
-		tracker:   tracker,
-		logger:    log,
-		maxRetry:  maxRetry,
-		username:  username,
+		selectors:  selectors,
+		tracker:    tracker,
+		logger:     log,
+		maxRetry:   maxRetry,
+		username:   username,
+		failCounts: make(map[int]int),
 	}
 }
 
@@ -151,10 +161,11 @@ func NewDefaultPoolChain(db *database.DB, settings *models.RotationSettings, ses
 		maxRetry = 1
 	}
 	return &PoolChain{
-		selectors: []*PoolSelector{sel},
-		tracker:   tracker,
-		logger:    log,
-		maxRetry:  maxRetry,
+		selectors:  []*PoolSelector{sel},
+		tracker:    tracker,
+		logger:     log,
+		maxRetry:   maxRetry,
+		failCounts: make(map[int]int),
 	}
 }
 
@@ -195,12 +206,35 @@ func (c *PoolChain) pickProxy(ctx context.Context, tried map[int]bool) (*models.
 	return nil, -1, fmt.Errorf("no untried proxies available across all pools")
 }
 
-// markFailed removes the proxy from its pool's in-memory list so it won't be
-// re-selected in this chain's lifecycle (until next Refresh).
+// markFailed records a failure for the proxy, removing it from its pool's
+// in-memory list only once it has failed chainFailureThreshold times in a row.
+// Evicting on the first failure meant one transient timeout could drain a pool
+// of healthy proxies until the next Refresh.
 func (c *PoolChain) markFailed(selIdx int, proxyID int) {
+	c.mu.Lock()
+	if c.failCounts == nil {
+		c.failCounts = make(map[int]int)
+	}
+	c.failCounts[proxyID]++
+	count := c.failCounts[proxyID]
+	if count >= chainFailureThreshold {
+		delete(c.failCounts, proxyID)
+	}
+	c.mu.Unlock()
+
+	if count < chainFailureThreshold {
+		return
+	}
 	if selIdx >= 0 && selIdx < len(c.selectors) {
 		c.selectors[selIdx].RemoveProxy(proxyID)
 	}
+}
+
+// markSucceeded resets the consecutive-failure counter for a proxy.
+func (c *PoolChain) markSucceeded(proxyID int) {
+	c.mu.Lock()
+	delete(c.failCounts, proxyID)
+	c.mu.Unlock()
 }
 
 // EvictProxy removes a proxy from every pool selector in this chain.
@@ -246,9 +280,11 @@ func (c *PoolChain) SendWithRetry(
 		// time (the legacy path already did this).
 		transport, err := GetOrCreateTransport(selectedProxy)
 		if err != nil {
+			// Building a transport fails on local configuration problems (an
+			// unsupported protocol, a malformed address), not because the upstream
+			// proxy misbehaved — so don't count it toward eviction.
 			lastErr = err
 			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
-			c.markFailed(selIdx, selectedProxy.ID)
 			continue
 		}
 
@@ -283,6 +319,7 @@ func (c *PoolChain) SendWithRetry(
 			continue
 		}
 
+		c.markSucceeded(selectedProxy.ID)
 		c.recordSuccess(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, resp.StatusCode, attemptStart)
 		log.Info("pool chain: success",
 			"proxy", selectedProxy.Address,
@@ -331,6 +368,7 @@ func (c *PoolChain) ConnectWithRetry(
 			continue
 		}
 
+		c.markSucceeded(selectedProxy.ID)
 		c.recordSuccess(selIdx, selectedProxy.ID, selectedProxy.Address, "CONNECT://"+host, "CONNECT", 200, attemptStart)
 		log.Info("pool chain CONNECT: success", "proxy", selectedProxy.Address, "host", host)
 		return conn, selectedProxy.ID, nil
