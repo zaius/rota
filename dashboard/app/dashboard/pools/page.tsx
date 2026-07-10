@@ -86,6 +86,10 @@ export default function PoolsPage() {
   const [selectedPool, setSelectedPool] = useState<ProxyPool | null>(null)
   const [poolProxies, setPoolProxies] = useState<PoolProxy[]>([])
   const [poolProxiesLoading, setPoolProxiesLoading] = useState(false)
+  // Identifies the most recent pool selection, so a slow response for a pool
+  // the user has already navigated away from is discarded instead of
+  // overwriting the current one.
+  const selectedPoolReq = useRef(0)
   const [hcJob, setHcJob] = useState<Job | null>(null)
   const [hcRunning, setHcRunning] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -178,6 +182,7 @@ export default function PoolsPage() {
   }
 
   const handleSelectPool = async (pool: ProxyPool) => {
+    const reqId = ++selectedPoolReq.current
     setSelectedPool(pool)
     setHcJob(null)
     setPoolProxiesLoading(true)
@@ -186,12 +191,14 @@ export default function PoolsPage() {
         api.getPoolProxies(pool.id),
         api.getAlertRules(pool.id).catch(() => []),
       ])
+      if (selectedPoolReq.current !== reqId) return
       setPoolProxies(proxiesRes.proxies)
       setAlertRules(rules)
     } catch {
+      if (selectedPoolReq.current !== reqId) return
       toast.error("Failed to load pool proxies")
     } finally {
-      setPoolProxiesLoading(false)
+      if (selectedPoolReq.current === reqId) setPoolProxiesLoading(false)
     }
   }
 

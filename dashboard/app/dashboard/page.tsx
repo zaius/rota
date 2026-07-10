@@ -186,7 +186,9 @@ export default function DashboardPage() {
           <CardContent>
             <div className="text-2xl font-bold">{stats.active_proxies}/{stats.total_proxies}</div>
             <p className="text-xs text-muted-foreground">
-              {Math.round((stats.active_proxies / stats.total_proxies) * 100)}% operational
+              {stats.total_proxies > 0
+                ? Math.round((stats.active_proxies / stats.total_proxies) * 100)
+                : 0}% operational
             </p>
           </CardContent>
         </Card>
