@@ -536,19 +536,57 @@ class ApiClient {
     return this.request(`/api/v1/pools/${poolId}/alert-rules/${ruleId}`, { method: "DELETE" })
   }
 
-  // WebSocket connections
-  createDashboardWebSocket(onMessage: (data: DashboardStats) => void): WebSocket {
-    const wsUrl = (this.baseUrl || window.location.origin).replace(/^http/, "ws")
-    const ws = new WebSocket(`${wsUrl}/ws/dashboard${this.token ? `?token=${this.token}` : ""}`)
+  private wsUrl(path: string): string {
+    const base = (this.baseUrl || window.location.origin).replace(/^http/, "ws")
+    return `${base}${path}${this.token ? `?token=${this.token}` : ""}`
+  }
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
-      if (data.type === "stats_update") {
-        onMessage(data.data)
+  // WebSocket connections
+  //
+  // The dashboard socket reconnects with a capped exponential backoff. The
+  // server closes it on restart, and without this the stats silently stop
+  // updating until the page is reloaded.
+  createDashboardWebSocket(onMessage: (data: DashboardStats) => void): SocketHandle {
+    let ws: WebSocket | null = null
+    let closedByCaller = false
+    let attempt = 0
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+    const connect = () => {
+      if (closedByCaller) return
+
+      ws = new WebSocket(this.wsUrl("/ws/dashboard"))
+
+      ws.onopen = () => {
+        attempt = 0
+      }
+      ws.onmessage = (event) => {
+        const message = parseSocketMessage<{ type?: string; data?: DashboardStats }>(event.data)
+        if (message?.type === "stats_update" && message.data) {
+          onMessage(message.data)
+        }
+      }
+      ws.onerror = () => {
+        // Surfaces as onclose, which schedules the retry.
+        ws?.close()
+      }
+      ws.onclose = () => {
+        if (closedByCaller) return
+        const delay = Math.min(30_000, 1_000 * 2 ** attempt)
+        attempt += 1
+        retryTimer = setTimeout(connect, delay)
       }
     }
 
-    return ws
+    connect()
+
+    return {
+      close() {
+        closedByCaller = true
+        if (retryTimer) clearTimeout(retryTimer)
+        ws?.close()
+      },
+    }
   }
 
   createLogsWebSocket(
@@ -556,8 +594,7 @@ class ApiClient {
     levels?: string[],
     source?: string
   ): WebSocket {
-    const wsUrl = (this.baseUrl || window.location.origin).replace(/^http/, "ws")
-    const ws = new WebSocket(`${wsUrl}/ws/logs${this.token ? `?token=${this.token}` : ""}`)
+    const ws = new WebSocket(this.wsUrl("/ws/logs"))
 
     ws.onopen = () => {
       if (levels && levels.length > 0 || source) {
@@ -570,11 +607,32 @@ class ApiClient {
     }
 
     ws.onmessage = (event) => {
-      const log = JSON.parse(event.data)
-      onMessage(log)
+      const log = parseSocketMessage(event.data)
+      if (log !== null) {
+        onMessage(log)
+      }
     }
 
     return ws
+  }
+}
+
+/** A socket that owns its own reconnection; call close() to stop for good. */
+export interface SocketHandle {
+  close(): void
+}
+
+/**
+ * Parse a WebSocket frame, returning null rather than throwing. An unhandled
+ * throw inside onmessage kills the handler for every subsequent frame.
+ */
+function parseSocketMessage<T = unknown>(raw: unknown): T | null {
+  if (typeof raw !== "string") return null
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    console.error("Discarding malformed WebSocket message")
+    return null
   }
 }
 

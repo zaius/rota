@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -89,7 +91,7 @@ func (w *AlertWatcher) check(ctx context.Context) {
 		if err := w.fire(ctx, rule, *pool); err != nil {
 			w.log.Error("failed to fire pool alert webhook",
 				"rule_id", rule.ID,
-				"url", rule.WebhookURL,
+				"url", redactWebhookURL(rule.WebhookURL),
 				"error", err,
 			)
 		} else {
@@ -99,6 +101,28 @@ func (w *AlertWatcher) check(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// redactWebhookURL returns a form of the webhook URL that is safe to log.
+// Log entries are persisted to the database by the logger's hook, so a webhook
+// secret written here outlives the process. Telegram embeds its bot token in
+// the /bot<token>/ path segment; other providers tend to put secrets in the
+// query string or in userinfo. All three are stripped.
+func redactWebhookURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "[redacted]"
+	}
+	path := u.Path
+	if strings.HasPrefix(path, "/bot") {
+		rest := strings.TrimPrefix(path, "/bot")
+		if i := strings.IndexByte(rest, '/'); i != -1 {
+			path = "/bot<redacted>" + rest[i:]
+		} else {
+			path = "/bot<redacted>"
+		}
+	}
+	return u.Scheme + "://" + u.Host + path
 }
 
 // fire sends the webhook request for a triggered alert rule.

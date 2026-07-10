@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -140,12 +141,18 @@ func (s *JobStore) Update(id string, fn func(*Job)) {
 	}
 }
 
-// cleanup removes jobs older than 30 minutes.
+// cleanup removes finished jobs older than 30 minutes. A job that is still
+// pending or running is kept however old it is: a health check over a large
+// pool can outlive the cutoff, and evicting it mid-flight would make its status
+// endpoint report "not found" while the work is still going on.
 func (s *JobStore) cleanup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cutoff := time.Now().Add(-30 * time.Minute)
 	for id, j := range s.jobs {
+		if j.Status == JobPending || j.Status == JobRunning {
+			continue
+		}
 		if j.StartedAt.Before(cutoff) {
 			delete(s.jobs, id)
 		}
@@ -178,14 +185,9 @@ func (s *JobStore) ListByPool(poolID int) []*Job {
 			out = append(out, j)
 		}
 	}
-	// sort newest first
-	for i := 0; i < len(out)-1; i++ {
-		for k := i + 1; k < len(out); k++ {
-			if out[k].StartedAt.After(out[i].StartedAt) {
-				out[i], out[k] = out[k], out[i]
-			}
-		}
-	}
+	sort.Slice(out, func(i, k int) bool {
+		return out[i].StartedAt.After(out[k].StartedAt)
+	})
 	return out
 }
 

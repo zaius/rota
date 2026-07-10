@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -25,6 +27,13 @@ func NewAuthMiddleware(settings models.AuthenticationSettings) *AuthMiddleware {
 		username: settings.Username,
 		password: settings.Password,
 	}
+}
+
+// IsEnabled reports whether legacy single-user auth is currently enforcing.
+func (m *AuthMiddleware) IsEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.enabled
 }
 
 // UpdateSettings updates the authentication settings
@@ -72,8 +81,12 @@ func (m *AuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *http.
 	username := credentials[0]
 	password := credentials[1]
 
-	// Validate credentials
-	if username != m.username || password != m.password {
+	// Compare both fields in constant time. The results are combined with a
+	// bitwise AND rather than a short-circuiting ||, so the time taken does not
+	// reveal whether it was the username or the password that mismatched.
+	userMatch := subtle.ConstantTimeCompare([]byte(username), []byte(m.username))
+	passMatch := subtle.ConstantTimeCompare([]byte(password), []byte(m.password))
+	if userMatch&passMatch != 1 {
 		return req, m.unauthorized()
 	}
 
@@ -158,6 +171,13 @@ func (m *RateLimitMiddleware) allow(clientIP string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// A non-positive interval would make rps +Inf and a non-positive maxRequests
+	// would set the burst to 0, denying everything. Treat either as "limiter
+	// misconfigured, effectively off" rather than silently breaking the proxy.
+	if m.interval <= 0 || m.maxRequests <= 0 {
+		return true
+	}
+
 	// Get or create limiter for this IP
 	limiter, exists := m.limiters[clientIP]
 	if !exists {
@@ -171,28 +191,20 @@ func (m *RateLimitMiddleware) allow(clientIP string) bool {
 	return limiter.Allow()
 }
 
-// getClientIP extracts the client IP from the request
+// getClientIP extracts the client IP used as the per-IP rate-limit key.
+//
+// X-Forwarded-For and X-Real-IP are supplied by the caller. On a forward proxy
+// the caller is the client being limited, so honouring those headers would let
+// it rotate the header value and sidestep the limit entirely. The socket peer
+// is the only address it cannot choose.
 func (m *RateLimitMiddleware) getClientIP(req *http.Request) string {
-	// Try X-Forwarded-For header first
-	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
-		ips := strings.Split(xff, ",")
-		if len(ips) > 0 {
-			return strings.TrimSpace(ips[0])
-		}
+	// SplitHostPort rather than a trailing-colon search, so a bare IPv6 address
+	// isn't truncated at its last hextet.
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		return req.RemoteAddr
 	}
-
-	// Try X-Real-IP header
-	if xri := req.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-
-	// Fall back to RemoteAddr
-	ip := req.RemoteAddr
-	// Remove port if present
-	if idx := strings.LastIndex(ip, ":"); idx != -1 {
-		ip = ip[:idx]
-	}
-	return ip
+	return host
 }
 
 // tooManyRequests returns a 429 Too Many Requests response

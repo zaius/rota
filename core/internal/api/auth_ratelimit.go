@@ -3,6 +3,7 @@ package api
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,12 @@ import (
 // since the goal is to blunt online attacks, not forensic accounting.
 type authRateLimiter struct {
 	mu  sync.Mutex
-	log logger.Logger
+	log *logger.Logger
+
+	// trustProxyHeaders honours X-Forwarded-For / X-Real-IP only when the API is
+	// behind a trusted reverse proxy. Otherwise they are ignored, since a client
+	// that can set them freely could present a new IP per attempt.
+	trustProxyHeaders bool
 
 	// per-IP state
 	ipAttempts map[string][]time.Time // timestamps of failed attempts per IP
@@ -47,17 +53,19 @@ type authRateLimiter struct {
 func newAuthRateLimiter(
 	ipMaxAttempts, ipWindowMin, ipBlockMin int,
 	globalMax, globalLockoutMin int,
+	trustProxyHeaders bool,
 	log *logger.Logger,
 ) *authRateLimiter {
 	rl := &authRateLimiter{
-		log:             *log,
-		ipAttempts:      make(map[string][]time.Time),
-		ipBlocked:       make(map[string]time.Time),
-		ipMaxAttempts:   ipMaxAttempts,
-		ipWindow:        time.Duration(ipWindowMin) * time.Minute,
-		ipBlockDuration: time.Duration(ipBlockMin) * time.Minute,
-		globalMax:       globalMax,
-		globalLockout:   time.Duration(globalLockoutMin) * time.Minute,
+		log:               log,
+		trustProxyHeaders: trustProxyHeaders,
+		ipAttempts:        make(map[string][]time.Time),
+		ipBlocked:         make(map[string]time.Time),
+		ipMaxAttempts:     ipMaxAttempts,
+		ipWindow:          time.Duration(ipWindowMin) * time.Minute,
+		ipBlockDuration:   time.Duration(ipBlockMin) * time.Minute,
+		globalMax:         globalMax,
+		globalLockout:     time.Duration(globalLockoutMin) * time.Minute,
 	}
 	// Background cleanup every 5 minutes
 	go rl.cleanup()
@@ -72,7 +80,7 @@ func newAuthRateLimiter(
 func (rl *authRateLimiter) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := realIP(r)
+			ip := rl.clientIP(r)
 			now := time.Now()
 
 			rl.mu.Lock()
@@ -197,26 +205,25 @@ func filterAfter(ts []time.Time, cutoff time.Time) []time.Time {
 	return ts[:i]
 }
 
-// realIP extracts the client IP, respecting X-Forwarded-For / X-Real-IP set by
-// a trusted reverse proxy (Nginx).
-func realIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// X-Forwarded-For may be "client, proxy1, proxy2" — take the first.
-		if idx := len(xff); idx > 0 {
-			for i := 0; i < len(xff); i++ {
-				if xff[i] == ',' {
-					xff = xff[:i]
-					break
-				}
+// clientIP extracts the client IP used to key the per-IP login block.
+// X-Forwarded-For / X-Real-IP are only consulted when the API is configured to
+// trust an upstream reverse proxy; otherwise the request's socket peer is the
+// only value a client cannot forge.
+func (rl *authRateLimiter) clientIP(r *http.Request) string {
+	if rl.trustProxyHeaders {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			// X-Forwarded-For may be "client, proxy1, proxy2" — take the first.
+			if idx := strings.IndexByte(xff, ','); idx >= 0 {
+				xff = xff[:idx]
+			}
+			if ip := net.ParseIP(strings.TrimSpace(xff)); ip != nil {
+				return ip.String()
 			}
 		}
-		if ip := net.ParseIP(xff); ip != nil {
-			return ip.String()
-		}
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		if ip := net.ParseIP(xri); ip != nil {
-			return ip.String()
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			if ip := net.ParseIP(strings.TrimSpace(xri)); ip != nil {
+				return ip.String()
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

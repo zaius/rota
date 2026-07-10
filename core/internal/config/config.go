@@ -44,6 +44,14 @@ type Config struct {
 	// in dev, where the dashboard runs under the Vite dev server.
 	WebDir string
 
+	// TrustProxyHeaders controls whether X-Forwarded-For / X-Real-IP are used to
+	// derive the client IP. Enable it only when the API sits behind a trusted
+	// reverse proxy that overwrites those headers. When the API is exposed
+	// directly, a client can set them freely, so trusting them would let an
+	// attacker present a fresh IP on every login attempt and walk straight past
+	// the per-IP block. (TRUST_PROXY_HEADERS, default false)
+	TrustProxyHeaders bool
+
 	// Auth brute-force protection
 	// Per-IP: after AuthIPMaxAttempts failures within AuthIPWindowMinutes,
 	// that IP is blocked for AuthIPBlockMinutes.
@@ -111,6 +119,7 @@ func Load() (*Config, error) {
 
 		CORSAllowedOrigins: getEnvAsSlice("CORS_ALLOWED_ORIGINS", []string{"*"}),
 		WebDir:             getEnv("WEB_DIR", ""),
+		TrustProxyHeaders:  getEnvAsBool("TRUST_PROXY_HEADERS", false),
 
 		AuthIPMaxAttempts:      getEnvAsInt("AUTH_IP_MAX_ATTEMPTS", 10),
 		AuthIPWindowMinutes:    getEnvAsInt("AUTH_IP_WINDOW_MINUTES", 10),
@@ -163,14 +172,43 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// getEnvAsInt retrieves an environment variable as an integer or returns a default value
+// getEnvAsInt retrieves an environment variable as an integer or returns a
+// default value. A typo used to fall through to the default silently, which is
+// indistinguishable from not setting the variable at all. Every caller wants a
+// non-negative count or duration, so negatives are rejected too.
 func getEnvAsInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return intValue
-		}
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
 	}
-	return defaultValue
+	intValue, err := strconv.Atoi(value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: WARNING invalid integer for %s=%q (%v); using default %d\n", key, value, err, defaultValue)
+		return defaultValue
+	}
+	if intValue < 0 {
+		fmt.Fprintf(os.Stderr, "config: WARNING negative value for %s=%d not allowed; using default %d\n", key, intValue, defaultValue)
+		return defaultValue
+	}
+	return intValue
+}
+
+// getEnvAsBool accepts the usual truthy/falsy spellings (1/t/true/yes/on and
+// their negatives, case-insensitive) and warns on anything else.
+func getEnvAsBool(key string, defaultValue bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	switch strings.ToLower(value) {
+	case "1", "t", "true", "yes", "on":
+		return true
+	case "0", "f", "false", "no", "off":
+		return false
+	default:
+		fmt.Fprintf(os.Stderr, "config: WARNING invalid boolean for %s=%q; using default %t\n", key, value, defaultValue)
+		return defaultValue
+	}
 }
 
 // getEnvAsSlice retrieves a comma-separated environment variable as a string

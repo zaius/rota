@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/alpkeskin/rota/core/internal/proxy"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/services"
 	"github.com/alpkeskin/rota/core/pkg/logger"
@@ -241,19 +242,34 @@ func (h *ProxyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxy, err := h.proxyRepo.Update(r.Context(), id, req)
+	// Capture the pre-update endpoint: an address or protocol change moves the
+	// proxy to a different cache key, so the old entry has to be dropped by its
+	// old identity or it lingers with stale settings.
+	before, err := h.proxyRepo.GetByID(r.Context(), id)
+	if err != nil {
+		h.logger.Error("failed to load proxy before update", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to update proxy")
+		return
+	}
+
+	updated, err := h.proxyRepo.Update(r.Context(), id, req)
 	if err != nil {
 		h.logger.Error("failed to update proxy", "error", err)
 		writeError(w, http.StatusInternalServerError, "Failed to update proxy")
 		return
 	}
 
-	if proxy == nil {
+	if updated == nil {
 		writeError(w, http.StatusNotFound, "Proxy not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, proxy)
+	if before != nil {
+		proxy.InvalidateTransport(before)
+	}
+	proxy.InvalidateTransport(updated)
+
+	writeJSON(w, http.StatusOK, updated)
 }
 
 // Delete handles proxy deletion
@@ -274,10 +290,23 @@ func (h *ProxyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Look the proxy up first so its cached transport can be dropped by endpoint
+	// once the row is gone.
+	deleted, err := h.proxyRepo.GetByID(r.Context(), id)
+	if err != nil {
+		h.logger.Error("failed to load proxy before delete", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete proxy")
+		return
+	}
+
 	if err := h.proxyRepo.Delete(r.Context(), id); err != nil {
 		h.logger.Error("failed to delete proxy", "error", err)
 		writeError(w, http.StatusInternalServerError, "Failed to delete proxy")
 		return
+	}
+
+	if deleted != nil {
+		proxy.InvalidateTransport(deleted)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -335,6 +364,12 @@ func (h *ProxyHandler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to bulk delete proxies", "error", err)
 		writeError(w, http.StatusInternalServerError, "Failed to delete proxies")
 		return
+	}
+
+	// The deleted set isn't returned, so drop every cached transport rather than
+	// track endpoints. Mutations are rare and the cache refills on demand.
+	if deleted > 0 {
+		proxy.ClearTransportCache()
 	}
 
 	response := map[string]interface{}{
@@ -669,5 +704,6 @@ func (h *ProxyHandler) DeleteAll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to delete all proxies")
 		return
 	}
+	proxy.ClearTransportCache()
 	writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": deleted})
 }

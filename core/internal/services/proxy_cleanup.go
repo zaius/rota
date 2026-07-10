@@ -19,6 +19,9 @@ const (
 	lowSuccessMinRequests = 10 // enough requests in-window for the rate to mean something
 )
 
+// defaultProxyCleanupInterval is used when settings are unavailable or unset.
+const defaultProxyCleanupInterval = 24 * time.Hour
+
 // ProxyCleanupService periodically deletes dead/low-quality proxies based on
 // the proxy_cleanup settings row.
 type ProxyCleanupService struct {
@@ -26,7 +29,6 @@ type ProxyCleanupService struct {
 	settingsRepo *repository.SettingsRepository
 	events       events.Store
 	log          *logger.Logger
-	interval     time.Duration
 }
 
 // NewProxyCleanupService creates a new ProxyCleanupService.
@@ -41,26 +43,44 @@ func NewProxyCleanupService(
 		settingsRepo: settingsRepo,
 		events:       eventStore,
 		log:          log,
-		interval:     time.Hour, // check every hour; actual run interval from settings
 	}
 }
 
 // Name identifies the service for the lifecycle manager.
 func (s *ProxyCleanupService) Name() string { return "proxy-cleanup" }
 
-// Run deletes dead/low-quality proxies on the cleanup interval until ctx is
-// cancelled.
+// Run deletes dead/low-quality proxies on the configured cleanup interval until
+// ctx is cancelled. The interval is re-derived from settings each cycle, so a
+// change made via the API takes effect without a restart.
 func (s *ProxyCleanupService) Run(ctx context.Context) {
-	ticker := time.NewTicker(s.interval)
+	interval := s.cleanupInterval(ctx)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			s.run(ctx)
+			// Pick up interval changes made via the API since the last cycle.
+			if next := s.cleanupInterval(ctx); next != interval {
+				interval = next
+				ticker.Reset(interval)
+				s.log.Info("updated proxy cleanup interval", "interval", interval)
+			}
 		}
 	}
+}
+
+// cleanupInterval reads the configured cleanup interval, falling back to a sane
+// default when settings are unavailable or unset.
+func (s *ProxyCleanupService) cleanupInterval(ctx context.Context) time.Duration {
+	cfg, err := s.loadSettings(ctx)
+	if err != nil || cfg.CleanupIntervalHours <= 0 {
+		return defaultProxyCleanupInterval
+	}
+	return time.Duration(cfg.CleanupIntervalHours) * time.Hour
 }
 
 func (s *ProxyCleanupService) run(ctx context.Context) {

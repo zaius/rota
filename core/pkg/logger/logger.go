@@ -2,17 +2,40 @@ package logger
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"sync"
+	"sync/atomic"
 )
 
 // LogHook is a function that gets called when a log is written
 type LogHook func(level, message string, attrs map[string]any)
 
+// hookCall is a single queued hook invocation.
+type hookCall struct {
+	level   string
+	message string
+	attrs   map[string]any
+}
+
+const (
+	hookQueueSize = 1024
+	hookWorkers   = 2
+)
+
 // Logger wraps slog.Logger with additional functionality
 type Logger struct {
 	*slog.Logger
+
+	mu    sync.RWMutex // guards hooks
 	hooks []LogHook
+
+	hookCh    chan hookCall
+	startOnce sync.Once
+
+	// dropped counts hook events discarded because the queue was full.
+	dropped atomic.Int64
 }
 
 // New creates a new logger with the specified level
@@ -42,17 +65,46 @@ func New(level string) *Logger {
 	return &Logger{
 		Logger: logger,
 		hooks:  []LogHook{},
+		hookCh: make(chan hookCall, hookQueueSize),
 	}
 }
 
-// AddHook adds a hook that will be called for each log message
+// AddHook adds a hook that will be called for each log message. The workers
+// that drain the hook queue are started on the first registration, so a logger
+// with no hooks costs no goroutines.
 func (l *Logger) AddHook(hook LogHook) {
+	l.mu.Lock()
 	l.hooks = append(l.hooks, hook)
+	l.mu.Unlock()
+
+	l.startOnce.Do(func() {
+		for range hookWorkers {
+			go l.hookWorker()
+		}
+	})
 }
 
-// callHooks calls all registered hooks
+// hookWorker drains queued invocations and runs every registered hook.
+func (l *Logger) hookWorker() {
+	for call := range l.hookCh {
+		l.mu.RLock()
+		hooks := l.hooks
+		l.mu.RUnlock()
+		for _, hook := range hooks {
+			hook(call.level, call.message, call.attrs)
+		}
+	}
+}
+
+// callHooks hands a hook invocation to the worker pool. Spawning a goroutine
+// per log line let a slow hook — the database hook can take seconds — pile up
+// unboundedly under load. The queue applies backpressure instead, and drops
+// events rather than stalling the caller once it is full.
 func (l *Logger) callHooks(level, message string, args []any) {
-	if len(l.hooks) == 0 {
+	l.mu.RLock()
+	n := len(l.hooks)
+	l.mu.RUnlock()
+	if n == 0 {
 		return
 	}
 
@@ -66,8 +118,12 @@ func (l *Logger) callHooks(level, message string, args []any) {
 		}
 	}
 
-	for _, hook := range l.hooks {
-		go hook(level, message, attrs)
+	select {
+	case l.hookCh <- hookCall{level: level, message: message, attrs: attrs}:
+	default:
+		if d := l.dropped.Add(1); d%100 == 1 {
+			fmt.Fprintf(os.Stderr, "logger: hook queue full, dropped %d log hook event(s)\n", d)
+		}
 	}
 }
 

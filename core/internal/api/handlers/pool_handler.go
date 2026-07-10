@@ -528,6 +528,11 @@ func (h *PoolHandler) CreateAlertRule(w http.ResponseWriter, r *http.Request) {
 //	@Success		200	{object}	models.PoolAlertRule
 //	@Router			/pools/{id}/alert-rules/{rule_id} [put]
 func (h *PoolHandler) UpdateAlertRule(w http.ResponseWriter, r *http.Request) {
+	poolID, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid pool id")
+		return
+	}
 	ruleID, err := strconv.Atoi(chi.URLParam(r, "rule_id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid rule_id")
@@ -542,7 +547,7 @@ func (h *PoolHandler) UpdateAlertRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	rule, err := h.poolRepo.UpdateAlertRule(r.Context(), ruleID, req)
+	rule, err := h.poolRepo.UpdateAlertRule(r.Context(), poolID, ruleID, req)
 	if err != nil || rule == nil {
 		writeError(w, http.StatusNotFound, "rule not found or update failed")
 		return
@@ -560,13 +565,23 @@ func (h *PoolHandler) UpdateAlertRule(w http.ResponseWriter, r *http.Request) {
 //	@Success		200	{object}	map[string]string
 //	@Router			/pools/{id}/alert-rules/{rule_id} [delete]
 func (h *PoolHandler) DeleteAlertRule(w http.ResponseWriter, r *http.Request) {
+	poolID, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid pool id")
+		return
+	}
 	ruleID, err := strconv.Atoi(chi.URLParam(r, "rule_id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid rule_id")
 		return
 	}
-	if err := h.poolRepo.DeleteAlertRule(r.Context(), ruleID); err != nil {
+	deleted, err := h.poolRepo.DeleteAlertRule(r.Context(), poolID, ruleID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete alert rule")
+		return
+	}
+	if !deleted {
+		writeError(w, http.StatusNotFound, "rule not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

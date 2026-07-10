@@ -820,8 +820,9 @@ func (r *PoolRepository) CreateAlertRule(ctx context.Context, poolID int, req mo
 	return &rule, nil
 }
 
-// UpdateAlertRule updates an alert rule
-func (r *PoolRepository) UpdateAlertRule(ctx context.Context, ruleID int, req models.CreatePoolAlertRuleRequest) (*models.PoolAlertRule, error) {
+// UpdateAlertRule updates an alert rule belonging to poolID. Matching on both
+// ids keeps a rule reachable only through the pool that owns it.
+func (r *PoolRepository) UpdateAlertRule(ctx context.Context, poolID, ruleID int, req models.CreatePoolAlertRuleRequest) (*models.PoolAlertRule, error) {
 	var rule models.PoolAlertRule
 	err := r.db.Pool.QueryRow(ctx, `
 		UPDATE pool_alert_rules SET
@@ -831,10 +832,10 @@ func (r *PoolRepository) UpdateAlertRule(ctx context.Context, ruleID int, req mo
 			webhook_method    = CASE WHEN $4 <> '' THEN $4 ELSE webhook_method END,
 			cooldown_minutes  = CASE WHEN $5 > 0 THEN $5 ELSE cooldown_minutes END,
 			updated_at        = NOW()
-		WHERE id = $6
+		WHERE id = $6 AND pool_id = $7
 		RETURNING id, pool_id, enabled, min_active_proxies, webhook_url, webhook_method,
 		          last_fired_at, cooldown_minutes, created_at, updated_at`,
-		req.Enabled, req.MinActiveProxies, req.WebhookURL, req.WebhookMethod, req.CooldownMinutes, ruleID,
+		req.Enabled, req.MinActiveProxies, req.WebhookURL, req.WebhookMethod, req.CooldownMinutes, ruleID, poolID,
 	).Scan(
 		&rule.ID, &rule.PoolID, &rule.Enabled, &rule.MinActiveProxies,
 		&rule.WebhookURL, &rule.WebhookMethod, &rule.LastFiredAt,
@@ -849,10 +850,15 @@ func (r *PoolRepository) UpdateAlertRule(ctx context.Context, ruleID int, req mo
 	return &rule, nil
 }
 
-// DeleteAlertRule deletes an alert rule
-func (r *PoolRepository) DeleteAlertRule(ctx context.Context, ruleID int) error {
-	_, err := r.db.Pool.Exec(ctx, `DELETE FROM pool_alert_rules WHERE id=$1`, ruleID)
-	return err
+// DeleteAlertRule deletes an alert rule belonging to poolID, reporting whether
+// a rule was actually removed so the caller can distinguish a missing rule from
+// one owned by a different pool.
+func (r *PoolRepository) DeleteAlertRule(ctx context.Context, poolID, ruleID int) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `DELETE FROM pool_alert_rules WHERE id=$1 AND pool_id=$2`, ruleID, poolID)
+	if err != nil {
+		return false, fmt.Errorf("failed to delete alert rule: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // UpdateAlertRuleFiredAt records when an alert was last fired

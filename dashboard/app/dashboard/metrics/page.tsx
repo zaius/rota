@@ -10,14 +10,18 @@ export default function MetricsPage() {
   const [isLoading, setIsLoading] = React.useState(true)
 
   React.useEffect(() => {
+    // clearInterval doesn't cancel a request already in flight, so a response
+    // arriving after unmount would still call setState.
+    let cancelled = false
+
     const fetchMetrics = async () => {
       try {
         const data = await api.getSystemMetrics()
-        setMetrics(data)
+        if (!cancelled) setMetrics(data)
       } catch (error) {
-        console.error("Failed to fetch system metrics:", error)
+        if (!cancelled) console.error("Failed to fetch system metrics:", error)
       } finally {
-        setIsLoading(false)
+        if (!cancelled) setIsLoading(false)
       }
     }
 
@@ -26,7 +30,10 @@ export default function MetricsPage() {
     // Refresh metrics every 5 seconds
     const interval = setInterval(fetchMetrics, 5000)
 
-    return () => clearInterval(interval)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
   }, [])
 
   if (isLoading || !metrics) {

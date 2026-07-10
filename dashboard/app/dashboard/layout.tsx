@@ -12,6 +12,7 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom"
+import { api } from "@/lib/api"
 
 export default function DashboardLayout() {
   const { pathname } = useLocation()
@@ -19,17 +20,37 @@ export default function DashboardLayout() {
   const [isAuthenticated, setIsAuthenticated] = React.useState(false)
   const [isLoading, setIsLoading] = React.useState(true)
 
-  // Check authentication on mount
+  // Check authentication on mount. The presence of a token says nothing about
+  // whether it is still valid, so ask the API: rendering first and bouncing on
+  // the first 401 flashes protected content to a logged-out viewer.
   React.useEffect(() => {
-    const token = localStorage.getItem("auth_token")
+    let cancelled = false
 
+    const token = localStorage.getItem("auth_token")
     if (!token) {
       navigate("/login")
-    } else {
-      setIsAuthenticated(true)
+      setIsLoading(false)
+      return
     }
 
-    setIsLoading(false)
+    api
+      .getAdminInfo()
+      .then(() => {
+        if (cancelled) return
+        setIsAuthenticated(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        api.clearToken()
+        navigate("/login")
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [navigate])
 
   // Show loading state while checking authentication

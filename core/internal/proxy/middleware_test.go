@@ -222,3 +222,62 @@ func TestRateLimitMiddleware_Cleanup(t *testing.T) {
 	// Cleanup should not panic or error
 	m.CleanupLimiters()
 }
+
+// ── RateLimitMiddleware client IP keying ────────────────────────────────────
+
+func TestRateLimit_GetClientIPIgnoresForwardedHeaders(t *testing.T) {
+	m := NewRateLimitMiddleware(models.RateLimitSettings{Enabled: true, Interval: 60, MaxRequests: 10})
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	req.RemoteAddr = "203.0.113.7:54321"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("X-Real-IP", "5.6.7.8")
+
+	if got := m.getClientIP(req); got != "203.0.113.7" {
+		t.Fatalf("expected the socket peer to key the limiter, got %q", got)
+	}
+}
+
+func TestRateLimit_GetClientIPHandlesIPv6(t *testing.T) {
+	m := NewRateLimitMiddleware(models.RateLimitSettings{Enabled: true, Interval: 60, MaxRequests: 10})
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	req.RemoteAddr = "[2001:db8::1]:54321"
+
+	if got := m.getClientIP(req); got != "2001:db8::1" {
+		t.Fatalf("expected the full IPv6 address, got %q", got)
+	}
+}
+
+func TestRateLimit_GetClientIPWithoutPort(t *testing.T) {
+	m := NewRateLimitMiddleware(models.RateLimitSettings{Enabled: true, Interval: 60, MaxRequests: 10})
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	req.RemoteAddr = "203.0.113.7"
+
+	if got := m.getClientIP(req); got != "203.0.113.7" {
+		t.Fatalf("expected the raw address when there is no port, got %q", got)
+	}
+}
+
+// A spoofed X-Forwarded-For must not buy a fresh bucket: every request from the
+// same peer shares one limiter regardless of the header.
+func TestRateLimit_SpoofedForwardedForCannotBypassLimit(t *testing.T) {
+	m := NewRateLimitMiddleware(models.RateLimitSettings{Enabled: true, Interval: 60, MaxRequests: 2})
+
+	var lastResp *http.Response
+	for i := range 5 {
+		req, _ := http.NewRequest("GET", "http://example.com", nil)
+		req.RemoteAddr = "203.0.113.7:54321"
+		req.Header.Set("X-Forwarded-For", "10.0.0."+string(rune('1'+i)))
+		_, lastResp = m.HandleRequest(req)
+	}
+
+	if lastResp == nil || lastResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatal("expected the limiter to reject once the burst is exhausted despite rotating X-Forwarded-For")
+	}
+}
+
+func TestRateLimit_MisconfiguredLimiterAllows(t *testing.T) {
+	m := NewRateLimitMiddleware(models.RateLimitSettings{Enabled: true, Interval: 0, MaxRequests: 0})
+	if !m.allow("203.0.113.7") {
+		t.Fatal("expected a misconfigured limiter to allow the request rather than deny everything")
+	}
+}

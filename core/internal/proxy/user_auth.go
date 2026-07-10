@@ -76,13 +76,19 @@ type UserAuthMiddleware struct {
 	// allowed, after which the request is served by the default pool chain.
 	legacy *AuthMiddleware
 
-	// mu guards both the user chain cache and defaultChain.
+	// mu guards the user chain cache, defaultChain and the proxy-user probe.
 	mu sync.RWMutex
 	// cache: username -> userEntry (TTL 60s)
 	cache map[string]userEntry
 	// defaultChain serves every request that does not map to a proxy user (the
 	// former legacy global-selector path). Rebuilt on settings reload.
 	defaultChain *PoolChain
+
+	// usersConfigured caches whether any proxy_users exist (TTL 30s), so the
+	// unauthenticated path can decide whether to reject without a DB round-trip
+	// on every request.
+	usersConfigured   bool
+	usersCheckedUntil time.Time
 }
 
 // NewUserAuthMiddleware creates the middleware.
@@ -127,16 +133,60 @@ func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *h
 		if chain, err := m.resolve(req.Context(), username, password); err == nil {
 			return m.withChain(req, chain, sessionToken), nil
 		} else {
-			m.logger.Warn("proxy-user auth failed; falling back to default pool", "username", username, "err", err)
+			m.logger.Warn("proxy-user auth failed", "username", username, "err", err)
 		}
 	}
 
-	// No proxy user matched (or no credentials). Apply the legacy single-user
-	// auth gate; if it allows the request, serve it from the default pool chain.
-	if _, resp := m.legacy.HandleRequest(req); resp != nil {
-		return req, resp
+	// No proxy user matched (or no credentials were supplied). The legacy
+	// single-user gate is the only other way in: when it is enforcing, let it
+	// authoritatively accept or reject.
+	if m.legacy != nil && m.legacy.IsEnabled() {
+		if _, resp := m.legacy.HandleRequest(req); resp != nil {
+			return req, resp
+		}
+		return m.withChain(req, m.getDefaultChain(), ""), nil
+	}
+
+	// Legacy auth is off, so it cannot vouch for this request. If proxy users
+	// are configured, serving the default chain here would let a client bypass
+	// per-user auth entirely by omitting or mistyping its credentials. Only a
+	// proxy with neither legacy auth nor proxy_users stays open.
+	if m.hasProxyUsers(req.Context()) {
+		return req, unauthorized()
 	}
 	return m.withChain(req, m.getDefaultChain(), ""), nil
+}
+
+// hasProxyUsers reports whether any proxy_users are configured, caching the
+// answer for 30s so the unauthenticated path stays off the DB. On a lookup
+// error the last known value is kept rather than failing open.
+func (m *UserAuthMiddleware) hasProxyUsers(ctx context.Context) bool {
+	m.mu.RLock()
+	fresh := time.Now().Before(m.usersCheckedUntil)
+	cached := m.usersConfigured
+	m.mu.RUnlock()
+	if fresh {
+		return cached
+	}
+
+	// Without a user repository per-user auth is not wired up at all, so there
+	// is nothing to bypass.
+	if m.userRepo == nil {
+		return false
+	}
+
+	users, err := m.userRepo.List(ctx)
+	if err != nil {
+		m.logger.Warn("could not determine whether proxy users are configured", "err", err)
+		return cached
+	}
+	has := len(users) > 0
+
+	m.mu.Lock()
+	m.usersConfigured = has
+	m.usersCheckedUntil = time.Now().Add(30 * time.Second)
+	m.mu.Unlock()
+	return has
 }
 
 // withChain attaches a PoolChain (and optional session token) to the request
@@ -198,6 +248,9 @@ func (m *UserAuthMiddleware) resolve(ctx context.Context, username, password str
 	}
 
 	// ── Slow path: full DB lookup + bcrypt (runs at most once per 60s per user) ──
+	if m.userRepo == nil {
+		return nil, fmt.Errorf("proxy user auth is not configured")
+	}
 	user, err := m.userRepo.Authenticate(ctx, username, password)
 	if err != nil {
 		return nil, err
@@ -253,24 +306,45 @@ func (m *UserAuthMiddleware) buildChain(ctx context.Context, user *models.ProxyU
 	return chain, nil
 }
 
-// refreshLoop periodically refreshes all cached chains so new proxies become available.
+// refreshLoop periodically refreshes the chains that are still live so new
+// proxies become available, and evicts entries whose TTL has passed so the
+// cache cannot grow without bound as users come and go.
 func (m *UserAuthMiddleware) refreshLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		now := time.Now()
+
 		m.mu.RLock()
-		entries := make(map[string]userEntry, len(m.cache))
+		live := make([]userEntry, 0, len(m.cache))
+		var expired []string
 		for k, v := range m.cache {
-			entries[k] = v
+			if now.After(v.expiresAt) {
+				expired = append(expired, k)
+				continue
+			}
+			live = append(live, v)
 		}
 		def := m.defaultChain
 		m.mu.RUnlock()
 
+		if len(expired) > 0 {
+			m.mu.Lock()
+			for _, k := range expired {
+				// Re-check under the write lock: the entry may have been
+				// refreshed by an in-flight request since the snapshot.
+				if e, ok := m.cache[k]; ok && now.After(e.expiresAt) {
+					delete(m.cache, k)
+				}
+			}
+			m.mu.Unlock()
+		}
+
 		if def != nil {
 			def.Refresh(ctx)
 		}
-		for _, entry := range entries {
+		for _, entry := range live {
 			entry.chain.Refresh(ctx)
 		}
 		cancel()

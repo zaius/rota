@@ -167,6 +167,34 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 	BidirectionalCopy(clientConn, upstreamConn)
 }
 
+// hopHeaders are the per-connection headers defined by RFC 7230 §6.1. They
+// describe a single hop and must never be forwarded in either direction. Keys
+// are in net/http canonical form, which is how they appear in a Header map.
+var hopHeaders = map[string]struct{}{
+	"Connection":          {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"Proxy-Connection":    {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+}
+
+// stripConnectionTokens deletes the headers that the Connection header names,
+// which RFC 7230 also makes hop-by-hop. It must run before Connection itself is
+// removed, or there is nothing left to read the token list from.
+func stripConnectionTokens(h http.Header) {
+	for _, value := range h.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			if token = strings.TrimSpace(token); token != "" {
+				h.Del(token)
+			}
+		}
+	}
+}
+
 // copyResponse writes an *http.Response to an http.ResponseWriter.
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	if resp == nil {
@@ -175,8 +203,15 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	}
 	defer resp.Body.Close()
 
-	// Copy headers
+	// Strip hop-by-hop headers so the upstream's per-connection state doesn't
+	// leak to the client. Transfer-Encoding in particular must not be forwarded:
+	// net/http frames the response body for us, and echoing it produces a
+	// malformed reply.
+	stripConnectionTokens(resp.Header)
 	for k, vv := range resp.Header {
+		if _, hop := hopHeaders[k]; hop {
+			continue
+		}
 		for _, v := range vv {
 			w.Header().Add(k, v)
 		}
@@ -192,24 +227,8 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 
 // removeHopByHopHeaders removes hop-by-hop headers that shouldn't be proxied
 func (h *UpstreamProxyHandler) removeHopByHopHeaders(req *http.Request) {
-	hopByHopHeaders := []string{
-		"Connection",
-		"Keep-Alive",
-		"Proxy-Authenticate",
-		"Proxy-Authorization",
-		"Te",
-		"Trailers",
-		"Transfer-Encoding",
-		"Upgrade",
-	}
-
-	for _, header := range hopByHopHeaders {
+	stripConnectionTokens(req.Header)
+	for header := range hopHeaders {
 		req.Header.Del(header)
-	}
-
-	if connections := req.Header.Get("Connection"); connections != "" {
-		for _, connection := range strings.Split(connections, ",") {
-			req.Header.Del(strings.TrimSpace(connection))
-		}
 	}
 }
