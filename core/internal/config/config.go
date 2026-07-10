@@ -172,14 +172,25 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// getEnvAsInt retrieves an environment variable as an integer or returns a default value
+// getEnvAsInt retrieves an environment variable as an integer or returns a
+// default value. A typo used to fall through to the default silently, which is
+// indistinguishable from not setting the variable at all. Every caller wants a
+// non-negative count or duration, so negatives are rejected too.
 func getEnvAsInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return intValue
-		}
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
 	}
-	return defaultValue
+	intValue, err := strconv.Atoi(value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: WARNING invalid integer for %s=%q (%v); using default %d\n", key, value, err, defaultValue)
+		return defaultValue
+	}
+	if intValue < 0 {
+		fmt.Fprintf(os.Stderr, "config: WARNING negative value for %s=%d not allowed; using default %d\n", key, intValue, defaultValue)
+		return defaultValue
+	}
+	return intValue
 }
 
 // getEnvAsBool accepts the usual truthy/falsy spellings (1/t/true/yes/on and
