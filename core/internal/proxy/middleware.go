@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
 	"net/http"
 	"strings"
@@ -79,8 +80,12 @@ func (m *AuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *http.
 	username := credentials[0]
 	password := credentials[1]
 
-	// Validate credentials
-	if username != m.username || password != m.password {
+	// Compare both fields in constant time. The results are combined with a
+	// bitwise AND rather than a short-circuiting ||, so the time taken does not
+	// reveal whether it was the username or the password that mismatched.
+	userMatch := subtle.ConstantTimeCompare([]byte(username), []byte(m.username))
+	passMatch := subtle.ConstantTimeCompare([]byte(password), []byte(m.password))
+	if userMatch&passMatch != 1 {
 		return req, m.unauthorized()
 	}
 
