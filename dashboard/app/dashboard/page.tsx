@@ -20,7 +20,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import { Button } from "@/components/ui/button"
-import { api } from "@/lib/api"
+import { api, type SocketHandle } from "@/lib/api"
 import { ChartRange, DashboardStats, TrafficPoint } from "@/lib/types"
 
 // Colors are validated (dataviz six checks) per mode: light mode uses the
@@ -101,7 +101,7 @@ export default function DashboardPage() {
   const [isLoading, setIsLoading] = React.useState(true)
 
   React.useEffect(() => {
-    let ws: WebSocket | null = null
+    let ws: SocketHandle | null = null
 
     const fetchStats = async () => {
       try {
