@@ -61,15 +61,11 @@ func connectViaHTTPStandalone(p *models.Proxy, host string, timeout time.Duratio
 		return nil, fmt.Errorf("send CONNECT to %s: %w", p.Address, err)
 	}
 
-	buf := make([]byte, 4096)
-	n, err := conn.Read(buf)
+	line, err := readCONNECTResponse(conn)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("read CONNECT response from %s: %w", p.Address, err)
 	}
-
-	resp := string(buf[:n])
-	line := strings.SplitN(resp, "\r\n", 2)[0]
 	if !strings.Contains(line, "200") {
 		conn.Close()
 		return nil, fmt.Errorf("CONNECT to %s rejected: %s", p.Address, line)
@@ -77,4 +73,44 @@ func connectViaHTTPStandalone(p *models.Proxy, host string, timeout time.Duratio
 
 	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
+}
+
+// readCONNECTResponse reads the proxy's CONNECT reply up to the end of the
+// header block and returns its status line, without consuming any byte that
+// belongs to the tunnelled stream.
+//
+// Reading into a large buffer swallows the first bytes of the target server's
+// TLS ServerHello whenever the proxy pipelines them straight after "200
+// Connection established": those bytes are then dropped on the floor and the
+// client's handshake stalls. A CONNECT response carries no body, so the header
+// terminator is a hard boundary — read one byte at a time and stop exactly on
+// it. The response is a few hundred bytes, so the extra syscalls do not matter.
+func readCONNECTResponse(conn net.Conn) (string, error) {
+	var buf []byte
+	b := make([]byte, 1)
+	for {
+		n, err := conn.Read(b)
+		if n > 0 {
+			buf = append(buf, b[0])
+			if l := len(buf); l >= 4 &&
+				buf[l-4] == '\r' && buf[l-3] == '\n' &&
+				buf[l-2] == '\r' && buf[l-1] == '\n' {
+				break
+			}
+			if len(buf) > 8192 {
+				return "", fmt.Errorf("CONNECT response headers too large")
+			}
+		}
+		if err != nil {
+			if len(buf) > 0 {
+				break // return what we have; the caller validates the status line
+			}
+			return "", err
+		}
+	}
+	statusLine := string(buf)
+	if idx := strings.Index(statusLine, "\r\n"); idx >= 0 {
+		statusLine = statusLine[:idx]
+	}
+	return statusLine, nil
 }
