@@ -22,7 +22,11 @@ type HealthChecker struct {
 	settingsRepo *repository.SettingsRepository
 	tracker      *UsageTracker
 	logger       *logger.Logger
-	settings     *models.HealthCheckSettings
+
+	// settingsMu guards settings, which the worker pool reads from many
+	// goroutines while CheckAllProxies replaces it.
+	settingsMu sync.RWMutex
+	settings   *models.HealthCheckSettings
 }
 
 // NewHealthChecker creates a new health checker
@@ -40,6 +44,47 @@ func NewHealthChecker(
 	}
 }
 
+// getSettings returns the cached settings snapshot, or nil if not yet loaded.
+// The returned struct is never mutated after publication, so callers may read
+// it without holding the lock.
+func (h *HealthChecker) getSettings() *models.HealthCheckSettings {
+	h.settingsMu.RLock()
+	defer h.settingsMu.RUnlock()
+	return h.settings
+}
+
+// setSettings publishes a new settings snapshot.
+func (h *HealthChecker) setSettings(s *models.HealthCheckSettings) {
+	h.settingsMu.Lock()
+	h.settings = s
+	h.settingsMu.Unlock()
+}
+
+// ensureSettings returns the cached settings, loading them once if absent.
+func (h *HealthChecker) ensureSettings(ctx context.Context) (*models.HealthCheckSettings, error) {
+	if s := h.getSettings(); s != nil {
+		return s, nil
+	}
+	settings, err := h.settingsRepo.GetAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load settings: %w", err)
+	}
+	hc := &settings.HealthCheck
+	h.setSettings(hc)
+	return hc, nil
+}
+
+// reloadSettings always re-reads settings from the repository and publishes them.
+func (h *HealthChecker) reloadSettings(ctx context.Context) (*models.HealthCheckSettings, error) {
+	settings, err := h.settingsRepo.GetAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load settings: %w", err)
+	}
+	hc := &settings.HealthCheck
+	h.setSettings(hc)
+	return hc, nil
+}
+
 // CheckProxy tests a single proxy using the configured health-check timeout.
 func (h *HealthChecker) CheckProxy(ctx context.Context, proxy *models.Proxy) (*models.ProxyTestResult, error) {
 	return h.checkProxy(ctx, proxy, 0)
@@ -51,16 +96,12 @@ func (h *HealthChecker) CheckProxy(ctx context.Context, proxy *models.Proxy) (*m
 func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, timeoutSecs int) (*models.ProxyTestResult, error) {
 	startTime := time.Now()
 
-	// Load settings if not cached
-	if h.settings == nil {
-		settings, err := h.settingsRepo.GetAll(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load settings: %w", err)
-		}
-		h.settings = &settings.HealthCheck
+	settings, err := h.ensureSettings(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	timeout := h.settings.Timeout
+	timeout := settings.Timeout
 	if timeoutSecs > 0 {
 		timeout = timeoutSecs
 	}
@@ -71,7 +112,10 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 		TestedAt: startTime,
 	}
 
-	// Create HTTP client with proxy
+	// Create HTTP client with proxy. This transport is built per check rather
+	// than taken from the shared cache, so its keep-alive connections have to be
+	// released here — a bulk test over thousands of proxies would otherwise hold
+	// a socket open for each one until the idle timeout expired.
 	transport, err := h.createTransport(proxy)
 	if err != nil {
 		result.Status = "failed"
@@ -79,6 +123,7 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 		result.Error = &errMsg
 		return result, nil
 	}
+	defer transport.CloseIdleConnections()
 
 	// Override TLS config for health checks to be maximally permissive
 	if transport.TLSClientConfig == nil {
@@ -100,7 +145,7 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 	}
 
 	// Create request
-	req, err := http.NewRequestWithContext(ctx, "GET", h.settings.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", settings.URL, nil)
 	if err != nil {
 		result.Status = "failed"
 		errMsg := fmt.Sprintf("failed to create request: %v", err)
@@ -109,7 +154,7 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 	}
 
 	// Add custom headers
-	for _, header := range h.settings.Headers {
+	for _, header := range settings.Headers {
 		parts := strings.SplitN(header, ":", 2)
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
@@ -149,9 +194,9 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 	defer resp.Body.Close()
 
 	// Check status code
-	if resp.StatusCode != h.settings.Status {
+	if resp.StatusCode != settings.Status {
 		result.Status = "failed"
-		errMsg := fmt.Sprintf("unexpected status code: got %d, expected %d", resp.StatusCode, h.settings.Status)
+		errMsg := fmt.Sprintf("unexpected status code: got %d, expected %d", resp.StatusCode, settings.Status)
 		result.Error = &errMsg
 
 		// Record health check failure
@@ -180,12 +225,10 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 
 // CheckAllProxies tests all proxies concurrently
 func (h *HealthChecker) CheckAllProxies(ctx context.Context) ([]models.ProxyTestResult, error) {
-	// Load settings
-	settings, err := h.settingsRepo.GetAll(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load settings: %w", err)
+	// Pick up any settings change since the last run.
+	if _, err := h.reloadSettings(ctx); err != nil {
+		return nil, err
 	}
-	h.settings = &settings.HealthCheck
 
 	// Get all proxies (including failed ones for re-testing)
 	proxies, err := h.proxyRepo.ListAll(ctx)
@@ -208,17 +251,14 @@ func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Prox
 		return []models.ProxyTestResult{}, nil
 	}
 
-	// Ensure settings are loaded (CheckProxy also lazy-loads, but we read
+	// Ensure settings are loaded (checkProxy also lazy-loads, but we read
 	// Workers here to size the pool).
-	if h.settings == nil {
-		settings, err := h.settingsRepo.GetAll(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load settings: %w", err)
-		}
-		h.settings = &settings.HealthCheck
+	settings, err := h.ensureSettings(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	workers := h.settings.Workers
+	workers := settings.Workers
 	if workers < 1 {
 		workers = 1
 	}
