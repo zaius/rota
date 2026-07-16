@@ -222,6 +222,9 @@ func (s *Server) setupMiddleware() {
 func (s *Server) setupRoutes() {
 	// ── Fully public routes ────────────────────────────────────────────────
 	s.router.Get("/health", s.healthHandler.Health)
+	// HEAD too — probes like wget --spider and some load balancers send HEAD,
+	// and chi would otherwise answer 405. net/http drops the body for HEAD.
+	s.router.Head("/health", s.healthHandler.Health)
 
 	// Auth: only login is public; everything else requires a valid JWT
 	// Auth rate limiter wraps the login handler — per-IP block + global lockout
