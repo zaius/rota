@@ -836,13 +836,13 @@ export default function PoolsPage() {
                 )}
               </div>
 
-              <div className="flex flex-col gap-1.5">
+              <div className="flex flex-col gap-1.5 min-w-0">
                 <Label>Rotation strategy</Label>
                 <Select
                   value={form.rotation_method}
                   onValueChange={v => setForm({ ...form, rotation_method: v as any })}
                 >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="roundrobin">Round Robin</SelectItem>
                     <SelectItem value="random">Random</SelectItem>
