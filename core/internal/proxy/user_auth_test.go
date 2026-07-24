@@ -7,89 +7,55 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"golang.org/x/crypto/bcrypt"
 )
 
-// After the engine collapse, a request that does not map to a proxy user is no
-// longer served by a separate legacy engine: the legacy single-user auth gate
-// decides whether it is allowed, and if so it is served by the default pool
-// chain. These tests cover that routing without a database.
-
-func TestUserAuth_NoCredsAuthDisabledUsesDefaultChain(t *testing.T) {
-	def := &PoolChain{}
-	m := &UserAuthMiddleware{
-		legacy:       NewAuthMiddleware(models.AuthenticationSettings{Enabled: false}),
-		defaultChain: def,
-		logger:       logger.New("error"),
-		cache:        map[string]userEntry{},
-	}
-
-	req := httptest.NewRequest("GET", "http://example.com/", nil)
-	got, resp := m.HandleRequest(req)
-	if resp != nil {
-		t.Fatalf("expected no rejection, got status %d", resp.StatusCode)
-	}
-	chain, ok := chainFromContext(got.Context())
-	if !ok || chain != def {
-		t.Fatal("expected the default pool chain to be attached to the request")
-	}
+func timeInAnHour() time.Time {
+	return time.Now().Add(time.Hour)
 }
 
-func TestUserAuth_NoCredsAuthEnabledRejects(t *testing.T) {
-	m := &UserAuthMiddleware{
-		legacy:       NewAuthMiddleware(models.AuthenticationSettings{Enabled: true, Username: "admin", Password: "secret"}),
-		defaultChain: &PoolChain{},
-		logger:       logger.New("error"),
-		cache:        map[string]userEntry{},
+func bcryptHashForTest(t *testing.T, password string) string {
+	t.Helper()
+	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt: %v", err)
 	}
-
-	req := httptest.NewRequest("GET", "http://example.com/", nil)
-	_, resp := m.HandleRequest(req)
-	if resp == nil || resp.StatusCode != http.StatusProxyAuthRequired {
-		t.Fatalf("expected 407 when auth is enabled and no credentials are provided, got %v", resp)
-	}
+	return string(h)
 }
 
-// withConfiguredProxyUsers primes the hasProxyUsers TTL cache so the auth path
-// can be exercised without a database behind userRepo.
-func withConfiguredProxyUsers(m *UserAuthMiddleware) *UserAuthMiddleware {
-	m.usersConfigured = true
-	m.usersCheckedUntil = time.Now().Add(time.Hour)
-	return m
-}
+// Per-user credentials are the only proxy auth: any request that does not
+// resolve to an enabled proxy user is rejected with 407 — including on a
+// deployment with no proxy users at all, which blocks rather than running an
+// open proxy. These tests cover that routing without a database.
 
 func basicProxyAuth(req *http.Request, username, password string) {
 	creds := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
 	req.Header.Set("Proxy-Authorization", "Basic "+creds)
 }
 
-// When proxy users are configured but legacy auth is off, an unauthenticated
-// request must not be served by the default chain — that would bypass per-user
-// auth entirely.
-func TestUserAuth_NoCredsWithProxyUsersRejects(t *testing.T) {
-	m := withConfiguredProxyUsers(&UserAuthMiddleware{
-		legacy:       NewAuthMiddleware(models.AuthenticationSettings{Enabled: false}),
-		defaultChain: &PoolChain{},
-		logger:       logger.New("error"),
-		cache:        map[string]userEntry{},
-	})
+func newTestUserAuthMw() *UserAuthMiddleware {
+	return &UserAuthMiddleware{
+		logger: logger.New("error"),
+		cache:  map[string]userEntry{},
+	}
+}
+
+func TestUserAuth_NoCredsRejects(t *testing.T) {
+	m := newTestUserAuthMw()
 
 	req := httptest.NewRequest("GET", "http://example.com/", nil)
 	_, resp := m.HandleRequest(req)
 	if resp == nil || resp.StatusCode != http.StatusProxyAuthRequired {
-		t.Fatalf("expected 407 when proxy users are configured and no credentials are provided, got %v", resp)
+		t.Fatalf("expected 407 without credentials, got %v", resp)
+	}
+	if resp.Header.Get("Proxy-Authenticate") == "" {
+		t.Fatal("expected a Proxy-Authenticate challenge on the 407")
 	}
 }
 
-// Same bypass, reached with credentials that do not resolve to a proxy user.
-func TestUserAuth_BadCredsWithProxyUsersRejects(t *testing.T) {
-	m := withConfiguredProxyUsers(&UserAuthMiddleware{
-		legacy:       NewAuthMiddleware(models.AuthenticationSettings{Enabled: false}),
-		defaultChain: &PoolChain{},
-		logger:       logger.New("error"),
-		cache:        map[string]userEntry{},
-	})
+func TestUserAuth_UnresolvedCredsRejects(t *testing.T) {
+	m := newTestUserAuthMw()
 
 	req := httptest.NewRequest("GET", "http://example.com/", nil)
 	basicProxyAuth(req, "nosuchuser", "wrongpassword")
@@ -99,25 +65,31 @@ func TestUserAuth_BadCredsWithProxyUsersRejects(t *testing.T) {
 	}
 }
 
-// Legacy auth still vouches for requests when it is enforcing, even while proxy
-// users exist: those requests are served by the default chain.
-func TestUserAuth_LegacyCredsWithProxyUsersUsesDefaultChain(t *testing.T) {
-	def := &PoolChain{}
-	m := withConfiguredProxyUsers(&UserAuthMiddleware{
-		legacy:       NewAuthMiddleware(models.AuthenticationSettings{Enabled: true, Username: "admin", Password: "secret"}),
-		defaultChain: def,
-		logger:       logger.New("error"),
-		cache:        map[string]userEntry{},
-	})
+// A resolved user's chain is attached to the request and the credentials are
+// stripped before forwarding. The cache stands in for the DB lookup.
+func TestUserAuth_ResolvedUserGetsChain(t *testing.T) {
+	m := newTestUserAuthMw()
+	chain := &PoolChain{}
+	m.cache["alice"] = userEntry{
+		chain:          chain,
+		expiresAt:      timeInAnHour(),
+		verifiedPwHash: bcryptHashForTest(t, "secret"),
+	}
 
 	req := httptest.NewRequest("GET", "http://example.com/", nil)
-	basicProxyAuth(req, "admin", "secret")
+	basicProxyAuth(req, "alice-session-job42", "secret")
 	got, resp := m.HandleRequest(req)
 	if resp != nil {
-		t.Fatalf("expected legacy credentials to be accepted, got status %d", resp.StatusCode)
+		t.Fatalf("expected valid credentials to be accepted, got status %d", resp.StatusCode)
 	}
-	chain, ok := chainFromContext(got.Context())
-	if !ok || chain != def {
-		t.Fatal("expected the default pool chain to be attached to the request")
+	c, ok := chainFromContext(got.Context())
+	if !ok || c != chain {
+		t.Fatal("expected the user's pool chain to be attached to the request")
+	}
+	if tok, _ := got.Context().Value(SessionTokenContextKey).(string); tok != "job42" {
+		t.Fatalf("expected the session token to be parsed from the username, got %q", tok)
+	}
+	if got.Header.Get("Proxy-Authorization") != "" {
+		t.Fatal("expected Proxy-Authorization to be stripped before forwarding")
 	}
 }

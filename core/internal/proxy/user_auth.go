@@ -60,8 +60,9 @@ type userEntry struct {
 
 // UserAuthMiddleware resolves Proxy-Authorization credentials against proxy_users.
 // When a matching enabled user is found it attaches a *PoolChain to the request context.
-// If user-based auth is not configured (no proxy_users) and the legacy single-user
-// auth is enabled, it falls through to the original AuthMiddleware behaviour.
+// Per-user credentials are the only proxy auth: a request that does not
+// resolve to an enabled proxy user is rejected, so a deployment without
+// proxy_users blocks all traffic rather than running an open proxy.
 type UserAuthMiddleware struct {
 	userRepo   *repository.UserRepository
 	poolRepo   *repository.PoolRepository
@@ -71,24 +72,10 @@ type UserAuthMiddleware struct {
 	domainCD   *DomainCooldownManager
 	tracker    *UsageTracker
 
-	// legacy is the original single-user auth gate. It no longer selects a
-	// separate engine: it only decides whether a no-proxy-user request is
-	// allowed, after which the request is served by the default pool chain.
-	legacy *AuthMiddleware
-
-	// mu guards the user chain cache, defaultChain and the proxy-user probe.
+	// mu guards the user chain cache.
 	mu sync.RWMutex
 	// cache: username -> userEntry (TTL 60s)
 	cache map[string]userEntry
-	// defaultChain serves every request that does not map to a proxy user (the
-	// former legacy global-selector path). Rebuilt on settings reload.
-	defaultChain *PoolChain
-
-	// usersConfigured caches whether any proxy_users exist (TTL 30s), so the
-	// unauthenticated path can decide whether to reject without a DB round-trip
-	// on every request.
-	usersConfigured   bool
-	usersCheckedUntil time.Time
 }
 
 // NewUserAuthMiddleware creates the middleware.
@@ -96,8 +83,6 @@ func NewUserAuthMiddleware(
 	userRepo *repository.UserRepository,
 	poolRepo *repository.PoolRepository,
 	db *database.DB,
-	legacy *AuthMiddleware,
-	rotSettings *models.RotationSettings,
 	sessionMgr *SessionManager,
 	domainCD *DomainCooldownManager,
 	tracker *UsageTracker,
@@ -107,24 +92,22 @@ func NewUserAuthMiddleware(
 		userRepo:   userRepo,
 		poolRepo:   poolRepo,
 		db:         db,
-		legacy:     legacy,
 		sessionMgr: sessionMgr,
 		domainCD:   domainCD,
 		tracker:    tracker,
 		logger:     log,
 		cache:      make(map[string]userEntry),
 	}
-	// Build the default pool chain (serves no-proxy-user traffic) and warm it.
-	m.defaultChain = NewDefaultPoolChain(db, rotSettings, sessionMgr, domainCD, tracker, log)
-	m.defaultChain.Refresh(context.Background())
-	// background goroutine: refresh the default chain + all cached user chains every 30s
+	// background goroutine: refresh all cached user chains every 30s
 	go m.refreshLoop()
 	return m
 }
 
 // HandleRequest is called for every HTTP proxy request.
 // It reads Proxy-Authorization, looks up the user, builds a PoolChain and stores
-// it in the request context so the handler can use it.
+// it in the request context so the handler can use it. Anything that does not
+// resolve to an enabled proxy user — missing credentials, wrong credentials,
+// or a deployment with no proxy users at all — is rejected with 407.
 func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *http.Response) {
 	rawUsername, password, ok := parseProxyAuth(req)
 	if ok {
@@ -136,57 +119,7 @@ func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *h
 			m.logger.Warn("proxy-user auth failed", "username", username, "err", err)
 		}
 	}
-
-	// No proxy user matched (or no credentials were supplied). The legacy
-	// single-user gate is the only other way in: when it is enforcing, let it
-	// authoritatively accept or reject.
-	if m.legacy != nil && m.legacy.IsEnabled() {
-		if _, resp := m.legacy.HandleRequest(req); resp != nil {
-			return req, resp
-		}
-		return m.withChain(req, m.getDefaultChain(), ""), nil
-	}
-
-	// Legacy auth is off, so it cannot vouch for this request. If proxy users
-	// are configured, serving the default chain here would let a client bypass
-	// per-user auth entirely by omitting or mistyping its credentials. Only a
-	// proxy with neither legacy auth nor proxy_users stays open.
-	if m.hasProxyUsers(req.Context()) {
-		return req, unauthorized()
-	}
-	return m.withChain(req, m.getDefaultChain(), ""), nil
-}
-
-// hasProxyUsers reports whether any proxy_users are configured, caching the
-// answer for 30s so the unauthenticated path stays off the DB. On a lookup
-// error the last known value is kept rather than failing open.
-func (m *UserAuthMiddleware) hasProxyUsers(ctx context.Context) bool {
-	m.mu.RLock()
-	fresh := time.Now().Before(m.usersCheckedUntil)
-	cached := m.usersConfigured
-	m.mu.RUnlock()
-	if fresh {
-		return cached
-	}
-
-	// Without a user repository per-user auth is not wired up at all, so there
-	// is nothing to bypass.
-	if m.userRepo == nil {
-		return false
-	}
-
-	users, err := m.userRepo.List(ctx)
-	if err != nil {
-		m.logger.Warn("could not determine whether proxy users are configured", "err", err)
-		return cached
-	}
-	has := len(users) > 0
-
-	m.mu.Lock()
-	m.usersConfigured = has
-	m.usersCheckedUntil = time.Now().Add(30 * time.Second)
-	m.mu.Unlock()
-	return has
+	return req, unauthorized()
 }
 
 // withChain attaches a PoolChain (and optional session token) to the request
@@ -199,23 +132,6 @@ func (m *UserAuthMiddleware) withChain(req *http.Request, chain *PoolChain, sess
 	req = req.WithContext(ctx)
 	req.Header.Del("Proxy-Authorization")
 	return req
-}
-
-// getDefaultChain returns the current default pool chain under a read lock.
-func (m *UserAuthMiddleware) getDefaultChain() *PoolChain {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.defaultChain
-}
-
-// RebuildDefaultChain replaces the default pool chain after a settings change
-// (e.g. a new global rotation method or filters) and warms it.
-func (m *UserAuthMiddleware) RebuildDefaultChain(ctx context.Context, settings *models.RotationSettings) {
-	chain := NewDefaultPoolChain(m.db, settings, m.sessionMgr, m.domainCD, m.tracker, m.logger)
-	chain.Refresh(ctx)
-	m.mu.Lock()
-	m.defaultChain = chain
-	m.mu.Unlock()
 }
 
 // HandleConnect is the same but for HTTPS CONNECT.
@@ -326,7 +242,6 @@ func (m *UserAuthMiddleware) refreshLoop() {
 			}
 			live = append(live, v)
 		}
-		def := m.defaultChain
 		m.mu.RUnlock()
 
 		if len(expired) > 0 {
@@ -341,9 +256,6 @@ func (m *UserAuthMiddleware) refreshLoop() {
 			m.mu.Unlock()
 		}
 
-		if def != nil {
-			def.Refresh(ctx)
-		}
 		for _, entry := range live {
 			entry.chain.Refresh(ctx)
 		}

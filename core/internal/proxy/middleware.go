@@ -1,116 +1,13 @@
 package proxy
 
 import (
-	"crypto/subtle"
-	"encoding/base64"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/alpkeskin/rota/core/internal/models"
 	"golang.org/x/time/rate"
 )
-
-// AuthMiddleware handles proxy authentication
-type AuthMiddleware struct {
-	enabled  bool
-	username string
-	password string
-	mu       sync.RWMutex
-}
-
-// NewAuthMiddleware creates a new authentication middleware
-func NewAuthMiddleware(settings models.AuthenticationSettings) *AuthMiddleware {
-	return &AuthMiddleware{
-		enabled:  settings.Enabled,
-		username: settings.Username,
-		password: settings.Password,
-	}
-}
-
-// IsEnabled reports whether legacy single-user auth is currently enforcing.
-func (m *AuthMiddleware) IsEnabled() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.enabled
-}
-
-// UpdateSettings updates the authentication settings
-func (m *AuthMiddleware) UpdateSettings(settings models.AuthenticationSettings) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.enabled = settings.Enabled
-	m.username = settings.Username
-	m.password = settings.Password
-}
-
-// HandleRequest validates proxy authentication for HTTP requests
-func (m *AuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *http.Response) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if !m.enabled {
-		return req, nil
-	}
-
-	// Check Proxy-Authorization header
-	proxyAuth := req.Header.Get("Proxy-Authorization")
-	if proxyAuth == "" {
-		return req, m.unauthorized()
-	}
-
-	// Parse Basic authentication
-	if !strings.HasPrefix(proxyAuth, "Basic ") {
-		return req, m.unauthorized()
-	}
-
-	encoded := strings.TrimPrefix(proxyAuth, "Basic ")
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return req, m.unauthorized()
-	}
-
-	// Split username:password
-	credentials := strings.SplitN(string(decoded), ":", 2)
-	if len(credentials) != 2 {
-		return req, m.unauthorized()
-	}
-
-	username := credentials[0]
-	password := credentials[1]
-
-	// Compare both fields in constant time. The results are combined with a
-	// bitwise AND rather than a short-circuiting ||, so the time taken does not
-	// reveal whether it was the username or the password that mismatched.
-	userMatch := subtle.ConstantTimeCompare([]byte(username), []byte(m.username))
-	passMatch := subtle.ConstantTimeCompare([]byte(password), []byte(m.password))
-	if userMatch&passMatch != 1 {
-		return req, m.unauthorized()
-	}
-
-	// Authentication successful, remove the header before forwarding
-	req.Header.Del("Proxy-Authorization")
-	return req, nil
-}
-
-// HandleConnect validates proxy authentication for HTTPS CONNECT requests
-func (m *AuthMiddleware) HandleConnect(req *http.Request) (*http.Request, *http.Response) {
-	return m.HandleRequest(req)
-}
-
-// unauthorized returns a 407 Proxy Authentication Required response
-func (m *AuthMiddleware) unauthorized() *http.Response {
-	resp := &http.Response{
-		StatusCode: http.StatusProxyAuthRequired,
-		ProtoMajor: 1,
-		ProtoMinor: 1,
-		Header:     make(http.Header),
-	}
-	resp.Header.Set("Proxy-Authenticate", `Basic realm="Rota Proxy"`)
-	return resp
-}
 
 // RateLimitMiddleware handles per-IP rate limiting
 type RateLimitMiddleware struct {

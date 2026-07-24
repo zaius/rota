@@ -23,14 +23,6 @@ type PoolSelector struct {
 	sessionMgr   *SessionManager
 	domainCD     *DomainCooldownManager
 
-	// Default-pool mode: when loadAll is true the selector is not scoped to a
-	// pool_proxies membership but draws from every active proxy, applying the
-	// global rotation filters below. This backs the no-proxy-user request path.
-	loadAll          bool
-	allowedProtocols []string
-	maxResponseTime  int
-	minSuccessRate   float64
-
 	mu          sync.Mutex
 	proxies     []*models.Proxy
 	rrIdx       int
@@ -62,9 +54,7 @@ func NewPoolSelector(db *database.DB, pool models.ProxyPool, sessionMgr *Session
 	}
 }
 
-// Refresh reloads the active/idle proxies this selector draws from — either the
-// pool's members, or (in default-pool mode) every active proxy that passes the
-// global rotation filters.
+// Refresh reloads the pool's active/idle member proxies.
 func (ps *PoolSelector) Refresh(ctx context.Context) error {
 	query, args := ps.refreshQuery()
 	rows, err := ps.db.Pool.Query(ctx, query, args...)
@@ -83,9 +73,6 @@ func (ps *PoolSelector) Refresh(ctx context.Context) error {
 		)
 		if err != nil {
 			return fmt.Errorf("pool selector scan: %w", err)
-		}
-		if ps.loadAll && !ps.passesFilters(&p) {
-			continue
 		}
 		proxies = append(proxies, &p)
 	}
@@ -117,20 +104,8 @@ func (ps *PoolSelector) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// refreshQuery returns the SQL (and args) used to load this selector's proxies:
-// all active proxies in default-pool mode, otherwise the pool's members.
+// refreshQuery returns the SQL (and args) used to load the pool's members.
 func (ps *PoolSelector) refreshQuery() (string, []any) {
-	if ps.loadAll {
-		return `
-			SELECT id, address, protocol, username, password,
-			       status, requests, successful_requests, failed_requests,
-			       avg_response_time, last_check, last_error, created_at, updated_at
-			FROM proxies
-			WHERE status IN ('active', 'idle')
-			  AND (cooldown_until IS NULL OR cooldown_until < NOW())
-			ORDER BY address
-		`, nil
-	}
 	return `
 		SELECT p.id, p.address, p.protocol, p.username, p.password,
 		       p.status, p.requests, p.successful_requests, p.failed_requests,
@@ -142,32 +117,6 @@ func (ps *PoolSelector) refreshQuery() (string, []any) {
 		  AND (p.cooldown_until IS NULL OR p.cooldown_until < NOW())
 		ORDER BY p.id
 	`, []any{ps.poolID}
-}
-
-// passesFilters applies the global rotation filters (default-pool mode only).
-func (ps *PoolSelector) passesFilters(p *models.Proxy) bool {
-	if len(ps.allowedProtocols) > 0 {
-		allowed := false
-		for _, proto := range ps.allowedProtocols {
-			if p.Protocol == proto {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return false
-		}
-	}
-	if ps.maxResponseTime > 0 && p.AvgResponseTime > ps.maxResponseTime {
-		return false
-	}
-	if ps.minSuccessRate > 0 && p.Requests > 0 {
-		rate := float64(p.SuccessfulRequests) / float64(p.Requests) * 100
-		if rate < ps.minSuccessRate {
-			return false
-		}
-	}
-	return true
 }
 
 // HasActive returns true if the pool currently has at least one active/idle proxy.

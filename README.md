@@ -39,7 +39,7 @@ Whether you're conducting web scraping operations, performing security research,
 - 🤖 **Automatic Management**: Real-time proxy pool monitoring with automatic unhealthy proxy removal
 - 🌍 **Multi-Protocol**: Full support for HTTP, HTTPS, SOCKS4, SOCKS4A, and SOCKS5
 - ✅ **Health Checking**: Built-in proxy validation to maintain a healthy pool
-- 🔒 **Authentication**: Basic auth support for proxy server
+- 🔒 **Authentication**: Per-user proxy credentials (bcrypt) with pool-based routing — requests that don't resolve to a proxy user are rejected, so the proxy is never open
 - ⚡ **Rate Limiting**: Configurable rate limiting to prevent abuse
 - 🔗 **Proxy Chaining**: Compatible with upstream proxies (Burp Suite, OWASP ZAP, etc.)
 - ⏱️ **Configurable Timeouts**: Fine-grained control over request timeouts and retries
@@ -239,16 +239,15 @@ npm run dev
 
 ### Testing the Proxy
 
-```bash
-# Route traffic through Rota proxy
-curl -x http://localhost:8000 https://api.ipify.org?format=json
+The proxy only serves authenticated proxy users — create one first in the dashboard (**Proxy Users → Add User**), then:
 
-# Per-user pool routing (after creating a Proxy User in the dashboard)
+```bash
+# Route traffic through Rota with your proxy-user credentials
 curl -x http://myuser:mypassword@localhost:8000 https://api.ipify.org?format=json
 
 # Using environment variables
-export HTTP_PROXY=http://localhost:8000
-export HTTPS_PROXY=http://localhost:8000
+export HTTP_PROXY=http://myuser:mypassword@localhost:8000
+export HTTPS_PROXY=http://myuser:mypassword@localhost:8000
 curl https://api.ipify.org?format=json
 ```
 
@@ -310,14 +309,7 @@ Rota is built as a modern monorepo with three main components:
 
 ### Rotation Strategies
 
-Global strategies (legacy single-pool mode):
-
-- **Random**: Select a random proxy for each request
-- **Round Robin**: Distribute requests evenly across all proxies
-- **Least Connections**: Route to the proxy with fewest active connections
-- **Time-Based**: Rotate proxies at fixed intervals
-
-Per-pool strategies (set on each pool via `rotation_method`):
+Rotation is configured per pool via `rotation_method`:
 
 - **`roundrobin`**: Cycle through the pool's proxies in order
 - **`random`**: Pick a random proxy from the pool each request

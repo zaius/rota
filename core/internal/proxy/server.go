@@ -27,7 +27,7 @@ type proxyRouter struct {
 // ServeHTTP dispatches incoming requests through the middleware chain
 // and routes them to the appropriate handler based on method.
 func (p *proxyRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// 1. User auth middleware (sets PoolChain in context or falls back to legacy)
+	// 1. User auth middleware (sets the user's PoolChain in context, or rejects)
 	r, reject := p.userAuthMw.HandleRequest(r)
 	if reject != nil {
 		writeHTTPResponse(w, reject)
@@ -76,22 +76,21 @@ func writeHTTPResponse(w http.ResponseWriter, resp *http.Response) {
 
 // Server represents the proxy server
 type Server struct {
-	router         *proxyRouter
-	server         *http.Server
-	logger         *logger.Logger
-	port           int
-	tracker        *UsageTracker
-	handler        *UpstreamProxyHandler
-	authMiddleware *AuthMiddleware
-	userAuthMw     *UserAuthMiddleware
-	rateLimitMw    *RateLimitMiddleware
-	proxyRepo      *repository.ProxyRepository
-	settingsRepo   *repository.SettingsRepository
-	sessionMgr     *SessionManager
-	domainCD       *DomainCooldownManager
-	refreshTicker  *time.Ticker
-	cleanupTicker  *time.Ticker
-	stopChan       chan struct{}
+	router        *proxyRouter
+	server        *http.Server
+	logger        *logger.Logger
+	port          int
+	tracker       *UsageTracker
+	handler       *UpstreamProxyHandler
+	userAuthMw    *UserAuthMiddleware
+	rateLimitMw   *RateLimitMiddleware
+	proxyRepo     *repository.ProxyRepository
+	settingsRepo  *repository.SettingsRepository
+	sessionMgr    *SessionManager
+	domainCD      *DomainCooldownManager
+	refreshTicker *time.Ticker
+	cleanupTicker *time.Ticker
+	stopChan      chan struct{}
 }
 
 // New creates a new proxy server instance
@@ -134,14 +133,13 @@ func New(
 	handler := NewUpstreamProxyHandler(&settings.Rotation, log)
 
 	// Create middlewares
-	authMiddleware := NewAuthMiddleware(settings.Authentication)
 	rateLimitMw := NewRateLimitMiddleware(settings.RateLimit)
 
 	// Session manager for "session" rotation (process-wide, survives chain rebuilds)
 	sessionMgr := NewSessionManager()
 
 	// Create user-aware auth middleware (pool-based routing)
-	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, authMiddleware, &settings.Rotation, sessionMgr, domainCD, tracker, log)
+	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, sessionMgr, domainCD, tracker, log)
 
 	// Create the proxy router
 	router := &proxyRouter{
@@ -161,20 +159,19 @@ func New(
 	}
 
 	s := &Server{
-		router:         router,
-		server:         httpServer,
-		logger:         log,
-		port:           port,
-		tracker:        tracker,
-		handler:        handler,
-		authMiddleware: authMiddleware,
-		userAuthMw:     userAuthMw,
-		rateLimitMw:    rateLimitMw,
-		proxyRepo:      proxyRepo,
-		settingsRepo:   settingsRepo,
-		sessionMgr:     sessionMgr,
-		domainCD:       domainCD,
-		stopChan:       make(chan struct{}),
+		router:       router,
+		server:       httpServer,
+		logger:       log,
+		port:         port,
+		tracker:      tracker,
+		handler:      handler,
+		userAuthMw:   userAuthMw,
+		rateLimitMw:  rateLimitMw,
+		proxyRepo:    proxyRepo,
+		settingsRepo: settingsRepo,
+		sessionMgr:   sessionMgr,
+		domainCD:     domainCD,
+		stopChan:     make(chan struct{}),
 	}
 
 	// Start background tasks
@@ -192,10 +189,10 @@ func (s *Server) startBackgroundTasks() {
 			select {
 			case <-s.refreshTicker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				// Proxy lists are refreshed by UserAuthMiddleware (default + per-user
-				// chains). Here we only re-sync domain cooldowns from the DB so the
-				// in-memory view tracks expirations and cooldowns set by other
-				// instances.
+				// Proxy lists are refreshed by UserAuthMiddleware (per-user
+				// chains). Here we only re-sync domain cooldowns from the DB so
+				// the in-memory view tracks expirations and cooldowns set by
+				// other instances.
 				if s.domainCD != nil {
 					if cooldowns, err := s.proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
 						s.logger.Error("failed to refresh domain cooldowns", "error", err)
@@ -367,15 +364,10 @@ func (s *Server) ReloadSettings(ctx context.Context) error {
 	}
 
 	// Update middleware settings
-	s.authMiddleware.UpdateSettings(settings.Authentication)
 	s.rateLimitMw.UpdateSettings(settings.RateLimit)
 
 	// Update handler settings (atomic publish; read concurrently on the hot path)
 	s.handler.setSettings(&settings.Rotation)
-
-	// Rebuild the default pool chain so global rotation-method/filter changes take
-	// effect. Per-user chains pick up rotation settings on their own refresh.
-	s.userAuthMw.RebuildDefaultChain(ctx, &settings.Rotation)
 
 	s.logger.Info("settings reloaded successfully")
 	return nil

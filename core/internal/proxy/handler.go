@@ -20,9 +20,8 @@ import (
 const ProxyIDHeader = "X-Rota-Proxy-Id"
 
 // UpstreamProxyHandler forwards proxy requests through the PoolChain that
-// UserAuthMiddleware attaches to each request — either a per-user chain or the
-// default pool chain for unauthenticated/legacy traffic. There is only one
-// request engine now (the pool chain); the former global-selector path is gone.
+// UserAuthMiddleware attaches to each request (always the authenticated proxy
+// user's chain — unauthenticated traffic is rejected before it gets here).
 // Request recording lives in the chain, which knows the serving pool, the
 // user, and per-attempt timing.
 //
@@ -56,8 +55,8 @@ func (h *UpstreamProxyHandler) setSettings(s *models.RotationSettings) {
 }
 
 // chainFromContext returns the PoolChain UserAuthMiddleware attached to the
-// request. A chain is always present in normal operation (the default pool
-// backs no-user traffic); a missing chain indicates a routing bug.
+// request. A chain is always present in normal operation (unauthenticated
+// requests are rejected upstream); a missing chain indicates a routing bug.
 func chainFromContext(ctx context.Context) (*PoolChain, bool) {
 	chain, ok := ctx.Value(UserChainContextKey).(*PoolChain)
 	return chain, ok && chain != nil

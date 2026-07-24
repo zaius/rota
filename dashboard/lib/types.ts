@@ -115,11 +115,6 @@ export interface SystemMetrics {
 }
 
 export interface Settings {
-  authentication: {
-    enabled: boolean
-    username: string
-    password: string
-  }
   rotation: {
     method: "random" | "roundrobin" | "least_conn" | "time_based"
     time_based?: {
