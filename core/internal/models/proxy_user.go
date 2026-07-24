@@ -55,3 +55,14 @@ type proxyUserContextKey struct{}
 
 // ProxyUserContextKey is the exported key for request context
 var ProxyUserContextKey = proxyUserContextKey{}
+
+// PoolIDs returns every pool the user is assigned to: the main pool followed
+// by the fallbacks. This is the scope a proxy-user-authenticated API call may
+// act on.
+func (u *ProxyUser) PoolIDs() []int {
+	ids := make([]int, 0, len(u.FallbackPoolIDs)+1)
+	if u.MainPoolID != nil {
+		ids = append(ids, *u.MainPoolID)
+	}
+	return append(ids, u.FallbackPoolIDs...)
+}

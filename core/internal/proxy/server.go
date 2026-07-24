@@ -283,6 +283,15 @@ func (s *Server) ReleaseSessionToken(token string) int {
 	return s.sessionMgr.ReleaseToken(token)
 }
 
+// ReleaseSessionTokenInPools drops a sticky session's bindings restricted to
+// the given pools. Returns the count of bindings removed.
+func (s *Server) ReleaseSessionTokenInPools(token string, poolIDs []int) int {
+	if s.sessionMgr == nil {
+		return 0
+	}
+	return s.sessionMgr.ReleaseTokenInPools(token, poolIDs)
+}
+
 // SessionsForToken returns the live sticky-session bindings for a token across
 // all pools.
 func (s *Server) SessionsForToken(token string) []SessionInfo {

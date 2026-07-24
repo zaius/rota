@@ -19,6 +19,7 @@ type fakeProxyServer struct {
 
 	releasedPool   []int    // pool IDs passed to ReleaseSession
 	releasedTokens []string // tokens passed to ReleaseSessionToken
+	releasedScoped [][]int  // pool scopes passed to ReleaseSessionTokenInPools
 }
 
 func (f *fakeProxyServer) ReloadSettings(ctx context.Context) error { return nil }
@@ -42,6 +43,10 @@ func (f *fakeProxyServer) ReleaseSessionToken(token string) int {
 	f.releasedTokens = append(f.releasedTokens, token)
 	return 1
 }
+func (f *fakeProxyServer) ReleaseSessionTokenInPools(token string, poolIDs []int) int {
+	f.releasedScoped = append(f.releasedScoped, poolIDs)
+	return 1
+}
 func (f *fakeProxyServer) SetDomainCooldown(proxyID int, domain string, until time.Time, reason string) {
 }
 func (f *fakeProxyServer) ClearDomainCooldown(proxyID int, domain string) bool { return false }
@@ -49,9 +54,14 @@ func (f *fakeProxyServer) ClearProxyDomainCooldowns(proxyID int) int           {
 func (f *fakeProxyServer) ListDomainCooldowns() []models.ProxyDomainCooldown   { return nil }
 
 func newTestControlHandler(ps ProxyServer) *ProxyControlHandler {
-	h := NewProxyControlHandler(nil, logger.New("error"))
+	h := NewProxyControlHandler(nil, nil, logger.New("error"))
 	h.SetProxyServer(ps)
 	return h
+}
+
+func asProxyUser(r *http.Request, mainPool int, fallbacks ...int) *http.Request {
+	u := &models.ProxyUser{ID: 1, Username: "alice", MainPoolID: &mainPool, FallbackPoolIDs: fallbacks}
+	return r.WithContext(context.WithValue(r.Context(), models.ProxyUserContextKey, u))
 }
 
 func TestInvalidateSession_UnknownTokenNotFound(t *testing.T) {
@@ -78,7 +88,82 @@ func TestInvalidateSession_TokenRequired(t *testing.T) {
 	}
 }
 
-func TestReleaseSession_ReleasesGlobally(t *testing.T) {
+// A proxy user must not see (or invalidate) sessions bound in pools outside its
+// own chain; out-of-scope bindings read as not found.
+func TestInvalidateSession_ProxyUserOutOfScopeIsNotFound(t *testing.T) {
+	ps := &fakeProxyServer{sessions: []proxy.SessionInfo{
+		{PoolID: 99, Token: "job42", ProxyID: 7},
+	}}
+	h := newTestControlHandler(ps)
+
+	req := httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(`{"token":"job42"}`))
+	req = asProxyUser(req, 1, 2)
+	w := httptest.NewRecorder()
+	h.InvalidateSession(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for a session outside the user's pools, got %d", w.Code)
+	}
+}
+
+func TestReleaseSession_ProxyUserForeignPoolForbidden(t *testing.T) {
+	ps := &fakeProxyServer{}
+	h := newTestControlHandler(ps)
+
+	req := httptest.NewRequest("POST", "/sessions/release", strings.NewReader(`{"token":"job42","pool_id":99}`))
+	req = asProxyUser(req, 1, 2)
+	w := httptest.NewRecorder()
+	h.ReleaseSession(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 releasing in a foreign pool, got %d", w.Code)
+	}
+	if len(ps.releasedPool) != 0 {
+		t.Fatal("nothing must be released on a forbidden request")
+	}
+}
+
+func TestReleaseSession_ProxyUserOwnPoolAllowed(t *testing.T) {
+	ps := &fakeProxyServer{}
+	h := newTestControlHandler(ps)
+
+	req := httptest.NewRequest("POST", "/sessions/release", strings.NewReader(`{"token":"job42","pool_id":2}`))
+	req = asProxyUser(req, 1, 2)
+	w := httptest.NewRecorder()
+	h.ReleaseSession(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 releasing in an own pool, got %d", w.Code)
+	}
+	if len(ps.releasedPool) != 1 || ps.releasedPool[0] != 2 {
+		t.Fatalf("expected release in pool 2, got %v", ps.releasedPool)
+	}
+}
+
+// Without a pool_id, a proxy user's release is scoped to its own pools rather
+// than released globally.
+func TestReleaseSession_ProxyUserWithoutPoolScopedToOwnPools(t *testing.T) {
+	ps := &fakeProxyServer{}
+	h := newTestControlHandler(ps)
+
+	req := httptest.NewRequest("POST", "/sessions/release", strings.NewReader(`{"token":"job42"}`))
+	req = asProxyUser(req, 1, 2)
+	w := httptest.NewRecorder()
+	h.ReleaseSession(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(ps.releasedTokens) != 0 {
+		t.Fatal("a proxy user must not trigger a global release")
+	}
+	if len(ps.releasedScoped) != 1 || len(ps.releasedScoped[0]) != 2 {
+		t.Fatalf("expected a release scoped to the user's two pools, got %v", ps.releasedScoped)
+	}
+}
+
+// Admin (no proxy user in context) keeps the global release behaviour.
+func TestReleaseSession_AdminReleasesGlobally(t *testing.T) {
 	ps := &fakeProxyServer{}
 	h := newTestControlHandler(ps)
 

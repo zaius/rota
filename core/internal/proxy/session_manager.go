@@ -131,6 +131,26 @@ func (m *SessionManager) ReleaseToken(token string) int {
 	return n
 }
 
+// ReleaseTokenInPools drops the token's bindings restricted to the given pools.
+// Returns the number of bindings removed. Used when the caller (a proxy user)
+// is only allowed to touch sessions in its own pools.
+func (m *SessionManager) ReleaseTokenInPools(token string, poolIDs []int) int {
+	allowed := make(map[int]bool, len(poolIDs))
+	for _, id := range poolIDs {
+		allowed[id] = true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for key, e := range m.sessions {
+		if e.token == token && allowed[e.poolID] {
+			delete(m.sessions, key)
+			n++
+		}
+	}
+	return n
+}
+
 // FindByToken returns the live (non-expired) bindings for a session token
 // across all pools.
 func (m *SessionManager) FindByToken(token string) []SessionInfo {

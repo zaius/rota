@@ -20,6 +20,24 @@ func NewPoolRepository(db *database.DB) *PoolRepository {
 	return &PoolRepository{db: db}
 }
 
+// ProxyInPools reports whether the proxy is a member of any of the given
+// pools. Used to scope proxy-user-authenticated control calls to the caller's
+// own pools.
+func (r *PoolRepository) ProxyInPools(ctx context.Context, proxyID int, poolIDs []int) (bool, error) {
+	if len(poolIDs) == 0 {
+		return false, nil
+	}
+	var ok bool
+	err := r.db.Pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM pool_proxies WHERE proxy_id = $1 AND pool_id = ANY($2))`,
+		proxyID, poolIDs,
+	).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check proxy pool membership: %w", err)
+	}
+	return ok, nil
+}
+
 // poolColumns is the canonical SELECT column list (without aggregates)
 const poolColumns = `
 	pp.id, pp.name, pp.description,

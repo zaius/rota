@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/golang-jwt/jwt/v5"
@@ -64,6 +67,60 @@ func JWTMiddleware(secret string) func(next http.Handler) http.Handler {
 			}
 
 			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// JWTOrProxyUserMiddleware authorizes a request either with an admin JWT
+// (exactly like JWTMiddleware) or with HTTP Basic credentials of an enabled
+// proxy user. It guards the client-control endpoints (invalidate, session
+// release), so a scraper holding only its proxy credentials can report a
+// burned proxy without an admin token.
+//
+// Proxy-user requests get the authenticated *models.ProxyUser attached to the
+// context under models.ProxyUserContextKey; handlers use it to scope what the
+// caller may touch to its own pools. Admin requests carry no proxy user.
+//
+// A present-but-invalid credential of either kind is rejected outright rather
+// than falling through to the other scheme, and failures return 401 so the
+// surrounding brute-force limiter counts them.
+func JWTOrProxyUserMiddleware(secret string, userRepo *repository.UserRepository, log *logger.Logger) func(next http.Handler) http.Handler {
+	key := []byte(secret)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 1. Admin JWT (Bearer header or ?token= query param)
+			if tokenStr := extractToken(r); tokenStr != "" {
+				token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+					if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+						return nil, jwt.ErrSignatureInvalid
+					}
+					return key, nil
+				})
+				if err != nil || !token.Valid {
+					w.Header().Set("Content-Type", "application/json")
+					http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// 2. Proxy-user Basic credentials
+			if username, password, ok := r.BasicAuth(); ok {
+				user, err := userRepo.Authenticate(r.Context(), username, password)
+				if err != nil || user == nil {
+					log.Warn("proxy-user API auth failed", "username", username)
+					w.Header().Set("Content-Type", "application/json")
+					http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+					return
+				}
+				ctx := context.WithValue(r.Context(), models.ProxyUserContextKey, user)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			http.Error(w, `{"error":"authorization required"}`, http.StatusUnauthorized)
 		})
 	}
 }
