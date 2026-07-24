@@ -14,21 +14,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import {
   RotateCw,
   Gauge,
   Activity,
   Save,
   Loader2,
   Database,
-  ChevronDown,
   KeyRound,
   Eye,
   EyeOff,
@@ -236,250 +227,51 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Proxy Rotation Settings - Full Width (Most Important) */}
+      {/* Upstream request behaviour — rotation strategy itself is per pool */}
       <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
               <RotateCw className="h-5 w-5" />
-              <CardTitle>Proxy Rotation</CardTitle>
+              <CardTitle>Upstream Requests</CardTitle>
             </div>
             <CardDescription>
-              Configure proxy rotation strategy and behavior
+              Request handling applied to every pool. Rotation strategy is configured per pool on the Proxy Pools page.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid gap-6 md:grid-cols-2">
-              {/* Left Column */}
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="rotation-method">Rotation Method</Label>
-                  <Select
-                    value={settings.rotation.method}
-                    onValueChange={(value: any) =>
-                      setSettings({
-                        ...settings,
-                        rotation: { ...settings.rotation, method: value },
-                      })
-                    }
-                  >
-                    <SelectTrigger id="rotation-method">
-                      <SelectValue placeholder="Select method" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="random">Random</SelectItem>
-                      <SelectItem value="roundrobin">Round Robin</SelectItem>
-                      <SelectItem value="least_conn">Least Connections</SelectItem>
-                      <SelectItem value="time_based">Time Based</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {settings.rotation.method === "time_based" && (
-                  <div className="space-y-2">
-                    <Label htmlFor="rotation-interval">Time Based Interval (seconds)</Label>
-                    <Input
-                      id="rotation-interval"
-                      type="number"
-                      value={settings.rotation.time_based?.interval || 120}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          rotation: {
-                            ...settings.rotation,
-                            time_based: { interval: parseInt(e.target.value) },
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                )}
-
-                <div className="space-y-2">
-                  <Label htmlFor="rotation-timeout">Timeout (seconds)</Label>
-                  <Input
-                    id="rotation-timeout"
-                    type="number"
-                    value={settings.rotation.timeout}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        rotation: { ...settings.rotation, timeout: parseInt(e.target.value) },
-                      })
-                    }
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="rotation-retries">Retries</Label>
-                  <Input
-                    id="rotation-retries"
-                    type="number"
-                    value={settings.rotation.retries}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        rotation: { ...settings.rotation, retries: parseInt(e.target.value) },
-                      })
-                    }
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="fallback-retries">Fallback Max Retries</Label>
-                  <Input
-                    id="fallback-retries"
-                    type="number"
-                    value={settings.rotation.fallback_max_retries}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        rotation: { ...settings.rotation, fallback_max_retries: parseInt(e.target.value) },
-                      })
-                    }
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="max-response-time">Max Response Time (ms)</Label>
-                  <Input
-                    id="max-response-time"
-                    type="number"
-                    value={settings.rotation.max_response_time || 0}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        rotation: { ...settings.rotation, max_response_time: parseInt(e.target.value) || 0 },
-                      })
-                    }
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    0 means no limit. Only use proxies faster than this.
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="min-success-rate">Min Success Rate (%)</Label>
-                  <Input
-                    id="min-success-rate"
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={settings.rotation.min_success_rate || 0}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        rotation: { ...settings.rotation, min_success_rate: parseFloat(e.target.value) || 0 },
-                      })
-                    }
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    0 means no minimum. Only use proxies with success rate above this.
-                  </p>
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="rotation-timeout">Timeout (seconds)</Label>
+                <Input
+                  id="rotation-timeout"
+                  type="number"
+                  value={settings.rotation.timeout}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      rotation: { ...settings.rotation, timeout: parseInt(e.target.value) },
+                    })
+                  }
+                />
               </div>
 
-              {/* Right Column */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="remove-unhealthy">Remove Unhealthy</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Remove unhealthy proxies from rotation
-                    </p>
-                  </div>
-                  <Switch
-                    id="remove-unhealthy"
-                    checked={settings.rotation.remove_unhealthy}
-                    onCheckedChange={(checked) =>
-                      setSettings({
-                        ...settings,
-                        rotation: { ...settings.rotation, remove_unhealthy: checked },
-                      })
-                    }
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="fallback">Enable Fallback</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Continuous operation in case of failures
-                    </p>
-                  </div>
-                  <Switch
-                    id="fallback"
-                    checked={settings.rotation.fallback}
-                    onCheckedChange={(checked) =>
-                      setSettings({
-                        ...settings,
-                        rotation: { ...settings.rotation, fallback: checked },
-                      })
-                    }
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="follow-redirect">Follow Redirect</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Follow HTTP redirections
-                    </p>
-                  </div>
-                  <Switch
-                    id="follow-redirect"
-                    checked={settings.rotation.follow_redirect}
-                    onCheckedChange={(checked) =>
-                      setSettings({
-                        ...settings,
-                        rotation: { ...settings.rotation, follow_redirect: checked },
-                      })
-                    }
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Allowed Protocols</Label>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="outline" className="w-full justify-between">
-                        <span>
-                          {settings.rotation.allowed_protocols?.length === 5
-                            ? "All Protocols"
-                            : settings.rotation.allowed_protocols?.length > 0
-                            ? `${settings.rotation.allowed_protocols.length} selected`
-                            : "Select protocols"}
-                        </span>
-                        <ChevronDown className="ml-2 h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent className="w-56">
-                      <DropdownMenuLabel>Select Protocols</DropdownMenuLabel>
-                      <DropdownMenuSeparator />
-                      {["http", "https", "socks4", "socks4a", "socks5"].map((protocol) => (
-                        <DropdownMenuCheckboxItem
-                          key={protocol}
-                          checked={settings.rotation.allowed_protocols?.includes(protocol)}
-                          onCheckedChange={(checked) => {
-                            const current = settings.rotation.allowed_protocols || [];
-                            const updated = checked
-                              ? [...current, protocol]
-                              : current.filter(p => p !== protocol);
-                            setSettings({
-                              ...settings,
-                              rotation: { ...settings.rotation, allowed_protocols: updated },
-                            });
-                          }}
-                        >
-                          {protocol.toUpperCase()}
-                        </DropdownMenuCheckboxItem>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label htmlFor="follow-redirect">Follow Redirect</Label>
                   <p className="text-xs text-muted-foreground">
-                    Select which protocols to use for proxy rotation
+                    Follow HTTP redirections
                   </p>
                 </div>
+                <Switch
+                  id="follow-redirect"
+                  checked={settings.rotation.follow_redirect}
+                  onCheckedChange={(checked) =>
+                    setSettings({
+                      ...settings,
+                      rotation: { ...settings.rotation, follow_redirect: checked },
+                    })
+                  }
+                />
               </div>
             </div>
           </CardContent>

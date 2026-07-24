@@ -128,19 +128,8 @@ func (r *SettingsRepository) UpdateAll(ctx context.Context, settings *models.Set
 func defaultSettings() map[string]map[string]any {
 	return map[string]map[string]any{
 		"rotation": {
-			"method": "random",
-			"time_based": map[string]any{
-				"interval": 120,
-			},
-			"remove_unhealthy":     true,
-			"fallback":             true,
-			"fallback_max_retries": 10,
-			"follow_redirect":      false,
-			"timeout":              90,
-			"retries":              3,
-			"allowed_protocols":    []string{"http", "https", "socks5"}, // empty/all allowed by default
-			"max_response_time":    0,                                   // 0 means no limit
-			"min_success_rate":     0.0,                                 // 0 means no minimum
+			"follow_redirect": false,
+			"timeout":         90,
 		},
 		"rate_limit": {
 			"enabled":      false,

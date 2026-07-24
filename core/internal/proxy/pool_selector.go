@@ -14,27 +14,19 @@ import (
 // PoolSelector selects a proxy from a specific pool using the pool's rotation strategy.
 // It keeps in-memory state (round-robin index, stick counters) per pool instance.
 type PoolSelector struct {
-	db           *database.DB
-	poolID       int
-	method       string // roundrobin | random | stick | session | least_conn | time_based
-	stick        int    // stick_count
-	sessionTTL   time.Duration
-	timeInterval time.Duration // time_based interval (0 → default 120s)
-	sessionMgr   *SessionManager
-	domainCD     *DomainCooldownManager
+	db         *database.DB
+	poolID     int
+	method     string // roundrobin | random | stick | session
+	stick      int    // stick_count
+	sessionTTL time.Duration
+	sessionMgr *SessionManager
+	domainCD   *DomainCooldownManager
 
 	mu          sync.Mutex
 	proxies     []*models.Proxy
 	rrIdx       int
 	stickIdx    int
 	stickServed int
-
-	// useCounts tracks how often each proxy was selected by this selector
-	// since process start. least_conn balances on it — an in-memory
-	// approximation of current load, instead of the lifetime request totals
-	// it used to read from the database (which are now event-window-derived
-	// and refreshed out-of-band).
-	useCounts map[int]int64
 }
 
 // NewPoolSelector creates a PoolSelector for the given pool.
@@ -87,19 +79,6 @@ func (ps *PoolSelector) Refresh(ctx context.Context) error {
 		ps.stickIdx = 0
 		ps.stickServed = 0
 	}
-	// drop usage counts for proxies that left the set, so the map doesn't
-	// accumulate dead IDs across refreshes
-	if ps.useCounts != nil {
-		current := make(map[int]bool, len(proxies))
-		for _, p := range proxies {
-			current[p.ID] = true
-		}
-		for id := range ps.useCounts {
-			if !current[id] {
-				delete(ps.useCounts, id)
-			}
-		}
-	}
 	ps.mu.Unlock()
 	return nil
 }
@@ -140,15 +119,7 @@ func (ps *PoolSelector) Select(ctx context.Context) (*models.Proxy, error) {
 
 	host, _ := ctx.Value(TargetHostContextKey).(string)
 
-	p, err := ps.selectLocked(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	if ps.useCounts == nil {
-		ps.useCounts = make(map[int]int64)
-	}
-	ps.useCounts[p.ID]++
-	return p, nil
+	return ps.selectLocked(ctx, host)
 }
 
 // selectLocked dispatches to the pool's rotation method. Caller must hold
@@ -230,43 +201,6 @@ func (ps *PoolSelector) selectLocked(ctx context.Context, host string) (*models.
 			}
 		}
 		return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
-
-	case "least_conn", "least-conn", "least_connections":
-		// Pick the eligible proxy this selector has used least (see
-		// useCounts) — current-process load, not lifetime totals.
-		var best *models.Proxy
-		var bestCount int64
-		for _, p := range ps.proxies {
-			if ps.cooledForHost(p.ID, host) {
-				continue
-			}
-			if c := ps.useCounts[p.ID]; best == nil || c < bestCount {
-				best, bestCount = p, c
-			}
-		}
-		if best == nil {
-			return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
-		}
-		return best, nil
-
-	case "time_based", "time-based":
-		// Rotate to a new proxy every interval; all requests in the same window
-		// map to the same proxy. Cooled proxies are excluded from the window set.
-		interval := ps.timeInterval
-		if interval <= 0 {
-			interval = 120 * time.Second
-		}
-		var eligible []*models.Proxy
-		for _, p := range ps.proxies {
-			if !ps.cooledForHost(p.ID, host) {
-				eligible = append(eligible, p)
-			}
-		}
-		if len(eligible) == 0 {
-			return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
-		}
-		idx := int(time.Now().Unix()/int64(interval.Seconds())) % len(eligible)
-		return eligible[idx], nil
 
 	default: // roundrobin
 		return ps.nextRoundRobinLocked(host)

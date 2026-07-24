@@ -13,24 +13,13 @@ type Settings struct {
 	ProxyCleanup ProxyCleanupSettings `json:"proxy_cleanup"`
 }
 
-// RotationSettings represents proxy rotation configuration
+// RotationSettings holds the per-request behaviour that applies to every pool
+// chain. Rotation strategy itself is configured per pool (rotation_method);
+// the former global method/filter settings served only the removed
+// unauthenticated default chain.
 type RotationSettings struct {
-	Method             string            `json:"method"`
-	TimeBased          TimeBasedSettings `json:"time_based,omitempty"`
-	RemoveUnhealthy    bool              `json:"remove_unhealthy"`
-	Fallback           bool              `json:"fallback"`
-	FallbackMaxRetries int               `json:"fallback_max_retries"`
-	FollowRedirect     bool              `json:"follow_redirect"`
-	Timeout            int               `json:"timeout"`
-	Retries            int               `json:"retries"`
-	AllowedProtocols   []string          `json:"allowed_protocols"` // ["http", "https", "socks4", "socks4a", "socks5"], empty means all
-	MaxResponseTime    int               `json:"max_response_time"` // in milliseconds, 0 means no limit
-	MinSuccessRate     float64           `json:"min_success_rate"`  // 0-100, 0 means no minimum
-}
-
-// TimeBasedSettings represents time-based rotation settings
-type TimeBasedSettings struct {
-	Interval int `json:"interval"` // in seconds
+	FollowRedirect bool `json:"follow_redirect"`
+	Timeout        int  `json:"timeout"` // upstream request timeout in seconds
 }
 
 // RateLimitSettings represents rate limiting configuration

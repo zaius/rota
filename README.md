@@ -35,7 +35,7 @@ Whether you're conducting web scraping operations, performing security research,
 
 ### Core Proxy Server
 - 🚀 **High Performance**: Handle thousands of concurrent requests with minimal latency
-- 🔄 **Smart Rotation**: Multiple rotation strategies (random, round-robin, least connections, time-based, plus per-pool sticky and session-based)
+- 🔄 **Smart Rotation**: Per-pool rotation strategies — round-robin, random, sticky, and session-based
 - 🤖 **Automatic Management**: Real-time proxy pool monitoring with automatic unhealthy proxy removal
 - 🌍 **Multi-Protocol**: Full support for HTTP, HTTPS, SOCKS4, SOCKS4A, and SOCKS5
 - ✅ **Health Checking**: Built-in proxy validation to maintain a healthy pool
