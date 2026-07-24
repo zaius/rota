@@ -131,3 +131,43 @@ func TestSplitSessionUsername(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionManager_FindByToken(t *testing.T) {
+	m := NewSessionManager()
+	defer m.Stop()
+
+	m.Bind(1, "tok", 42, time.Minute)
+	m.Bind(2, "tok", 43, time.Minute)
+	m.Bind(3, "other", 44, time.Minute)
+
+	found := m.FindByToken("tok")
+	if len(found) != 2 {
+		t.Fatalf("expected 2 bindings for token, got %d", len(found))
+	}
+	proxies := map[int]bool{}
+	for _, s := range found {
+		if s.Token != "tok" {
+			t.Fatalf("expected token 'tok', got %q", s.Token)
+		}
+		proxies[s.ProxyID] = true
+	}
+	if !proxies[42] || !proxies[43] {
+		t.Fatalf("expected proxies 42 and 43, got %v", proxies)
+	}
+
+	if got := m.FindByToken("missing"); len(got) != 0 {
+		t.Fatalf("expected no bindings for unknown token, got %d", len(got))
+	}
+}
+
+func TestSessionManager_FindByTokenSkipsExpired(t *testing.T) {
+	m := NewSessionManager()
+	defer m.Stop()
+
+	m.Bind(1, "tok", 42, time.Nanosecond)
+	time.Sleep(time.Millisecond)
+
+	if got := m.FindByToken("tok"); len(got) != 0 {
+		t.Fatalf("expected expired binding to be invisible, got %d", len(got))
+	}
+}

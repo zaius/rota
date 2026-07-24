@@ -131,6 +131,29 @@ func (m *SessionManager) ReleaseToken(token string) int {
 	return n
 }
 
+// FindByToken returns the live (non-expired) bindings for a session token
+// across all pools.
+func (m *SessionManager) FindByToken(token string) []SessionInfo {
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []SessionInfo
+	for _, e := range m.sessions {
+		if e.token != token || now.Sub(e.lastUsed) > e.ttl {
+			continue
+		}
+		out = append(out, SessionInfo{
+			PoolID:    e.poolID,
+			Token:     e.token,
+			ProxyID:   e.proxyID,
+			CreatedAt: e.createdAt,
+			LastUsed:  e.lastUsed,
+			ExpiresAt: e.lastUsed.Add(e.ttl),
+		})
+	}
+	return out
+}
+
 // Evict drops every binding pointing at proxyID (used when a proxy is
 // invalidated or fails). Bound sessions rebind to a fresh proxy on next use.
 // Returns the number of bindings removed.
