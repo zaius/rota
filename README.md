@@ -63,7 +63,7 @@ Whether you're conducting web scraping operations, performing security research,
 - 🔄 **Auto / Manual Sync**: `sync_mode: auto` rebuilds membership on every import; `manual` keeps it frozen until you trigger sync explicitly
 - 🔁 **Rotation Strategies**: Per-pool `roundrobin`, `random`, `sticky` (hold N requests per IP), or `session` (hold one proxy per client session until released or idle)
 - 📌 **Session Stickiness**: Pin a proxy to a client-chosen session via the proxy username (`user-session-<id>`); released explicitly, on idle TTL, or when the proxy is invalidated
-- 🚫 **Manual Invalidation**: Pull a single proxy out of rotation on demand (e.g. when you detect it's rate-limited) with a cooldown, then auto-recover or reactivate it — by proxy ID or by session token
+- 🚫 **Manual Invalidation**: Pull a single proxy out of rotation on demand (e.g. when you detect it's rate-limited) with a cooldown, then auto-recover or reactivate it — by proxy ID or by session token, with admin or proxy-user credentials
 - 🏷️ **Proxy Attribution**: Every proxied response carries an `X-Rota-Proxy-Id` header naming the upstream proxy that served it
 - ⚡ **Async Health Checks**: Run health checks against any URL; progress shown in real time
 - ⏱️ **Scheduled Checks**: Cron-style schedule per pool (`*/30 * * * *`)
@@ -491,11 +491,29 @@ curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
 
 The proxy currently bound to the session goes on cooldown and the session rebinds to a fresh proxy on its next request. Optional fields: `pool_id` (restrict to one pool) and `domain` (cool the proxy for that domain only, keeping the binding).
 
+### Invalidating with proxy-user credentials
+
+The scraping client usually holds proxy-user credentials, not an admin JWT. Three control endpoints therefore also accept **HTTP Basic auth with proxy-user credentials**:
+
+- `POST /api/v1/proxies/{id}/invalidate`
+- `POST /api/v1/sessions/invalidate`
+- `POST /api/v1/sessions/release`
+
+```bash
+# Same credentials the client already uses on the proxy port
+curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
+  -u "myuser:mypassword" \
+  -H "Content-Type: application/json" \
+  -d '{"token": "job42", "minutes": 30}'
+```
+
+Proxy-user calls are scoped to the user's own pools: only proxies that belong to the user's main/fallback pools can be invalidated, and only sessions in those pools are visible. The endpoints share the same brute-force protection as the login endpoint. Reactivation stays admin-only — prefer invalidating with `minutes` so the proxy comes back on its own.
+
 ---
 
 ## 🔐 API Authentication
 
-All API endpoints require a JWT bearer token obtained from `POST /api/v1/auth/login`.
+All API endpoints require a JWT bearer token obtained from `POST /api/v1/auth/login`. The only exceptions are the three client-control endpoints (`/proxies/{id}/invalidate`, `/sessions/invalidate`, `/sessions/release`), which alternatively accept proxy-user Basic credentials scoped to the user's own pools — see [Invalidating with proxy-user credentials](#invalidating-with-proxy-user-credentials).
 
 ```bash
 # Login

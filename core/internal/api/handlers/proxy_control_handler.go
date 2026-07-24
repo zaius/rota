@@ -25,10 +25,20 @@ type ProxyServer interface {
 	SessionsForToken(token string) []proxy.SessionInfo
 	ReleaseSession(poolID int, token string) bool
 	ReleaseSessionToken(token string) int
+	ReleaseSessionTokenInPools(token string, poolIDs []int) int
 	SetDomainCooldown(proxyID int, domain string, until time.Time, reason string)
 	ClearDomainCooldown(proxyID int, domain string) bool
 	ClearProxyDomainCooldowns(proxyID int) int
 	ListDomainCooldowns() []models.ProxyDomainCooldown
+}
+
+// ProxyUserFrom returns the proxy user the request was authenticated as (set
+// by the API's JWT-or-proxy-user middleware under models.ProxyUserContextKey),
+// or nil for admin (JWT) requests. When present, control handlers scope their
+// effects to that user's own pools.
+func ProxyUserFrom(ctx context.Context) *models.ProxyUser {
+	u, _ := ctx.Value(models.ProxyUserContextKey).(*models.ProxyUser)
+	return u
 }
 
 // ProxyControlHandler serves the live proxy-control endpoints (reload,
@@ -38,6 +48,7 @@ type ProxyServer interface {
 // api.Server holds no HTTP handlers of its own.
 type ProxyControlHandler struct {
 	proxyRepo   *repository.ProxyRepository
+	poolRepo    *repository.PoolRepository
 	logger      *logger.Logger
 	proxyServer ProxyServer
 }
@@ -45,8 +56,8 @@ type ProxyControlHandler struct {
 // NewProxyControlHandler creates a ProxyControlHandler. The proxy server
 // reference is attached later via SetProxyServer, since it is constructed after
 // the API server.
-func NewProxyControlHandler(proxyRepo *repository.ProxyRepository, log *logger.Logger) *ProxyControlHandler {
-	return &ProxyControlHandler{proxyRepo: proxyRepo, logger: log}
+func NewProxyControlHandler(proxyRepo *repository.ProxyRepository, poolRepo *repository.PoolRepository, log *logger.Logger) *ProxyControlHandler {
+	return &ProxyControlHandler{proxyRepo: proxyRepo, poolRepo: poolRepo, logger: log}
 }
 
 // SetProxyServer attaches the running proxy server.
@@ -162,14 +173,28 @@ func (h *ProxyControlHandler) applyInvalidation(ctx context.Context, id int, bod
 	}, http.StatusOK, ""
 }
 
+// proxyInCallerScope reports whether a proxy-user-authenticated caller may act
+// on the given proxy: it must be a member of one of the caller's pools. Admin
+// (JWT) callers are always in scope.
+func (h *ProxyControlHandler) proxyInCallerScope(r *http.Request, proxyID int) (bool, error) {
+	pu := ProxyUserFrom(r.Context())
+	if pu == nil {
+		return true, nil
+	}
+	return h.poolRepo.ProxyInPools(r.Context(), proxyID, pu.PoolIDs())
+}
+
 // InvalidateProxy marks a proxy as temporarily out of rotation (e.g. when the
 // client detects it has been rate-limited). It sets a DB cooldown and evicts the
 // proxy from live rotation immediately, rebinding any sessions that were using it.
 // When a domain is supplied the cooldown is scoped to that domain (and its
 // subdomains) only: the proxy keeps serving every other target.
 //
+// Callers authenticated as a proxy user (Basic auth) may only invalidate
+// proxies that belong to one of their own pools.
+//
 //	@Summary		Invalidate a proxy
-//	@Description	Pull a proxy out of rotation for a cooldown period (rate-limited, etc.). Pass "domain" to only invalidate it for that domain and its subdomains, keeping it available for other targets.
+//	@Description	Pull a proxy out of rotation for a cooldown period (rate-limited, etc.). Pass "domain" to only invalidate it for that domain and its subdomains, keeping it available for other targets. Authenticates with an admin JWT or proxy-user Basic credentials (scoped to the user's pools).
 //	@Tags			proxies
 //	@Param			id		path	int		true	"Proxy ID"
 //	@Param			minutes	body	int		false	"Cooldown minutes (default 30; 0 = until reactivated)"
@@ -187,6 +212,17 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 	var body invalidateBody
 	// Body is optional.
 	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	allowed, err := h.proxyInCallerScope(r, id)
+	if err != nil {
+		h.logger.Error("failed to check proxy pool membership", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to invalidate proxy")
+		return
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "proxy is not in your pools")
+		return
+	}
 
 	payload, status, msg := h.applyInvalidation(r.Context(), id, body)
 	if status != http.StatusOK {
@@ -206,7 +242,7 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 // proxy for that domain.
 //
 //	@Summary		Invalidate the proxy bound to a session
-//	@Description	Look up the sticky session by token and invalidate the proxy it is bound to. Pass "pool_id" to scope to a single pool, "minutes"/"reason"/"domain" as for proxy invalidation.
+//	@Description	Look up the sticky session by token and invalidate the proxy it is bound to. Pass "pool_id" to scope to a single pool, "minutes"/"reason"/"domain" as for proxy invalidation. Authenticates with an admin JWT or proxy-user Basic credentials (scoped to the user's pools).
 //	@Tags			sessions
 //	@Param			token	body	string	true	"Session token"
 //	@Param			pool_id	body	int		false	"Restrict to a single pool"
@@ -235,6 +271,22 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 		filtered := sessions[:0]
 		for _, s := range sessions {
 			if s.PoolID == *body.PoolID {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
+	}
+	// Proxy-user callers only see sessions in their own pools. Out-of-scope
+	// bindings are reported as not found, not as forbidden, so the endpoint
+	// does not leak other pools' session tokens.
+	if pu := ProxyUserFrom(r.Context()); pu != nil {
+		scope := make(map[int]bool)
+		for _, id := range pu.PoolIDs() {
+			scope[id] = true
+		}
+		filtered := sessions[:0]
+		for _, s := range sessions {
+			if scope[s.PoolID] {
 				filtered = append(filtered, s)
 			}
 		}
@@ -392,6 +444,7 @@ func (h *ProxyControlHandler) ListSessions(w http.ResponseWriter, r *http.Reques
 
 // ReleaseSession drops a sticky session. Provide a token (released across all
 // pools) and optionally a pool_id to scope the release to a single pool.
+// Proxy-user callers can only release sessions in their own pools.
 //
 //	@Summary		Release a sticky session
 //	@Tags			sessions
@@ -413,12 +466,30 @@ func (h *ProxyControlHandler) ReleaseSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	pu := ProxyUserFrom(r.Context())
+	if pu != nil && body.PoolID != nil {
+		inScope := false
+		for _, id := range pu.PoolIDs() {
+			if id == *body.PoolID {
+				inScope = true
+				break
+			}
+		}
+		if !inScope {
+			writeError(w, http.StatusForbidden, "pool is not in your pools")
+			return
+		}
+	}
+
 	released := 0
-	if body.PoolID != nil {
+	switch {
+	case body.PoolID != nil:
 		if h.proxyServer.ReleaseSession(*body.PoolID, body.Token) {
 			released = 1
 		}
-	} else {
+	case pu != nil:
+		released = h.proxyServer.ReleaseSessionTokenInPools(body.Token, pu.PoolIDs())
+	default:
 		released = h.proxyServer.ReleaseSessionToken(body.Token)
 	}
 

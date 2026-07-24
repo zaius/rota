@@ -51,6 +51,8 @@ type Server struct {
 	webDir            string
 	trustProxyHeaders bool
 	authRL            *authRateLimiter
+	controlRL         *authRateLimiter
+	userRepo          *repository.UserRepository
 
 	// Proxy server reference for reloading
 	proxyServer handlers.ProxyServer
@@ -106,10 +108,24 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	formatHistoryHandler := handlers.NewFormatHistoryHandler(deps.FormatHistoryRepo, log)
 	poolHandler := handlers.NewPoolHandler(deps.PoolRepo, deps.PoolSvc, log)
 	userHandler := handlers.NewUserHandler(deps.UserRepo, deps.PoolRepo, log)
-	proxyControlHandler := handlers.NewProxyControlHandler(deps.ProxyRepo, log)
+	proxyControlHandler := handlers.NewProxyControlHandler(deps.ProxyRepo, deps.PoolRepo, log)
 
 	// Auth rate limiter (per-IP block + global lockout)
 	authRL := newAuthRateLimiter(
+		cfg.AuthIPMaxAttempts,
+		cfg.AuthIPWindowMinutes,
+		cfg.AuthIPBlockMinutes,
+		cfg.AuthGlobalMaxPerMinute,
+		cfg.AuthGlobalLockoutMin,
+		cfg.TrustProxyHeaders,
+		log,
+	)
+
+	// A separate limiter instance protects the client-control endpoints (which
+	// accept proxy-user Basic credentials) so brute-forcing proxy passwords is
+	// blocked with the same thresholds — without heavy but legitimate control
+	// traffic ever tripping the login endpoint's global lockout.
+	controlRL := newAuthRateLimiter(
 		cfg.AuthIPMaxAttempts,
 		cfg.AuthIPWindowMinutes,
 		cfg.AuthIPBlockMinutes,
@@ -129,6 +145,8 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		webDir:               cfg.WebDir,
 		trustProxyHeaders:    cfg.TrustProxyHeaders,
 		authRL:               authRL,
+		controlRL:            controlRL,
+		userRepo:             deps.UserRepo,
 		authHandler:          authHandler,
 		healthHandler:        healthHandler,
 		dashboardHandler:     dashboardHandler,
@@ -230,104 +248,118 @@ func (s *Server) setupRoutes() {
 	// Auth rate limiter wraps the login handler — per-IP block + global lockout
 	s.router.With(s.authRL.Middleware()).Post("/api/v1/auth/login", s.authHandler.Login)
 
-	// ── Protected routes (JWT required) ────────────────────────────────────
+	// ── Protected routes ───────────────────────────────────────────────────
 	s.router.Route("/api/v1", func(r chi.Router) {
-		r.Use(JWTMiddleware(s.jwtSecret))
+		// Client-control endpoints: accessible with an admin JWT or with
+		// proxy-user Basic credentials, so the client actually using the proxy
+		// can invalidate/release without holding an admin token. Handlers
+		// scope proxy-user calls to the user's own pools; the brute-force
+		// limiter guards the Basic path.
+		r.Group(func(cr chi.Router) {
+			cr.Use(s.controlRL.Middleware())
+			cr.Use(JWTOrProxyUserMiddleware(s.jwtSecret, s.userRepo, s.logger))
 
-		// Auth (require token — change-password, whoami)
-		r.Post("/auth/change-password", s.authHandler.ChangePassword)
-		r.Get("/auth/me", s.authHandler.GetAdminInfo)
+			cr.Post("/proxies/{id}/invalidate", s.proxyControlHandler.InvalidateProxy)
+			cr.Post("/sessions/invalidate", s.proxyControlHandler.InvalidateSession)
+			cr.Post("/sessions/release", s.proxyControlHandler.ReleaseSession)
+		})
 
-		// Health & Status
-		r.Get("/status", s.healthHandler.Status)
-		r.Get("/database/health", s.healthHandler.DatabaseHealth)
-		r.Get("/database/stats", s.healthHandler.DatabaseStats)
+		// Everything else requires an admin JWT.
+		r.Group(func(r chi.Router) {
+			r.Use(JWTMiddleware(s.jwtSecret))
 
-		// System Metrics
-		r.Get("/metrics/system", s.metricsHandler.GetSystemMetrics)
+			// Auth (require token — change-password, whoami)
+			r.Post("/auth/change-password", s.authHandler.ChangePassword)
+			r.Get("/auth/me", s.authHandler.GetAdminInfo)
 
-		// Dashboard endpoints
-		r.Get("/dashboard/stats", s.dashboardHandler.GetStats)
-		r.Get("/dashboard/charts/traffic", s.dashboardHandler.GetTrafficChart)
-		r.Get("/dashboard/charts/response-time", s.dashboardHandler.GetResponseTimeChart)
-		r.Get("/dashboard/charts/success-rate", s.dashboardHandler.GetSuccessRateChart)
+			// Health & Status
+			r.Get("/status", s.healthHandler.Status)
+			r.Get("/database/health", s.healthHandler.DatabaseHealth)
+			r.Get("/database/stats", s.healthHandler.DatabaseStats)
 
-		// Proxy management
-		r.Get("/proxies", s.proxyHandler.List)
-		r.Post("/proxies", s.proxyHandler.Create)
-		r.Post("/proxies/bulk", s.proxyHandler.BulkCreate)
-		r.Post("/proxies/bulk-delete", s.proxyHandler.BulkDelete)
-		r.Post("/proxies/bulk-test", s.proxyHandler.BulkTest)
-		r.Get("/proxies/bulk-test", s.proxyHandler.BulkTestLatest)
-		r.Get("/proxies/bulk-test/{job_id}", s.proxyHandler.BulkTestStatus)
-		r.Delete("/proxies", s.proxyHandler.DeleteAll)
-		r.Get("/proxies/export", s.proxyHandler.Export)
-		r.Put("/proxies/{id}", s.proxyHandler.Update)
-		r.Delete("/proxies/{id}", s.proxyHandler.Delete)
-		r.Post("/proxies/{id}/test", s.proxyHandler.Test)
-		r.Post("/proxies/{id}/invalidate", s.proxyControlHandler.InvalidateProxy)
-		r.Post("/proxies/{id}/reactivate", s.proxyControlHandler.ReactivateProxy)
-		r.Get("/proxies/domain-cooldowns", s.proxyControlHandler.ListDomainCooldowns)
-		r.Post("/proxies/reload", s.proxyControlHandler.ReloadProxyPool)
+			// System Metrics
+			r.Get("/metrics/system", s.metricsHandler.GetSystemMetrics)
 
-		// Sticky sessions (session rotation method)
-		r.Get("/sessions", s.proxyControlHandler.ListSessions)
-		r.Post("/sessions/invalidate", s.proxyControlHandler.InvalidateSession)
-		r.Post("/sessions/release", s.proxyControlHandler.ReleaseSession)
+			// Dashboard endpoints
+			r.Get("/dashboard/stats", s.dashboardHandler.GetStats)
+			r.Get("/dashboard/charts/traffic", s.dashboardHandler.GetTrafficChart)
+			r.Get("/dashboard/charts/response-time", s.dashboardHandler.GetResponseTimeChart)
+			r.Get("/dashboard/charts/success-rate", s.dashboardHandler.GetSuccessRateChart)
 
-		// System logs
-		r.Get("/logs", s.logsHandler.List)
-		r.Get("/logs/export", s.logsHandler.Export)
+			// Proxy management
+			r.Get("/proxies", s.proxyHandler.List)
+			r.Post("/proxies", s.proxyHandler.Create)
+			r.Post("/proxies/bulk", s.proxyHandler.BulkCreate)
+			r.Post("/proxies/bulk-delete", s.proxyHandler.BulkDelete)
+			r.Post("/proxies/bulk-test", s.proxyHandler.BulkTest)
+			r.Get("/proxies/bulk-test", s.proxyHandler.BulkTestLatest)
+			r.Get("/proxies/bulk-test/{job_id}", s.proxyHandler.BulkTestStatus)
+			r.Delete("/proxies", s.proxyHandler.DeleteAll)
+			r.Get("/proxies/export", s.proxyHandler.Export)
+			r.Put("/proxies/{id}", s.proxyHandler.Update)
+			r.Delete("/proxies/{id}", s.proxyHandler.Delete)
+			r.Post("/proxies/{id}/test", s.proxyHandler.Test)
+			r.Post("/proxies/{id}/reactivate", s.proxyControlHandler.ReactivateProxy)
+			r.Get("/proxies/domain-cooldowns", s.proxyControlHandler.ListDomainCooldowns)
+			r.Post("/proxies/reload", s.proxyControlHandler.ReloadProxyPool)
 
-		// Settings
-		r.Get("/settings", s.settingsHandler.Get)
-		r.Put("/settings", s.settingsHandler.Update)
-		r.Post("/settings/reset", s.settingsHandler.Reset)
+			// Sticky sessions (session rotation method)
+			r.Get("/sessions", s.proxyControlHandler.ListSessions)
 
-		// Proxy Sources
-		r.Get("/sources", s.sourceHandler.List)
-		r.Post("/sources", s.sourceHandler.Create)
-		r.Put("/sources/{id}", s.sourceHandler.Update)
-		r.Delete("/sources/{id}", s.sourceHandler.Delete)
-		r.Post("/sources/{id}/fetch", s.sourceHandler.FetchNow)
-		r.Post("/sources/enrich-geo", s.sourceHandler.EnrichGeo)
+			// System logs
+			r.Get("/logs", s.logsHandler.List)
+			r.Get("/logs/export", s.logsHandler.Export)
 
-		// Line-format history (custom formats used for sources/imports)
-		r.Get("/format-history", s.formatHistoryHandler.List)
-		r.Post("/format-history", s.formatHistoryHandler.Record)
-		r.Delete("/format-history/{id}", s.formatHistoryHandler.Delete)
+			// Settings
+			r.Get("/settings", s.settingsHandler.Get)
+			r.Put("/settings", s.settingsHandler.Update)
+			r.Post("/settings/reset", s.settingsHandler.Reset)
 
-		// Proxy Users (per-user pool authentication)
-		r.Get("/proxy-users", s.userHandler.List)
-		r.Post("/proxy-users", s.userHandler.Create)
-		r.Get("/proxy-users/{id}", s.userHandler.Get)
-		r.Put("/proxy-users/{id}", s.userHandler.Update)
-		r.Delete("/proxy-users/{id}", s.userHandler.Delete)
+			// Proxy Sources
+			r.Get("/sources", s.sourceHandler.List)
+			r.Post("/sources", s.sourceHandler.Create)
+			r.Put("/sources/{id}", s.sourceHandler.Update)
+			r.Delete("/sources/{id}", s.sourceHandler.Delete)
+			r.Post("/sources/{id}/fetch", s.sourceHandler.FetchNow)
+			r.Post("/sources/enrich-geo", s.sourceHandler.EnrichGeo)
 
-		// Proxy Pools
-		r.Get("/pools", s.poolHandler.List)
-		r.Post("/pools", s.poolHandler.Create)
-		r.Get("/pools/geo-summary", s.poolHandler.GeoSummary)
-		r.Get("/pools/geo-countries", s.poolHandler.GeoByCountry)
-		r.Get("/pools/geo-cities/{country_code}", s.poolHandler.GeoCitiesByCountry)
-		r.Get("/pools/isp-list", s.poolHandler.GetISPList)
-		r.Get("/pools/tag-list", s.poolHandler.GetTagList)
-		r.Get("/pools/{id}", s.poolHandler.Get)
-		r.Put("/pools/{id}", s.poolHandler.Update)
-		r.Delete("/pools/{id}", s.poolHandler.Delete)
-		r.Get("/pools/{id}/proxies", s.poolHandler.GetProxies)
-		r.Post("/pools/{id}/proxies", s.poolHandler.AddProxies)
-		r.Delete("/pools/{id}/proxies", s.poolHandler.RemoveProxies)
-		r.Post("/pools/{id}/sync", s.poolHandler.Sync)
-		r.Get("/pools/{id}/export", s.poolHandler.Export)
-		r.Post("/pools/{id}/health-check", s.poolHandler.HealthCheck)
-		r.Get("/pools/{id}/health-check/jobs", s.poolHandler.HealthCheckJobs)
-		r.Get("/pools/{id}/health-check/{job_id}", s.poolHandler.HealthCheckStatus)
-		// Alert rules
-		r.Get("/pools/{id}/alert-rules", s.poolHandler.ListAlertRules)
-		r.Post("/pools/{id}/alert-rules", s.poolHandler.CreateAlertRule)
-		r.Put("/pools/{id}/alert-rules/{rule_id}", s.poolHandler.UpdateAlertRule)
-		r.Delete("/pools/{id}/alert-rules/{rule_id}", s.poolHandler.DeleteAlertRule)
+			// Line-format history (custom formats used for sources/imports)
+			r.Get("/format-history", s.formatHistoryHandler.List)
+			r.Post("/format-history", s.formatHistoryHandler.Record)
+			r.Delete("/format-history/{id}", s.formatHistoryHandler.Delete)
+
+			// Proxy Users (per-user pool authentication)
+			r.Get("/proxy-users", s.userHandler.List)
+			r.Post("/proxy-users", s.userHandler.Create)
+			r.Get("/proxy-users/{id}", s.userHandler.Get)
+			r.Put("/proxy-users/{id}", s.userHandler.Update)
+			r.Delete("/proxy-users/{id}", s.userHandler.Delete)
+
+			// Proxy Pools
+			r.Get("/pools", s.poolHandler.List)
+			r.Post("/pools", s.poolHandler.Create)
+			r.Get("/pools/geo-summary", s.poolHandler.GeoSummary)
+			r.Get("/pools/geo-countries", s.poolHandler.GeoByCountry)
+			r.Get("/pools/geo-cities/{country_code}", s.poolHandler.GeoCitiesByCountry)
+			r.Get("/pools/isp-list", s.poolHandler.GetISPList)
+			r.Get("/pools/tag-list", s.poolHandler.GetTagList)
+			r.Get("/pools/{id}", s.poolHandler.Get)
+			r.Put("/pools/{id}", s.poolHandler.Update)
+			r.Delete("/pools/{id}", s.poolHandler.Delete)
+			r.Get("/pools/{id}/proxies", s.poolHandler.GetProxies)
+			r.Post("/pools/{id}/proxies", s.poolHandler.AddProxies)
+			r.Delete("/pools/{id}/proxies", s.poolHandler.RemoveProxies)
+			r.Post("/pools/{id}/sync", s.poolHandler.Sync)
+			r.Get("/pools/{id}/export", s.poolHandler.Export)
+			r.Post("/pools/{id}/health-check", s.poolHandler.HealthCheck)
+			r.Get("/pools/{id}/health-check/jobs", s.poolHandler.HealthCheckJobs)
+			r.Get("/pools/{id}/health-check/{job_id}", s.poolHandler.HealthCheckStatus)
+			// Alert rules
+			r.Get("/pools/{id}/alert-rules", s.poolHandler.ListAlertRules)
+			r.Post("/pools/{id}/alert-rules", s.poolHandler.CreateAlertRule)
+			r.Put("/pools/{id}/alert-rules/{rule_id}", s.poolHandler.UpdateAlertRule)
+			r.Delete("/pools/{id}/alert-rules/{rule_id}", s.poolHandler.DeleteAlertRule)
+		})
 	})
 
 	// WebSocket routes — protected via token query param

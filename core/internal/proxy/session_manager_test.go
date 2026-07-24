@@ -171,3 +171,23 @@ func TestSessionManager_FindByTokenSkipsExpired(t *testing.T) {
 		t.Fatalf("expected expired binding to be invisible, got %d", len(got))
 	}
 }
+
+func TestSessionManager_ReleaseTokenInPools(t *testing.T) {
+	m := NewSessionManager()
+	defer m.Stop()
+
+	m.Bind(1, "tok", 42, time.Minute)
+	m.Bind(2, "tok", 43, time.Minute)
+	m.Bind(3, "tok", 44, time.Minute)
+
+	// Only pools 1 and 2 are in scope; the binding in pool 3 must survive.
+	if n := m.ReleaseTokenInPools("tok", []int{1, 2}); n != 2 {
+		t.Fatalf("expected 2 bindings released, got %d", n)
+	}
+	if _, ok := m.Get(3, "tok"); !ok {
+		t.Fatal("binding outside the pool scope must survive")
+	}
+	if _, ok := m.Get(1, "tok"); ok {
+		t.Fatal("binding in scope should be gone")
+	}
+}
