@@ -116,59 +116,6 @@ func (c *PoolChain) recordSuccess(selIdx, proxyID int, address, url, method stri
 	})
 }
 
-// defaultPoolMethod maps a global rotation method onto the selector methods the
-// default pool supports, preserving the legacy global selector's fallbacks:
-// session/stick have no global session context, so they degrade to round-robin,
-// and an unknown method defaults to random.
-func defaultPoolMethod(method string) string {
-	switch method {
-	case "random":
-		return "random"
-	case "roundrobin", "round-robin":
-		return "roundrobin"
-	case "least_conn", "least-conn", "least_connections":
-		return "least_conn"
-	case "time_based", "time-based":
-		return "time_based"
-	case "session", "stick", "sticky":
-		return "roundrobin"
-	default:
-		return "random"
-	}
-}
-
-// NewDefaultPoolChain builds the chain used for requests that do not map to a
-// proxy user: a single selector over every active proxy, honouring the global
-// rotation method and filters. It replaces the legacy global selector engine.
-func NewDefaultPoolChain(db *database.DB, settings *models.RotationSettings, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
-	sel := &PoolSelector{
-		db:               db,
-		poolID:           0,
-		method:           defaultPoolMethod(settings.Method),
-		timeInterval:     time.Duration(settings.TimeBased.Interval) * time.Second,
-		sessionMgr:       sessionMgr,
-		domainCD:         domainCD,
-		loadAll:          true,
-		allowedProtocols: settings.AllowedProtocols,
-		maxResponseTime:  settings.MaxResponseTime,
-		minSuccessRate:   settings.MinSuccessRate,
-	}
-	maxRetry := 5
-	if settings.FallbackMaxRetries > 0 {
-		maxRetry = settings.FallbackMaxRetries
-	}
-	if !settings.Fallback {
-		maxRetry = 1
-	}
-	return &PoolChain{
-		selectors:  []*PoolSelector{sel},
-		tracker:    tracker,
-		logger:     log,
-		maxRetry:   maxRetry,
-		failCounts: make(map[int]int),
-	}
-}
-
 // Refresh reloads all pool selectors (non-blocking goroutine).
 func (c *PoolChain) Refresh(ctx context.Context) {
 	var wg sync.WaitGroup

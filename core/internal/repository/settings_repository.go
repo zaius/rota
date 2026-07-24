@@ -127,11 +127,6 @@ func (r *SettingsRepository) UpdateAll(ctx context.Context, settings *models.Set
 // filters; Reset omitted proxy_cleanup entirely).
 func defaultSettings() map[string]map[string]any {
 	return map[string]map[string]any{
-		"authentication": {
-			"enabled":  false,
-			"username": "",
-			"password": "",
-		},
 		"rotation": {
 			"method": "random",
 			"time_based": map[string]any{

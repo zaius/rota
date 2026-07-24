@@ -50,9 +50,6 @@ func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Never expose proxy authentication password in response
-	settings.Authentication.Password = ""
-
 	writeJSON(w, http.StatusOK, settings)
 }
 
@@ -82,8 +79,6 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update settings
-	// Note: These settings are for PROXY server authentication (port 8000)
-	// Dashboard/API authentication uses ROTA_ADMIN_USER/ROTA_ADMIN_PASSWORD (environment)
 	if err := h.settingsRepo.UpdateAll(r.Context(), &settings); err != nil {
 		h.logger.Error("failed to update settings", "error", err)
 		writeError(w, http.StatusInternalServerError, "Failed to update settings")
@@ -97,9 +92,6 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to get updated settings")
 		return
 	}
-
-	// Never expose proxy password
-	updatedSettings.Authentication.Password = ""
 
 	response := map[string]interface{}{
 		"message": "Configuration updated successfully",

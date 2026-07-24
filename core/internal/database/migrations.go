@@ -651,6 +651,21 @@ var migrations = []Migration{
 				DROP COLUMN IF EXISTS pool_id;
 		`,
 	},
+	{
+		Version:     27,
+		Description: "Drop the legacy shared proxy credential (settings key 'authentication')",
+		// Proxy auth is per-user (proxy_users) only now. The stored shared
+		// credential is removed rather than left as an unread secret. Down
+		// restores the key disabled — the credential itself is not recoverable.
+		Up: `
+			DELETE FROM settings WHERE key = 'authentication';
+		`,
+		Down: `
+			INSERT INTO settings (key, value, updated_at)
+			VALUES ('authentication', '{"enabled": false, "username": "", "password": ""}', NOW())
+			ON CONFLICT (key) DO NOTHING;
+		`,
+	},
 }
 
 // migrationLockKey is an arbitrary constant identifying Rota's migration

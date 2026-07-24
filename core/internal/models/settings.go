@@ -2,23 +2,15 @@ package models
 
 import "time"
 
-// Settings represents system configuration
+// Settings represents system configuration.
+// Proxy server authentication is per-user only (proxy_users); there is no
+// global shared credential setting.
 type Settings struct {
-	Authentication AuthenticationSettings `json:"authentication"`
-	Rotation       RotationSettings       `json:"rotation"`
-	RateLimit      RateLimitSettings      `json:"rate_limit"`
-	HealthCheck    HealthCheckSettings    `json:"healthcheck"`
-	LogRetention   LogRetentionSettings   `json:"log_retention"`
-	ProxyCleanup   ProxyCleanupSettings   `json:"proxy_cleanup"`
-}
-
-// AuthenticationSettings represents proxy server authentication configuration
-// This controls authentication for incoming requests to the PROXY server (port 8000)
-// NOT for dashboard/API login (which uses ROTA_ADMIN_USER/ROTA_ADMIN_PASSWORD)
-type AuthenticationSettings struct {
-	Enabled  bool   `json:"enabled"`  // Enable authentication for proxy requests
-	Username string `json:"username"` // Username for proxy authentication
-	Password string `json:"password"` // Password for proxy authentication (write-only)
+	Rotation     RotationSettings     `json:"rotation"`
+	RateLimit    RateLimitSettings    `json:"rate_limit"`
+	HealthCheck  HealthCheckSettings  `json:"healthcheck"`
+	LogRetention LogRetentionSettings `json:"log_retention"`
+	ProxyCleanup ProxyCleanupSettings `json:"proxy_cleanup"`
 }
 
 // RotationSettings represents proxy rotation configuration

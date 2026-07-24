@@ -22,7 +22,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
-  Shield,
   RotateCw,
   Gauge,
   Activity,
@@ -488,74 +487,6 @@ export default function SettingsPage() {
 
       {/* Other Settings in 2-column grid */}
       <div className="grid gap-4 md:grid-cols-2">
-        {/* Authentication Settings */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Shield className="h-5 w-5" />
-              <CardTitle>Authentication</CardTitle>
-            </div>
-            <CardDescription>
-              Basic authentication settings for your proxy server
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label htmlFor="auth-enabled">Enable Authentication</Label>
-                <p className="text-xs text-muted-foreground">
-                  Require username and password for proxy connections
-                </p>
-              </div>
-              <Switch
-                id="auth-enabled"
-                checked={settings.authentication.enabled}
-                onCheckedChange={(checked) =>
-                  setSettings({
-                    ...settings,
-                    authentication: { ...settings.authentication, enabled: checked },
-                  })
-                }
-              />
-            </div>
-            {settings.authentication.enabled && (
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="auth-username">Username</Label>
-                  <Input
-                    id="auth-username"
-                    type="text"
-                    value={settings.authentication.username}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        authentication: { ...settings.authentication, username: e.target.value },
-                      })
-                    }
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="auth-password">Password</Label>
-                  <Input
-                    id="auth-password"
-                    type="password"
-                    placeholder="Enter new password"
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        authentication: { ...settings.authentication, password: e.target.value },
-                      })
-                    }
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Leave empty to keep current password
-                  </p>
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
         {/* Rate Limit Settings */}
         <Card>
           <CardHeader>
