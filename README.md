@@ -8,10 +8,10 @@
 <p align="center">
 <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
 <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.25.3-00ADD8?logo=go"></a>
-<a href="https://nextjs.org"><img src="https://img.shields.io/badge/Next.js-16-000000?logo=next.js"></a>
+<a href="https://react.dev"><img src="https://img.shields.io/badge/React-19-61DAFB?logo=react"></a>
 <a href="https://www.timescale.com/"><img src="https://img.shields.io/badge/TimescaleDB-2.22-FDB515?logo=timescale"></a>
-<a href="https://github.com/alpkeskin/rota/releases"><img src="https://img.shields.io/github/release/alpkeskin/rota"></a>
-<a href="https://github.com/alpkeskin/rota/actions"><img src="https://img.shields.io/github/actions/workflow/status/alpkeskin/rota/release.yaml"></a>
+<a href="https://github.com/zaius/rota/releases"><img src="https://img.shields.io/github/release/zaius/rota"></a>
+<a href="https://github.com/zaius/rota/actions"><img src="https://img.shields.io/github/actions/workflow/status/zaius/rota/release.yaml"></a>
 </p>
 
 
@@ -25,7 +25,7 @@
 Whether you're conducting web scraping operations, performing security research, load testing, or need reliable proxy management at scale, Rota delivers a complete solution with:
 
 - **High-Performance Core**: Lightning-fast Go-based proxy server with intelligent rotation strategies
-- **Real-Time Dashboard**: Modern Next.js web interface with live metrics and monitoring
+- **Real-Time Dashboard**: Modern React web interface with live metrics and monitoring, served by the core itself
 - **Time-Series Analytics**: TimescaleDB-powered storage for historical analysis and insights
 - **Production-Ready**: Docker-based deployment with health checks, graceful shutdown, and monitoring
 
@@ -119,13 +119,12 @@ The fastest way to get Rota up and running:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/alpkeskin/rota.git
+git clone https://github.com/zaius/rota.git
 cd rota
 
 # 2. Create your environment file
 cp .env.example .env
 # For local development the defaults work as-is.
-# For production: set API_URL to your public API URL.
 
 # 3. Start all services
 docker compose up -d
@@ -135,10 +134,8 @@ docker compose ps
 ```
 
 **Access the services:**
-- 🌐 **Dashboard**: http://localhost:3000
-- 🔧 **API**: http://localhost:8001
+- 🌐 **Dashboard + API**: http://localhost:8001
 - 🔄 **Proxy**: http://localhost:8000
-- 🗄️ **Database**: localhost:5432
 
 **Default credentials for dashboard:**
 - Username: `admin`
@@ -150,10 +147,8 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 
 | Variable | Default | Description |
 |---|---|---|
-| `API_URL` | `http://localhost:8001` | Public URL of the API — used by the browser; injected into the dashboard at container start |
 | `PROXY_PORT` | `8000` | Host port for the proxy server |
-| `API_PORT` | `8001` | Host port for the REST API |
-| `DASHBOARD_PORT` | `3000` | Host port for the web dashboard |
+| `API_PORT` | `8001` | Host port for the REST API + dashboard UI |
 | `ROTA_ADMIN_USER` | `admin` | Initial dashboard username (seeded once) |
 | `ROTA_ADMIN_PASSWORD` | `admin` | Initial dashboard password (seeded once, min 6 chars) |
 | `DB_PASSWORD` | `rota_password` | Database password |
@@ -174,12 +169,12 @@ For production, set at minimum:
 
 ```bash
 # .env
-API_URL=https://api.yourdomain.com
 DB_PASSWORD=a-strong-random-password
 ROTA_ADMIN_PASSWORD=a-strong-password
+JWT_SECRET=a-stable-random-secret  # so dashboard sessions survive restarts
 ```
 
-`API_URL` is injected into the dashboard bundle when the container starts, so changing it only needs a restart — no rebuild:
+Then start the stack:
 
 ```bash
 docker compose up -d
@@ -190,51 +185,47 @@ docker compose up -d
 Prebuilt multi-arch images (linux/amd64 + linux/arm64) are published to the
 GitHub Container Registry:
 
-- `ghcr.io/zaius/rota-core` — Go proxy (`:8000`) + REST API (`:8001`)
-- `ghcr.io/zaius/rota-dashboard` — Next.js web dashboard (`:3000`)
+- `ghcr.io/zaius/rota` — all-in-one image: Go proxy (`:8000`) + REST API and dashboard UI (`:8001`)
+
+The dashboard is a static build served by the Go server on the API port — same
+origin as the API, so there is no separate frontend container and no API URL to
+configure.
 
 ```bash
-# Core: proxy + API
 docker run -d \
-  --name rota-core \
+  --name rota \
   -p 8000:8000 \
   -p 8001:8001 \
   -e DB_HOST=your-db-host \
   -e DB_USER=rota \
   -e DB_PASSWORD=your-password \
-  ghcr.io/zaius/rota-core:latest
-
-# Dashboard: set API_URL to the URL the browser uses to reach the core API.
-# The same image works on any host — the value is injected at container start.
-docker run -d \
-  --name rota-dashboard \
-  -p 3000:3000 \
-  -e API_URL=https://api.yourdomain.com \
-  ghcr.io/zaius/rota-dashboard:latest
+  ghcr.io/zaius/rota:latest
 ```
 
-Or run the whole stack (core + dashboard + TimescaleDB) with `docker compose up -d`.
+Or run the whole stack (rota + TimescaleDB) with `docker compose up -d`.
 
 ### From Source
 
 ```bash
-# Prerequisites: Go 1.25.3+, Node.js 20+, PostgreSQL 14+ (TimescaleDB optional)
+# Prerequisites: Go 1.25.3+, Node.js 20+, pnpm, PostgreSQL 14+ (TimescaleDB optional)
 
 # Clone the repository
-git clone https://github.com/alpkeskin/rota.git
+git clone https://github.com/zaius/rota.git
 cd rota
 
-# Start Core
-cd core
-cp .env .env.local  # Configure your environment
-make install
-make dev
+# Configure your environment (DB connection etc.)
+cp .env.example .env
 
-# Start Dashboard (in new terminal)
+# Start the core (proxy :8000, API :8001). It reads plain environment
+# variables, so export the ones from your .env first:
+set -a; source .env; set +a
+cd core
+go run ./cmd/server/main.go
+
+# Start the dashboard dev server (in a new terminal)
 cd dashboard
-npm install
-cp .env.local .env.local  # Configure API URL
-npm run dev
+pnpm install
+pnpm run dev  # http://localhost:3000, proxies API calls to the core on :8001
 ```
 
 ### Testing the Proxy
@@ -286,8 +277,8 @@ Rota is built as a modern monorepo with three main components:
 │                                                             │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   │
 │  │   Dashboard  │───▶│  Core (API)  │───▶│ TimescaleDB  │   │
-│  │   Next.js    │    │     Go       │    │  PostgreSQL  │   │
-│  │  Port 3000   │    │  Port 8001   │    │  Port 5432   │   │
+│  │  React SPA   │    │     Go       │    │  PostgreSQL  │   │
+│  │   on :8001   │    │  Port 8001   │    │  Port 5432   │   │
 │  └──────────────┘    └──────────────┘    └──────────────┘   │
 │         │                    │                              │
 │         │                    ▼                              │
