@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,11 @@ import (
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/google/uuid"
 )
+
+// ProxyIDHeader is set on every proxied response (and on the CONNECT 200) to
+// tell the client which upstream proxy served the request, so it can be
+// tracked and, if needed, invalidated by ID.
+const ProxyIDHeader = "X-Rota-Proxy-Id"
 
 // UpstreamProxyHandler forwards proxy requests through the PoolChain that
 // UserAuthMiddleware attaches to each request — either a per-user chain or the
@@ -80,7 +86,7 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 		return
 	}
 
-	resp, _, err := chain.SendWithRetry(r, reqCtx, h.getSettings(), h.logger)
+	resp, proxyID, err := chain.SendWithRetry(r, reqCtx, h.getSettings(), h.logger)
 	duration := int(time.Since(startTime).Milliseconds())
 	if err != nil {
 		h.logger.Error("proxy request failed",
@@ -99,6 +105,7 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 		"status", resp.StatusCode,
 		"duration_ms", duration,
 	)
+	w.Header().Set(ProxyIDHeader, strconv.Itoa(proxyID))
 	copyResponse(w, resp)
 }
 
@@ -121,7 +128,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		return
 	}
 
-	upstreamConn, _, err := chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
+	upstreamConn, proxyID, err := chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
 	if err != nil {
 		h.logger.Error("CONNECT upstream failed",
 			"source", "proxy",
@@ -148,8 +155,11 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 	}
 	defer clientConn.Close()
 
-	// Send 200 Connection Established to the client.
-	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+	// Send 200 Connection Established to the client. The serving proxy's ID
+	// rides along as a header — the only response the client sees before the
+	// tunnel goes opaque.
+	established := "HTTP/1.1 200 Connection Established\r\n" + ProxyIDHeader + ": " + strconv.Itoa(proxyID) + "\r\n\r\n"
+	if _, err := clientConn.Write([]byte(established)); err != nil {
 		h.logger.Error("failed to write CONNECT response", "error", err)
 		return
 	}
@@ -210,6 +220,12 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	stripConnectionTokens(resp.Header)
 	for k, vv := range resp.Header {
 		if _, hop := hopHeaders[k]; hop {
+			continue
+		}
+		// The proxy-ID header is Rota's own signal; an upstream echoing or
+		// forging it must not override (or duplicate) the value set by the
+		// handler.
+		if k == ProxyIDHeader {
 			continue
 		}
 		for _, v := range vv {

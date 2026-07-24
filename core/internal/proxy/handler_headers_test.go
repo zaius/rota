@@ -99,3 +99,24 @@ func TestRemoveHopByHopHeaders_StripsHeadersNamedByConnection(t *testing.T) {
 		t.Fatalf("expected the header named by Connection to be stripped, got %q", got)
 	}
 }
+
+// The proxy-ID header is Rota's own signal to the client. An upstream that
+// echoes or forges it must not override (or duplicate) the value the handler
+// set before copying the response.
+func TestCopyResponse_UpstreamCannotSpoofProxyIDHeader(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader("")),
+	}
+	resp.Header.Set(ProxyIDHeader, "999")
+
+	rec := httptest.NewRecorder()
+	// The handler sets the real ID before copyResponse runs.
+	rec.Header().Set(ProxyIDHeader, "42")
+	copyResponse(rec, resp)
+
+	if got := rec.Header().Values(ProxyIDHeader); len(got) != 1 || got[0] != "42" {
+		t.Fatalf("expected the handler-set proxy ID to survive untouched, got %v", got)
+	}
+}

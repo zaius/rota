@@ -283,6 +283,15 @@ func (s *Server) ReleaseSessionToken(token string) int {
 	return s.sessionMgr.ReleaseToken(token)
 }
 
+// SessionsForToken returns the live sticky-session bindings for a token across
+// all pools.
+func (s *Server) SessionsForToken(token string) []SessionInfo {
+	if s.sessionMgr == nil {
+		return nil
+	}
+	return s.sessionMgr.FindByToken(token)
+}
+
 // EvictProxy immediately removes a proxy from every active user's in-memory
 // selector and drops any sessions bound to it. The DB cooldown (set by the API
 // handler) keeps it out of rotation on the next refresh; this makes the removal

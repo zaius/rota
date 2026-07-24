@@ -272,6 +272,7 @@ func (s *Server) setupRoutes() {
 
 		// Sticky sessions (session rotation method)
 		r.Get("/sessions", s.proxyControlHandler.ListSessions)
+		r.Post("/sessions/invalidate", s.proxyControlHandler.InvalidateSession)
 		r.Post("/sessions/release", s.proxyControlHandler.ReleaseSession)
 
 		// System logs

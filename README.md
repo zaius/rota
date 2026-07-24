@@ -63,7 +63,8 @@ Whether you're conducting web scraping operations, performing security research,
 - 🔄 **Auto / Manual Sync**: `sync_mode: auto` rebuilds membership on every import; `manual` keeps it frozen until you trigger sync explicitly
 - 🔁 **Rotation Strategies**: Per-pool `roundrobin`, `random`, `sticky` (hold N requests per IP), or `session` (hold one proxy per client session until released or idle)
 - 📌 **Session Stickiness**: Pin a proxy to a client-chosen session via the proxy username (`user-session-<id>`); released explicitly, on idle TTL, or when the proxy is invalidated
-- 🚫 **Manual Invalidation**: Pull a single proxy out of rotation on demand (e.g. when you detect it's rate-limited) with a cooldown, then auto-recover or reactivate it
+- 🚫 **Manual Invalidation**: Pull a single proxy out of rotation on demand (e.g. when you detect it's rate-limited) with a cooldown, then auto-recover or reactivate it — by proxy ID or by session token
+- 🏷️ **Proxy Attribution**: Every proxied response carries an `X-Rota-Proxy-Id` header naming the upstream proxy that served it
 - ⚡ **Async Health Checks**: Run health checks against any URL; progress shown in real time
 - ⏱️ **Scheduled Checks**: Cron-style schedule per pool (`*/30 * * * *`)
 - 📤 **Export**: Download pool proxy list as `.txt` or `.csv` (`GET /api/v1/pools/{id}/export?format=txt|csv`)
@@ -455,6 +456,10 @@ Inspect live bindings with `GET /api/v1/sessions`.
 
 > Requests with no `-session-` token in the username fall back to round-robin, so a `session` pool stays safe to use without a token.
 
+### Knowing which proxy served a request
+
+Every proxied response carries an `X-Rota-Proxy-Id` header with the internal ID of the upstream proxy that served it (on HTTPS requests it is on the `200 Connection Established` response to CONNECT, visible with `curl -v`). Track it client-side so you know exactly which proxy to invalidate when a target starts rejecting you.
+
 ### Invalidating a proxy mid-session
 
 When you detect a proxy is rate-limited (or otherwise bad) while using it, pull it out of rotation immediately:
@@ -472,6 +477,19 @@ curl -X POST "http://localhost:8001/api/v1/proxies/123/reactivate" \
 ```
 
 Invalidation sets a database cooldown **and** evicts the proxy from every active user's live rotation right away (no wait for the refresh cycle), rebinding any sessions that were using it. The proxy automatically returns to rotation when its cooldown expires. You can also do this from the dashboard via the **Invalidate / Reactivate** actions in the Proxies table row menu.
+
+### Invalidating by session token
+
+When a session-bound client only knows its own session token — not the proxy ID behind it — invalidate through the session instead:
+
+```bash
+curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"token": "job42", "minutes": 30, "reason": "429 from target"}'
+```
+
+The proxy currently bound to the session goes on cooldown and the session rebinds to a fresh proxy on its next request. Optional fields: `pool_id` (restrict to one pool) and `domain` (cool the proxy for that domain only, keeping the binding).
 
 ---
 

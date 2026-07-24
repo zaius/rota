@@ -22,6 +22,7 @@ type ProxyServer interface {
 	EvictProxy(proxyID int)
 	InvalidateUser(username string)
 	ListSessions() []proxy.SessionInfo
+	SessionsForToken(token string) []proxy.SessionInfo
 	ReleaseSession(poolID int, token string) bool
 	ReleaseSessionToken(token string) int
 	SetDomainCooldown(proxyID int, domain string, until time.Time, reason string)
@@ -86,6 +87,81 @@ func (h *ProxyControlHandler) ReloadProxyPool(w http.ResponseWriter, r *http.Req
 	w.Write([]byte(`{"status":"success","message":"Proxy pool reloaded successfully"}`)) //nolint:errcheck
 }
 
+// invalidateBody is the shared request body for proxy/session invalidation.
+type invalidateBody struct {
+	Minutes int    `json:"minutes"`
+	Reason  string `json:"reason"`
+	Domain  string `json:"domain"`
+}
+
+// applyInvalidation puts one proxy on a cooldown (full or domain-scoped),
+// makes it effective on the running proxy server immediately, and returns the
+// per-proxy response payload. On failure it returns the HTTP status and
+// message to report instead.
+func (h *ProxyControlHandler) applyInvalidation(ctx context.Context, id int, body invalidateBody) (map[string]interface{}, int, string) {
+	// minutes <= 0 → long default ("until reactivated"); >0 → that many minutes.
+	d := time.Duration(body.Minutes) * time.Minute
+
+	// Domain-scoped invalidation: cooldown applies only to this target domain.
+	if body.Domain != "" {
+		domain := proxy.NormalizeCooldownDomain(body.Domain)
+		if domain == "" {
+			return nil, http.StatusBadRequest, "invalid domain"
+		}
+		if d <= 0 {
+			d = 24 * time.Hour // same "until reactivated" default as SetCooldown
+		}
+		until := time.Now().Add(d)
+
+		proxyObj, err := h.proxyRepo.SetDomainCooldown(ctx, id, domain, until, body.Reason)
+		if err != nil {
+			h.logger.Error("failed to invalidate proxy for domain", "id", id, "domain", domain, "error", err)
+			return nil, http.StatusInternalServerError, "failed to invalidate proxy"
+		}
+		if proxyObj == nil {
+			return nil, http.StatusNotFound, "proxy not found"
+		}
+
+		// Make it effective immediately. Sessions bound to this proxy are kept;
+		// they rebind lazily on their next request to the cooled domain.
+		if h.proxyServer != nil {
+			h.proxyServer.SetDomainCooldown(id, domain, until, body.Reason)
+		}
+
+		h.logger.Info("proxy invalidated for domain",
+			"id", id, "domain", domain, "minutes", body.Minutes, "reason", body.Reason)
+		return map[string]interface{}{
+			"status":         "invalidated",
+			"id":             proxyObj.ID,
+			"address":        proxyObj.Address,
+			"domain":         domain,
+			"cooldown_until": until,
+		}, http.StatusOK, ""
+	}
+
+	proxyObj, err := h.proxyRepo.SetCooldown(ctx, id, d, body.Reason)
+	if err != nil {
+		h.logger.Error("failed to invalidate proxy", "id", id, "error", err)
+		return nil, http.StatusInternalServerError, "failed to invalidate proxy"
+	}
+	if proxyObj == nil {
+		return nil, http.StatusNotFound, "proxy not found"
+	}
+
+	// Evict from live rotation + drop bound sessions immediately.
+	if h.proxyServer != nil {
+		h.proxyServer.EvictProxy(id)
+	}
+
+	h.logger.Info("proxy invalidated", "id", id, "minutes", body.Minutes, "reason", body.Reason)
+	return map[string]interface{}{
+		"status":         "invalidated",
+		"id":             proxyObj.ID,
+		"address":        proxyObj.Address,
+		"cooldown_until": proxyObj.CooldownUntil,
+	}, http.StatusOK, ""
+}
+
 // InvalidateProxy marks a proxy as temporarily out of rotation (e.g. when the
 // client detects it has been rate-limited). It sets a DB cooldown and evicts the
 // proxy from live rotation immediately, rebinding any sessions that were using it.
@@ -108,86 +184,93 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	var body struct {
-		Minutes int    `json:"minutes"`
-		Reason  string `json:"reason"`
-		Domain  string `json:"domain"`
-	}
+	var body invalidateBody
 	// Body is optional.
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	// minutes <= 0 → long default ("until reactivated"); >0 → that many minutes.
-	d := time.Duration(body.Minutes) * time.Minute
-
-	// Domain-scoped invalidation: cooldown applies only to this target domain.
-	if body.Domain != "" {
-		domain := proxy.NormalizeCooldownDomain(body.Domain)
-		if domain == "" {
-			writeError(w, http.StatusBadRequest, "invalid domain")
-			return
-		}
-		if d <= 0 {
-			d = 24 * time.Hour // same "until reactivated" default as SetCooldown
-		}
-		until := time.Now().Add(d)
-
-		proxyObj, err := h.proxyRepo.SetDomainCooldown(r.Context(), id, domain, until, body.Reason)
-		if err != nil {
-			h.logger.Error("failed to invalidate proxy for domain", "id", id, "domain", domain, "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to invalidate proxy")
-			return
-		}
-		if proxyObj == nil {
-			writeError(w, http.StatusNotFound, "proxy not found")
-			return
-		}
-
-		// Make it effective immediately. Sessions bound to this proxy are kept;
-		// they rebind lazily on their next request to the cooled domain.
-		if h.proxyServer != nil {
-			h.proxyServer.SetDomainCooldown(id, domain, until, body.Reason)
-		}
-
-		h.logger.Info("proxy invalidated for domain",
-			"id", id, "domain", domain, "minutes", body.Minutes, "reason", body.Reason)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":         "invalidated",
-			"id":             proxyObj.ID,
-			"address":        proxyObj.Address,
-			"domain":         domain,
-			"cooldown_until": until,
-		})
+	payload, status, msg := h.applyInvalidation(r.Context(), id, body)
+	if status != http.StatusOK {
+		writeError(w, status, msg)
 		return
 	}
-
-	proxyObj, err := h.proxyRepo.SetCooldown(r.Context(), id, d, body.Reason)
-	if err != nil {
-		h.logger.Error("failed to invalidate proxy", "id", id, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to invalidate proxy")
-		return
-	}
-	if proxyObj == nil {
-		writeError(w, http.StatusNotFound, "proxy not found")
-		return
-	}
-
-	// Evict from live rotation + drop bound sessions immediately.
-	if h.proxyServer != nil {
-		h.proxyServer.EvictProxy(id)
-	}
-
-	h.logger.Info("proxy invalidated", "id", id, "minutes", body.Minutes, "reason", body.Reason)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	resp := map[string]interface{}{
-		"status":         "invalidated",
-		"id":             proxyObj.ID,
-		"address":        proxyObj.Address,
-		"cooldown_until": proxyObj.CooldownUntil,
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// InvalidateSession invalidates the proxy currently bound to a sticky-session
+// token — for when the client knows its session is burned (e.g. it hit a 429)
+// but not which proxy ID served it. The bound proxy gets the same cooldown as
+// /proxies/{id}/invalidate; the session rebinds to a fresh proxy on its next
+// request. Domain-scoped invalidation keeps the binding and only cools the
+// proxy for that domain.
+//
+//	@Summary		Invalidate the proxy bound to a session
+//	@Description	Look up the sticky session by token and invalidate the proxy it is bound to. Pass "pool_id" to scope to a single pool, "minutes"/"reason"/"domain" as for proxy invalidation.
+//	@Tags			sessions
+//	@Param			token	body	string	true	"Session token"
+//	@Param			pool_id	body	int		false	"Restrict to a single pool"
+//	@Param			minutes	body	int		false	"Cooldown minutes (default 30; 0 = until reactivated)"
+//	@Param			reason	body	string	false	"Why the proxy was invalidated"
+//	@Param			domain	body	string	false	"Scope the cooldown to this domain"
+//	@Success		200	{object}	map[string]interface{}
+//	@Router			/sessions/invalidate [post]
+func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token  string `json:"token"`
+		PoolID *int   `json:"pool_id"`
+		invalidateBody
 	}
-	_ = json.NewEncoder(w).Encode(resp)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
+		writeError(w, http.StatusBadRequest, "token is required")
+		return
+	}
+	if h.proxyServer == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy server not available")
+		return
+	}
+
+	sessions := h.proxyServer.SessionsForToken(body.Token)
+	if body.PoolID != nil {
+		filtered := sessions[:0]
+		for _, s := range sessions {
+			if s.PoolID == *body.PoolID {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
+	}
+	if len(sessions) == 0 {
+		writeError(w, http.StatusNotFound, "no live session for token")
+		return
+	}
+
+	// A token normally binds one proxy, but the same token may be bound in
+	// several pools — invalidate each distinct proxy once.
+	seen := make(map[int]bool)
+	invalidated := make([]map[string]interface{}, 0, len(sessions))
+	for _, s := range sessions {
+		if seen[s.ProxyID] {
+			continue
+		}
+		seen[s.ProxyID] = true
+		payload, status, msg := h.applyInvalidation(r.Context(), s.ProxyID, body.invalidateBody)
+		if status != http.StatusOK {
+			writeError(w, status, msg)
+			return
+		}
+		payload["pool_id"] = s.PoolID
+		invalidated = append(invalidated, payload)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "invalidated",
+		"token":    body.Token,
+		"sessions": len(sessions),
+		"proxies":  invalidated,
+	})
 }
 
 // ReactivateProxy clears a proxy's cooldown, returning it to rotation. With a
