@@ -116,19 +116,8 @@ export interface SystemMetrics {
 
 export interface Settings {
   rotation: {
-    method: "random" | "roundrobin" | "least_conn" | "time_based"
-    time_based?: {
-      interval: number
-    }
-    remove_unhealthy: boolean
-    fallback: boolean
-    fallback_max_retries: number
     follow_redirect: boolean
     timeout: number
-    retries: number
-    allowed_protocols: string[]
-    max_response_time: number
-    min_success_rate: number
   }
   rate_limit: {
     enabled: boolean

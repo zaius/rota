@@ -146,11 +146,6 @@ func (h *SettingsHandler) validateSettings(s *models.Settings) error {
 		return fmt.Errorf("rotation.timeout must be between 1 and 300")
 	}
 
-	// Validate rotation retries
-	if s.Rotation.Retries < 0 || s.Rotation.Retries > 10 {
-		return fmt.Errorf("rotation.retries must be between 0 and 10")
-	}
-
 	// Validate healthcheck timeout
 	if s.HealthCheck.Timeout < 1 || s.HealthCheck.Timeout > 300 {
 		return fmt.Errorf("healthcheck.timeout must be between 1 and 300")
