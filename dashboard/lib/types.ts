@@ -40,6 +40,22 @@ export interface DashboardStats {
   request_growth: number
   success_rate_growth: number
   response_time_delta: number
+  tunnels: TunnelStats
+}
+
+/**
+ * CONNECT tunnel activity. HTTPS traffic does not show up in the request
+ * counters above: one tunnel is one event however many requests the client
+ * sends through it, so bytes and mean concurrency are the volume signal.
+ */
+export interface TunnelStats {
+  open: number
+  today: number
+  bytes_up_today: number
+  bytes_down_today: number
+  mean_concurrency: number
+  /** Requests seen inside intercepted tunnels; 0 when interception is off. */
+  requests_today: number
 }
 
 export interface ChartDataPoint {
@@ -376,6 +392,7 @@ export interface ProxyUser {
   fallback_pool_ids: number[]
   max_retries: number
   requests_per_minute: number
+  inspect_tls: boolean
   created_at: string
   updated_at: string
 }
@@ -388,6 +405,7 @@ export interface CreateProxyUserRequest {
   fallback_pool_ids: number[]
   max_retries: number
   requests_per_minute?: number
+  inspect_tls?: boolean
 }
 
 export interface UpdateProxyUserRequest {
@@ -397,6 +415,7 @@ export interface UpdateProxyUserRequest {
   fallback_pool_ids?: number[]
   max_retries?: number
   requests_per_minute?: number
+  inspect_tls?: boolean
 }
 
 export interface CreatePoolRequest {

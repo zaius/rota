@@ -52,6 +52,9 @@ type Config struct {
 	// the per-IP block. (TRUST_PROXY_HEADERS, default false)
 	TrustProxyHeaders bool
 
+	// TLSInspect configures optional HTTPS interception (TLS_INSPECT_*).
+	TLSInspect TLSInspectConfig
+
 	// Auth brute-force protection
 	// Per-IP: after AuthIPMaxAttempts failures within AuthIPWindowMinutes,
 	// that IP is blocked for AuthIPBlockMinutes.
@@ -72,6 +75,28 @@ type DatabaseConfig struct {
 	Password string
 	Name     string
 	SSLMode  string
+}
+
+// TLSInspectConfig holds the server-side half of HTTPS interception.
+//
+// Interception requires this AND the per-user inspect_tls flag: a CA here only
+// makes interception possible, never automatic. With no CA configured every
+// CONNECT tunnel stays opaque no matter what any user has set, so clients keep
+// owning their own TLS by default.
+type TLSInspectConfig struct {
+	// CACertFile / CAKeyFile are PEM paths for the CA that signs the
+	// certificates presented to intercepted clients. Both or neither.
+	CACertFile string
+	CAKeyFile  string
+
+	// BypassDomains are hosts (and their subdomains) never intercepted, for
+	// targets that pin certificates or must see an untouched handshake.
+	BypassDomains []string
+}
+
+// Enabled reports whether a CA keypair is configured.
+func (t *TLSInspectConfig) Enabled() bool {
+	return t.CACertFile != "" && t.CAKeyFile != ""
 }
 
 // ClickHouseConfig holds the ClickHouse connection settings (native protocol).
@@ -121,6 +146,12 @@ func Load() (*Config, error) {
 		WebDir:             getEnv("WEB_DIR", ""),
 		TrustProxyHeaders:  getEnvAsBool("TRUST_PROXY_HEADERS", false),
 
+		TLSInspect: TLSInspectConfig{
+			CACertFile:    getEnv("TLS_INSPECT_CA_CERT", ""),
+			CAKeyFile:     getEnv("TLS_INSPECT_CA_KEY", ""),
+			BypassDomains: getEnvAsSlice("TLS_INSPECT_BYPASS_DOMAINS", nil),
+		},
+
 		AuthIPMaxAttempts:      getEnvAsInt("AUTH_IP_MAX_ATTEMPTS", 10),
 		AuthIPWindowMinutes:    getEnvAsInt("AUTH_IP_WINDOW_MINUTES", 10),
 		AuthIPBlockMinutes:     getEnvAsInt("AUTH_IP_BLOCK_MINUTES", 30),
@@ -159,6 +190,13 @@ func (c *Config) Validate() error {
 
 	if c.EventStore != "postgres" && c.EventStore != "clickhouse" {
 		return fmt.Errorf("invalid event store: %s (must be postgres or clickhouse)", c.EventStore)
+	}
+
+	// Half a keypair means someone intended to enable interception and it
+	// would silently stay off — worth failing over rather than discovering it
+	// through absent data.
+	if (c.TLSInspect.CACertFile == "") != (c.TLSInspect.CAKeyFile == "") {
+		return fmt.Errorf("TLS_INSPECT_CA_CERT and TLS_INSPECT_CA_KEY must be set together")
 	}
 
 	return nil

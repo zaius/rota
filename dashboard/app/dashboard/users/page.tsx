@@ -38,6 +38,7 @@ const DEFAULT_FORM: CreateProxyUserRequest = {
   fallback_pool_ids: [],
   max_retries: 5,
   requests_per_minute: 0,
+  inspect_tls: false,
 }
 
 export default function UsersPage() {
@@ -76,6 +77,7 @@ export default function UsersPage() {
       fallback_pool_ids: u.fallback_pool_ids ?? [],
       max_retries: u.max_retries,
       requests_per_minute: u.requests_per_minute ?? 0,
+      inspect_tls: u.inspect_tls ?? false,
     })
     setShowPass(false)
     setDialogOpen(true)
@@ -93,6 +95,7 @@ export default function UsersPage() {
           fallback_pool_ids: form.fallback_pool_ids,
           max_retries: form.max_retries,
           requests_per_minute: form.requests_per_minute,
+          inspect_tls: form.inspect_tls,
         }
         if (form.password) upd.password = form.password
         await api.updateProxyUser(editUser.id, upd)
@@ -420,6 +423,24 @@ export default function UsersPage() {
               />
               <p className="text-xs text-muted-foreground">
                 0 = no limit. When exceeded, proxy returns 429.
+              </p>
+            </div>
+
+            {/* HTTPS interception */}
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="user-inspect-tls"
+                  checked={form.inspect_tls ?? false}
+                  onCheckedChange={v => setForm({ ...form, inspect_tls: v })}
+                />
+                <Label htmlFor="user-inspect-tls">Inspect HTTPS</Label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Off, a CONNECT tunnel is opaque and counts as one event no matter how many
+                requests the client sends through it. On, Rota terminates TLS to record each
+                request individually &mdash; requires a server CA the client trusts, and forces
+                HTTP/1.1.
               </p>
             </div>
 

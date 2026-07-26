@@ -52,6 +52,7 @@ func (f *fakeProxyServer) SetDomainCooldown(proxyID int, domain string, until ti
 func (f *fakeProxyServer) ClearDomainCooldown(proxyID int, domain string) bool { return false }
 func (f *fakeProxyServer) ClearProxyDomainCooldowns(proxyID int) int           { return 0 }
 func (f *fakeProxyServer) ListDomainCooldowns() []models.ProxyDomainCooldown   { return nil }
+func (f *fakeProxyServer) OpenTunnels() int64                                  { return 0 }
 
 func newTestControlHandler(ps ProxyServer) *ProxyControlHandler {
 	h := NewProxyControlHandler(nil, nil, logger.New("error"))

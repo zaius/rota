@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,20 +30,42 @@ const ProxyIDHeader = "X-Rota-Proxy-Id"
 // settings is swapped by ReloadSettings concurrently with hot-path request
 // goroutines, so it is held in an atomic pointer and read via getSettings.
 type UpstreamProxyHandler struct {
-	settings atomic.Pointer[models.RotationSettings]
-	logger   *logger.Logger
+	settings  atomic.Pointer[models.RotationSettings]
+	inspector *TLSInspector
+	logger    *logger.Logger
+
+	// openTunnels is the live count of established CONNECT tunnels. Tunnel
+	// history in the event store only covers tunnels that have closed, so
+	// without this a long-lived tunnel is invisible for as long as it matters
+	// most.
+	openTunnels atomic.Int64
 }
 
-// NewUpstreamProxyHandler creates a new upstream proxy handler.
+// NewUpstreamProxyHandler creates a new upstream proxy handler. inspector may
+// be nil, in which case CONNECT tunnels are always passed through opaquely.
 func NewUpstreamProxyHandler(
 	settings *models.RotationSettings,
+	inspector *TLSInspector,
 	log *logger.Logger,
 ) *UpstreamProxyHandler {
 	h := &UpstreamProxyHandler{
-		logger: log,
+		inspector: inspector,
+		logger:    log,
 	}
 	h.setSettings(settings)
 	return h
+}
+
+// OpenTunnels returns the number of CONNECT tunnels currently established.
+func (h *UpstreamProxyHandler) OpenTunnels() int64 { return h.openTunnels.Load() }
+
+// tunnelTimeout is the per-operation timeout for an intercepted tunnel's
+// handshakes and upstream round trips, taken from rotation settings.
+func (h *UpstreamProxyHandler) tunnelTimeout() time.Duration {
+	if s := h.getSettings(); s != nil && s.Timeout > 0 {
+		return time.Duration(s.Timeout) * time.Second
+	}
+	return 90 * time.Second
 }
 
 // getSettings returns the current rotation settings snapshot.
@@ -127,7 +151,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		return
 	}
 
-	upstreamConn, proxyID, err := chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
+	upstreamConn, binding, err := chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
 	if err != nil {
 		h.logger.Error("CONNECT upstream failed",
 			"source", "proxy",
@@ -157,23 +181,62 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 	// Send 200 Connection Established to the client. The serving proxy's ID
 	// rides along as a header — the only response the client sees before the
 	// tunnel goes opaque.
-	established := "HTTP/1.1 200 Connection Established\r\n" + ProxyIDHeader + ": " + strconv.Itoa(proxyID) + "\r\n\r\n"
+	established := "HTTP/1.1 200 Connection Established\r\n" + ProxyIDHeader + ": " + strconv.Itoa(binding.ProxyID) + "\r\n\r\n"
 	if _, err := clientConn.Write([]byte(established)); err != nil {
 		h.logger.Error("failed to write CONNECT response", "error", err)
 		return
 	}
 
-	// Drain any buffered data the HTTP server read ahead.
-	if clientBuf != nil && clientBuf.Reader.Buffered() > 0 {
-		buffered := make([]byte, clientBuf.Reader.Buffered())
-		if _, err := io.ReadFull(clientBuf.Reader, buffered); err == nil {
-			upstreamConn.Write(buffered) //nolint:errcheck
-		}
+	h.openTunnels.Add(1)
+	defer h.openTunnels.Add(-1)
+
+	// Anything the server read past the CONNECT belongs to the tunnel, so put
+	// it back in front of the client stream rather than injecting it upstream
+	// out of band — interception has to see the whole byte stream, starting
+	// with the ClientHello a pipelining client already sent.
+	clientStream := net.Conn(clientConn)
+	if buffered := drainBuffered(clientBuf); len(buffered) > 0 {
+		clientStream = &prefixConn{Conn: clientConn, prefix: buffered}
 	}
 
-	// Bidirectional copy — uses splice(2) on Linux for zero-copy.
-	// (The successful CONNECT was already recorded by the chain.)
-	BidirectionalCopy(clientConn, upstreamConn)
+	if h.inspector != nil && chain.InspectTLS() && h.inspector.ShouldInspect(host) {
+		counts, requests, err := h.inspector.Serve(clientStream, upstreamConn, host, binding, h.tunnelTimeout())
+		binding.RecordClose(counts, requests, err)
+		if err != nil {
+			h.logger.Warn("tunnel interception failed",
+				"source", "proxy", "host", host, "error", err)
+		} else {
+			h.logger.Debug("intercepted tunnel closed",
+				"source", "proxy", "host", host,
+				"requests", requests, "bytes", counts.Total())
+		}
+		return
+	}
+
+	// Pass-through. Uses splice(2) on Linux for zero-copy whenever the client
+	// stream is still a raw socket, which is the common case — a read-ahead
+	// wrapper falls back to io.Copy. The payload is opaque, so bytes and
+	// lifetime are the only volume signal available; the CONNECT itself was
+	// already recorded by the chain.
+	counts, err := BidirectionalCopy(clientStream, upstreamConn)
+	binding.RecordClose(counts, 0, nil)
+
+	h.logger.Debug("tunnel closed",
+		"source", "proxy", "host", host,
+		"bytes_up", counts.BytesUp, "bytes_down", counts.BytesDown, "error", err)
+}
+
+// drainBuffered returns any bytes the HTTP server read past the CONNECT
+// request line while filling its buffer.
+func drainBuffered(clientBuf *bufio.ReadWriter) []byte {
+	if clientBuf == nil || clientBuf.Reader.Buffered() == 0 {
+		return nil
+	}
+	buffered := make([]byte, clientBuf.Reader.Buffered())
+	if _, err := io.ReadFull(clientBuf.Reader, buffered); err != nil {
+		return nil
+	}
+	return buffered
 }
 
 // hopHeaders are the per-connection headers defined by RFC 7230 §6.1. They

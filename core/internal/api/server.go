@@ -397,6 +397,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) SetProxyServer(ps handlers.ProxyServer) {
 	s.proxyServer = ps
 	s.proxyControlHandler.SetProxyServer(ps)
+	s.dashboardHandler.SetProxyServer(ps)
 }
 
 // generateJWTSecret generates a cryptographically secure random JWT secret

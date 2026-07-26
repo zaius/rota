@@ -99,6 +99,8 @@ Whether you're conducting web scraping operations, performing security research,
 ### Data & Analytics
 - 📈 **Time-Series Storage**: TimescaleDB for efficient historical data storage
 - 🔍 **Request History**: Track all proxy requests with detailed metadata
+- 🔒 **Tunnel Accounting**: Bytes, lifetime and concurrency for every HTTPS CONNECT tunnel
+- 🕵️ **Optional HTTPS Inspection**: Per-user opt-in to record individual requests inside TLS tunnels
 - 📉 **Performance Analytics**: Analyze proxy performance over time
 - 🎯 **Usage Insights**: Understand traffic patterns and proxy utilization
 
@@ -491,6 +493,64 @@ curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
 ```
 
 Proxy-user calls are scoped to the user's own pools: only proxies that belong to the user's main/fallback pools can be invalidated, and only sessions in those pools are visible. The endpoints share the same brute-force protection as the login endpoint. Reactivation stays admin-only — prefer invalidating with `minutes` so the proxy comes back on its own.
+
+---
+
+## 📊 HTTPS Traffic Accounting
+
+### Why HTTPS request counts look low
+
+An HTTPS request through a proxy is a `CONNECT` tunnel. Rota records **one event** when the tunnel opens, and after that the payload is encrypted bytes it cannot read. A client using HTTP keep-alive — or HTTP/2, which multiplexes hundreds of concurrent streams over one connection — sends every subsequent request through that same tunnel.
+
+So for HTTPS targets, **request counts are really tunnel counts**. A scraper with a connection pool can send thousands of requests and produce a few dozen events. Two orders of magnitude is normal.
+
+Plain HTTP is unaffected: those requests are forwarded individually and counted individually.
+
+### What is always recorded
+
+Every tunnel writes a record when it closes, whether or not inspection is enabled:
+
+| Field | Meaning |
+|-------|---------|
+| `bytes_up` / `bytes_down` | Wire bytes each way — real volume even when the payload is opaque |
+| `duration_ms` | How long the tunnel lived |
+| `host` / `domain` | The CONNECT target |
+| `proxy_id`, `pool_id`, `username` | Which proxy, pool and user served it |
+
+The dashboard turns these into **Open Tunnels**, **Tunnels (24h)** and **Tunnel Data (24h)**, plus mean concurrency — the number that distinguishes "3 short tunnels" from "3 tunnels held open all day moving 2 GB".
+
+### Optional: inspecting HTTPS requests
+
+To count individual requests inside tunnels, Rota can terminate TLS, record each request, and re-encrypt to the target. This is **off by default** and requires two independent opt-ins.
+
+**1. Configure a CA on the server** (makes interception possible, never automatic):
+
+```bash
+openssl ecparam -genkey -name prime256v1 -out ca.key
+openssl req -x509 -new -key ca.key -sha256 -days 825 -out ca.crt \
+  -subj "/CN=Rota Inspection CA" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
+```
+
+```bash
+TLS_INSPECT_CA_CERT=/etc/rota/ca.crt
+TLS_INSPECT_CA_KEY=/etc/rota/ca.key
+# Never intercepted (certificate pinning, or targets that must see a clean handshake)
+TLS_INSPECT_BYPASS_DOMAINS=accounts.google.com,api.pinned-service.com
+```
+
+**2. Enable it per proxy user** — the **Inspect HTTPS** toggle on the user, or `inspect_tls` via the API. Users left off keep the untouched tunnel they get today, so clients that want to own their own TLS simply stay opted out.
+
+With no CA configured, no user can be intercepted regardless of their flag.
+
+Once on, each request inside the tunnel produces a normal request event with its method, URL, latency and **status code** — which is what makes blocks visible. A `429` or a `403` block page is an answer, not a transport failure, so it still counts as a successful attempt (matching the plain-HTTP path); query `proxy_requests.status_code` to see blocking, rather than the success rate.
+
+> **Before enabling, understand the trade-offs:**
+> - The client must **trust the CA**, or every intercepted request fails its certificate check.
+> - Interception **forces HTTP/1.1**. Per-request accounting means reading discrete messages, so h2 is not offered. This changes the protocol and TLS fingerprint the target sees — which matters if the target fingerprints clients.
+> - **Certificate-pinning targets will fail** regardless of trust. Add them to `TLS_INSPECT_BYPASS_DOMAINS`.
+> - The CA key can mint a certificate for **any** host. Treat it like any other signing key.
 
 ---
 

@@ -3,8 +3,11 @@ import * as React from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Activity,
+  ArrowDownUp,
+  Cable,
   CheckCircle2,
   Clock,
+  Lock,
   TrendingUp,
   TrendingDown,
   Network,
@@ -21,6 +24,7 @@ import {
 } from "@/components/ui/chart"
 import { Button } from "@/components/ui/button"
 import { api, type SocketHandle } from "@/lib/api"
+import { formatBytes } from "@/lib/format-utils"
 import { ChartRange, DashboardStats, TrafficPoint } from "@/lib/types"
 
 // Colors are validated (dataviz six checks) per mode: light mode uses the
@@ -245,6 +249,59 @@ export default function DashboardPage() {
                 <TrendingUp className="inline h-3 w-3" />
               )}{" "}
               {stats.response_time_delta <= 0 ? "" : "+"}{stats.response_time_delta}ms from yesterday
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/*
+        HTTPS tunnels. The counters above cannot see inside a CONNECT tunnel:
+        it is one event however many requests the client sends through it, so
+        without this row HTTPS traffic reads as near-zero volume.
+      */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Open Tunnels</CardTitle>
+            <Cable className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stats.tunnels.open}</div>
+            <p className="text-xs text-muted-foreground">
+              {stats.tunnels.mean_concurrency.toFixed(1)} open on average over 24h
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Tunnels (24h)</CardTitle>
+            <Lock className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold" suppressHydrationWarning>
+              {stats.tunnels.today.toLocaleString('en-US')}
+            </div>
+            <p className="text-xs text-muted-foreground" suppressHydrationWarning>
+              {stats.tunnels.requests_today > 0
+                ? `${stats.tunnels.requests_today.toLocaleString('en-US')} requests seen inside`
+                : "contents not inspected"}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Tunnel Data (24h)</CardTitle>
+            <ArrowDownUp className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {formatBytes(stats.tunnels.bytes_up_today + stats.tunnels.bytes_down_today)}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {formatBytes(stats.tunnels.bytes_up_today)} sent &middot;{" "}
+              {formatBytes(stats.tunnels.bytes_down_today)} received
             </p>
           </CardContent>
         </Card>

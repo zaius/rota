@@ -103,6 +103,7 @@ func New(
 	poolRepo *repository.PoolRepository,
 	userRepo *repository.UserRepository,
 	settingsRepo *repository.SettingsRepository,
+	inspector *TLSInspector,
 ) (*Server, error) {
 	// Load settings
 	ctx := context.Background()
@@ -129,8 +130,9 @@ func New(
 		}
 	}
 
-	// Create upstream proxy handler (forwards through the request's PoolChain)
-	handler := NewUpstreamProxyHandler(&settings.Rotation, log)
+	// Create upstream proxy handler (forwards through the request's PoolChain).
+	// A nil inspector leaves every CONNECT tunnel opaque.
+	handler := NewUpstreamProxyHandler(&settings.Rotation, inspector, log)
 
 	// Create middlewares
 	rateLimitMw := NewRateLimitMiddleware(settings.RateLimit)
@@ -252,6 +254,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	return s.server.Shutdown(ctx)
+}
+
+// OpenTunnels returns the number of CONNECT tunnels currently established.
+// Tunnel history in the event store only covers tunnels that have closed, so
+// this is the only view of traffic that is in flight right now.
+func (s *Server) OpenTunnels() int64 {
+	if s.handler == nil {
+		return 0
+	}
+	return s.handler.OpenTunnels()
 }
 
 // ListSessions returns a snapshot of all live sticky-session bindings.

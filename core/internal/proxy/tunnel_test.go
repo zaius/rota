@@ -20,9 +20,10 @@ func TestBidirectionalCopy_Basic(t *testing.T) {
 	defer upstreamConn.Close()
 
 	// Start bidirectional copy (proxy sits between proxyClientSide and proxyUpstreamSide).
-	done := make(chan error, 1)
+	done := make(chan TunnelCounts, 1)
 	go func() {
-		done <- BidirectionalCopy(proxyClientSide, proxyUpstreamSide)
+		counts, _ := BidirectionalCopy(proxyClientSide, proxyUpstreamSide)
+		done <- counts
 	}()
 
 	// Client sends data → should arrive at upstream.
@@ -72,9 +73,10 @@ func TestBidirectionalCopy_LargePayload(t *testing.T) {
 	defer clientConn.Close()
 	defer upstreamConn.Close()
 
-	done := make(chan error, 1)
+	done := make(chan TunnelCounts, 1)
 	go func() {
-		done <- BidirectionalCopy(proxyClientSide, proxyUpstreamSide)
+		counts, _ := BidirectionalCopy(proxyClientSide, proxyUpstreamSide)
+		done <- counts
 	}()
 
 	// Generate 10MB of random data.
@@ -115,7 +117,15 @@ func TestBidirectionalCopy_LargePayload(t *testing.T) {
 
 	upstreamConn.Close()
 	select {
-	case <-done:
+	case counts := <-done:
+		// The byte counts are what tunnel accounting reports for an opaque
+		// tunnel, so they have to match the payload exactly — not approximately.
+		if counts.BytesUp != payloadSize {
+			t.Errorf("BytesUp = %d, want %d", counts.BytesUp, payloadSize)
+		}
+		if counts.BytesDown != 0 {
+			t.Errorf("BytesDown = %d, want 0 (nothing sent downstream)", counts.BytesDown)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("BidirectionalCopy did not finish in time")
 	}
@@ -128,9 +138,10 @@ func TestBidirectionalCopy_HalfClose(t *testing.T) {
 	defer clientConn.Close()
 	defer upstreamConn.Close()
 
-	done := make(chan error, 1)
+	done := make(chan TunnelCounts, 1)
 	go func() {
-		done <- BidirectionalCopy(proxyClientSide, proxyUpstreamSide)
+		counts, _ := BidirectionalCopy(proxyClientSide, proxyUpstreamSide)
+		done <- counts
 	}()
 
 	// Client sends data then closes write side.

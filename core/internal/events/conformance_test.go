@@ -260,6 +260,72 @@ func TestIntegration_Requests_InsertStatsCharts(t *testing.T) {
 	}
 }
 
+func TestIntegration_Tunnels_InsertAndStats(t *testing.T) {
+	backend := newTestBackend(t)
+	store := backend.Store()
+	ctx := context.Background()
+	proxyID := backend.SeedProxy(t, "127.0.0.1:9104")
+
+	now := time.Now()
+	tunnels := []TunnelEvent{
+		// Opened and closed inside the window.
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9104", PoolID: 3, Username: "scraper",
+			Host: "www.airbnb.com:443", Domain: "www.airbnb.com",
+			BytesUp: 1_000, BytesDown: 50_000, Requests: 420,
+			DurationMs: 600_000, OpenedAt: now.Add(-30 * time.Minute)},
+		// Opened before the window but closed inside it: its work counts.
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9104",
+			Host: "www.booking.com:443", Domain: "www.booking.com",
+			BytesUp: 500, BytesDown: 10_000,
+			DurationMs: 3 * 60 * 60 * 1000, OpenedAt: now.Add(-150 * time.Minute)},
+		// Opened and closed entirely before the window.
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9104",
+			Host: "www.vrbo.com:443", Domain: "www.vrbo.com",
+			BytesUp: 9_999, BytesDown: 9_999,
+			DurationMs: 1_000, OpenedAt: now.Add(-10 * time.Hour)},
+	}
+	for _, tn := range tunnels {
+		if err := store.InsertTunnel(ctx, tn); err != nil {
+			t.Fatalf("InsertTunnel: %v", err)
+		}
+	}
+
+	stats, err := store.TunnelStats(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("TunnelStats: %v", err)
+	}
+	if stats.Tunnels != 2 {
+		t.Errorf("Tunnels: want 2 in the trailing hour, got %d", stats.Tunnels)
+	}
+	if stats.BytesUp != 1_500 || stats.BytesDown != 60_000 {
+		t.Errorf("bytes: want (1500, 60000), got (%d, %d)", stats.BytesUp, stats.BytesDown)
+	}
+	if stats.Requests != 420 {
+		t.Errorf("Requests: want 420, got %d", stats.Requests)
+	}
+
+	// 10min + 3h of tunnel lifetime over a 1h window: tunnels were open for
+	// more wall-clock than the window itself, which is exactly the signal a
+	// bare tunnel count throws away.
+	wantMs := int64(600_000 + 3*60*60*1000)
+	if stats.TotalDurationMs != wantMs {
+		t.Errorf("TotalDurationMs: want %d, got %d", wantMs, stats.TotalDurationMs)
+	}
+	if got := stats.MeanConcurrency(time.Hour); got < 3.1 || got > 3.2 {
+		t.Errorf("MeanConcurrency: want ~3.17, got %v", got)
+	}
+
+	// Tunnel volume must never leak into request counts — that conflation is
+	// the whole reason tunnels are a separate stream.
+	reqStats, err := store.RequestStats(ctx)
+	if err != nil {
+		t.Fatalf("RequestStats: %v", err)
+	}
+	if reqStats.RequestsToday != 0 {
+		t.Errorf("tunnels leaked into request stats: RequestsToday=%d", reqStats.RequestsToday)
+	}
+}
+
 func TestIntegration_ApplyRetention(t *testing.T) {
 	backend := newTestBackend(t)
 	store := backend.Store()

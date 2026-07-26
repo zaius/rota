@@ -12,6 +12,30 @@ type DashboardStats struct {
 	RequestGrowth     float64 `json:"request_growth"`
 	SuccessRateGrowth float64 `json:"success_rate_growth"`
 	ResponseTimeDelta int     `json:"response_time_delta"`
+
+	// Tunnels covers HTTPS traffic, which the request counters above cannot
+	// see: a CONNECT tunnel is one event no matter how many requests the
+	// client sends through it.
+	Tunnels TunnelStats `json:"tunnels"`
+}
+
+// TunnelStats summarizes CONNECT tunnel activity over the trailing day.
+//
+// It exists because request counts alone are misleading for HTTPS: without it,
+// a client that pushes thousands of requests over a handful of keep-alive
+// tunnels shows up as a handful of events. Bytes and mean concurrency are the
+// volume signal that survives the payload being opaque.
+type TunnelStats struct {
+	Open            int64   `json:"open"`             // established right now
+	Today           int64   `json:"today"`            // closed in the last 24h
+	BytesUpToday    int64   `json:"bytes_up_today"`   // client → target
+	BytesDownToday  int64   `json:"bytes_down_today"` // target → client
+	MeanConcurrency float64 `json:"mean_concurrency"`
+
+	// RequestsToday counts requests seen inside intercepted tunnels. It is 0
+	// when no proxy user has HTTPS interception enabled, which is the default
+	// — an opaque tunnel has no visible requests to count.
+	RequestsToday int64 `json:"requests_today"`
 }
 
 // ChartDataPoint represents a single data point in a chart

@@ -666,6 +666,71 @@ var migrations = []Migration{
 			ON CONFLICT (key) DO NOTHING;
 		`,
 	},
+	{
+		Version:     28,
+		Description: "Create proxy_tunnels table and add proxy_users.inspect_tls",
+		// A CONNECT tunnel is not a request: one tunnel carries every HTTPS
+		// request the client sends over that connection. Recording tunnels in
+		// their own stream keeps request counts honest while still capturing
+		// the volume that flows through opaque tunnels (bytes, lifetime, and —
+		// when TLS interception is enabled for the user — the request count).
+		//
+		// Dimension columns only, no foreign keys beyond proxy_id, matching
+		// proxy_requests: event records must survive pool/user deletion.
+		Up: `
+			CREATE TABLE IF NOT EXISTS proxy_tunnels (
+				id BIGSERIAL,
+				timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+				proxy_id INTEGER REFERENCES proxies(id) ON DELETE CASCADE,
+				proxy_address VARCHAR(255) NOT NULL,
+				pool_id INTEGER,
+				username VARCHAR(255),
+				host VARCHAR(255) NOT NULL,
+				domain VARCHAR(255),
+				bytes_up BIGINT NOT NULL DEFAULT 0,
+				bytes_down BIGINT NOT NULL DEFAULT 0,
+				requests INTEGER NOT NULL DEFAULT 0,
+				duration_ms INTEGER NOT NULL DEFAULT 0,
+				error TEXT
+			);
+
+			DO $ts$
+			BEGIN
+				IF EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb') THEN
+					PERFORM create_hypertable('proxy_tunnels', 'timestamp', if_not_exists => TRUE);
+				END IF;
+			END
+			$ts$;
+
+			CREATE INDEX IF NOT EXISTS idx_proxy_tunnels_proxy_id  ON proxy_tunnels(proxy_id, timestamp DESC);
+			CREATE INDEX IF NOT EXISTS idx_proxy_tunnels_timestamp ON proxy_tunnels(timestamp DESC);
+			CREATE INDEX IF NOT EXISTS idx_proxy_tunnels_domain    ON proxy_tunnels(domain, timestamp DESC);
+
+			DO $ts$
+			BEGIN
+				IF current_setting('timescaledb.license', true) = 'timescale' THEN
+					PERFORM add_retention_policy('proxy_tunnels', INTERVAL '90 days', if_not_exists => TRUE);
+
+					ALTER TABLE proxy_tunnels SET (
+						timescaledb.compress,
+						timescaledb.compress_segmentby = 'proxy_id'
+					);
+					PERFORM add_compression_policy('proxy_tunnels', INTERVAL '14 days', if_not_exists => TRUE);
+				END IF;
+			END
+			$ts$;
+
+			-- Per-user opt-in for HTTPS interception. Default false: without it
+			-- a tunnel stays opaque and the client owns its own TLS, which is
+			-- the behaviour every existing user already has.
+			ALTER TABLE proxy_users
+			  ADD COLUMN IF NOT EXISTS inspect_tls BOOLEAN NOT NULL DEFAULT false;
+		`,
+		Down: `
+			ALTER TABLE proxy_users DROP COLUMN IF EXISTS inspect_tls;
+			DROP TABLE IF EXISTS proxy_tunnels;
+		`,
+	},
 }
 
 // migrationLockKey is an arbitrary constant identifying Rota's migration

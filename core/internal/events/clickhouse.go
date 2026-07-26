@@ -66,6 +66,24 @@ var chSchema = []string{
 	PARTITION BY toYYYYMMDD(timestamp)
 	ORDER BY (proxy_id, timestamp)
 	TTL toDateTime(timestamp) + toIntervalDay(90)`,
+
+	`CREATE TABLE IF NOT EXISTS proxy_tunnels (
+		timestamp     DateTime64(3),
+		proxy_id      Int32,
+		proxy_address String,
+		pool_id       Int32,
+		username      LowCardinality(String),
+		host          String,
+		domain        String,
+		bytes_up      Int64,
+		bytes_down    Int64,
+		requests      Int32,
+		duration_ms   Int32,
+		error         String
+	) ENGINE = MergeTree
+	PARTITION BY toYYYYMMDD(timestamp)
+	ORDER BY (proxy_id, timestamp)
+	TTL toDateTime(timestamp) + toIntervalDay(90)`,
 }
 
 // NewClickHouseStore connects to ClickHouse, verifies the connection and
@@ -335,6 +353,65 @@ func (s *ClickHouseStore) RequestStats(ctx context.Context) (*RequestStats, erro
 	return stats, nil
 }
 
+// InsertTunnel records one completed CONNECT tunnel.
+func (s *ClickHouseStore) InsertTunnel(ctx context.Context, event TunnelEvent) error {
+	err := s.conn.Exec(ctx, `
+		INSERT INTO proxy_tunnels (
+			timestamp, proxy_id, proxy_address, pool_id, username,
+			host, domain, bytes_up, bytes_down, requests, duration_ms, error
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		event.OpenedAt,
+		int32(event.ProxyID),
+		event.ProxyAddress,
+		int32(event.PoolID),
+		event.Username,
+		event.Host,
+		event.Domain,
+		event.BytesUp,
+		event.BytesDown,
+		int32(event.Requests),
+		int32(event.DurationMs),
+		event.Error,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert proxy tunnel: %w", err)
+	}
+	return nil
+}
+
+// TunnelStats aggregates tunnels that closed within the trailing window.
+func (s *ClickHouseStore) TunnelStats(ctx context.Context, window time.Duration) (*TunnelSummary, error) {
+	// Bucketed by close time, not open time: a tunnel opened before the
+	// window but closed inside it did its work in the window.
+	var (
+		tunnels                       uint64
+		bytesUp, bytesDown, durations int64
+		requests                      int64
+	)
+	err := s.conn.QueryRow(ctx, `
+		SELECT
+			count(),
+			toInt64(sum(bytes_up)),
+			toInt64(sum(bytes_down)),
+			toInt64(sum(requests)),
+			toInt64(sum(duration_ms))
+		FROM proxy_tunnels
+		WHERE timestamp + toIntervalMillisecond(duration_ms) >= now() - toIntervalSecond(?)
+	`, int64(window.Seconds())).Scan(&tunnels, &bytesUp, &bytesDown, &requests, &durations)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tunnel stats: %w", err)
+	}
+
+	return &TunnelSummary{
+		Tunnels:         int64(tunnels),
+		BytesUp:         bytesUp,
+		BytesDown:       bytesDown,
+		Requests:        requests,
+		TotalDurationMs: durations,
+	}, nil
+}
+
 // TrafficSeries returns request volume and latency percentiles bucketed over
 // the trailing range, zero-filled to a dense series.
 func (s *ClickHouseStore) TrafficSeries(ctx context.Context, rng string) ([]models.TrafficPoint, error) {
@@ -571,7 +648,10 @@ func (s *ClickHouseStore) ApplyRetention(ctx context.Context, cfg RetentionConfi
 	if err := apply("logs", cfg.RetentionDays); err != nil {
 		return err
 	}
-	return apply("proxy_requests", cfg.RequestRetentionDays)
+	if err := apply("proxy_requests", cfg.RequestRetentionDays); err != nil {
+		return err
+	}
+	return apply("proxy_tunnels", cfg.RequestRetentionDays)
 }
 
 // scanCHLogs reads (id, timestamp, level, message, details, metadata) rows.

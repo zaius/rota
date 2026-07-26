@@ -118,6 +118,47 @@ func (t *UsageTracker) updateProxyStats(ctx context.Context, record RequestRecor
 	return err
 }
 
+// TunnelRecord represents one completed CONNECT tunnel.
+type TunnelRecord struct {
+	ProxyID      int
+	ProxyAddress string
+	PoolID       int    // pool that served the tunnel; 0 = default pool
+	Username     string // proxy user the tunnel was authenticated as
+	Host         string // CONNECT authority, host:port
+	BytesUp      int64  // client → target
+	BytesDown    int64  // target → client
+	Requests     int    // HTTP requests seen inside; 0 when not inspected
+	Duration     time.Duration
+	ErrorMessage string
+	OpenedAt     time.Time
+}
+
+// RecordTunnel records a completed CONNECT tunnel in the event store.
+//
+// Unlike RecordRequest this does not touch proxy state: the tunnel's
+// establishment already advanced the health state machine when it opened, and
+// a tunnel torn down by either peer is normal, not a proxy failure.
+func (t *UsageTracker) RecordTunnel(ctx context.Context, record TunnelRecord) error {
+	err := t.events.InsertTunnel(ctx, events.TunnelEvent{
+		ProxyID:      record.ProxyID,
+		ProxyAddress: record.ProxyAddress,
+		PoolID:       record.PoolID,
+		Username:     record.Username,
+		Host:         record.Host,
+		Domain:       NormalizeCooldownDomain(record.Host),
+		BytesUp:      record.BytesUp,
+		BytesDown:    record.BytesDown,
+		Requests:     record.Requests,
+		DurationMs:   int(record.Duration.Milliseconds()),
+		Error:        record.ErrorMessage,
+		OpenedAt:     record.OpenedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to insert proxy tunnel: %w", err)
+	}
+	return nil
+}
+
 // RecordHealthCheck records a health check result
 func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, success bool, responseTime int, errorMsg string) error {
 	now := time.Now()

@@ -13,6 +13,7 @@ type ProxyUser struct {
 	FallbackPoolIDs   []int     `json:"fallback_pool_ids"`
 	MaxRetries        int       `json:"max_retries"`
 	RequestsPerMinute int       `json:"requests_per_minute"` // 0 = no limit
+	InspectTLS        bool      `json:"inspect_tls"`         // intercept HTTPS to count requests
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 
@@ -36,6 +37,12 @@ type CreateProxyUserRequest struct {
 	FallbackPoolIDs   []int  `json:"fallback_pool_ids"`
 	MaxRetries        int    `json:"max_retries"           validate:"omitempty,min=1,max=50"`
 	RequestsPerMinute int    `json:"requests_per_minute"` // 0 = no limit
+
+	// InspectTLS opts this user's HTTPS traffic into interception, so requests
+	// inside CONNECT tunnels are recorded individually instead of the tunnel
+	// counting as one event. Requires a server-side CA (TLS_INSPECT_CA_*) and
+	// a client that trusts it; false leaves TLS to the client.
+	InspectTLS bool `json:"inspect_tls"`
 }
 
 // UpdateProxyUserRequest is the payload for PUT /api/v1/proxy-users/{id}.
@@ -48,6 +55,7 @@ type UpdateProxyUserRequest struct {
 	FallbackPoolIDs   Optional[[]int] `json:"fallback_pool_ids"`             // omitted keeps, null/[] clears, list replaces
 	MaxRetries        int             `json:"max_retries,omitempty"`         // 0 keeps
 	RequestsPerMinute *int            `json:"requests_per_minute,omitempty"` // omitted keeps
+	InspectTLS        *bool           `json:"inspect_tls,omitempty"`         // omitted keeps
 }
 
 // proxyUserContextKey is used to pass the resolved ProxyUser through request context

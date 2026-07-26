@@ -14,6 +14,12 @@ type DashboardHandler struct {
 	dashboardRepo *repository.DashboardRepository
 	proxyRepo     *repository.ProxyRepository
 	logger        *logger.Logger
+
+	// proxyServer supplies the live open-tunnel count. Stored tunnel history
+	// only covers tunnels that have closed, so without this the dashboard
+	// cannot show traffic that is in flight right now. Set after
+	// construction; nil in tests and until SetProxyServer runs.
+	proxyServer ProxyServer
 }
 
 // NewDashboardHandler creates a new DashboardHandler
@@ -42,8 +48,16 @@ func (h *DashboardHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.proxyServer != nil {
+		stats.Tunnels.Open = h.proxyServer.OpenTunnels()
+	}
+
 	writeJSON(w, http.StatusOK, stats)
 }
+
+// SetProxyServer attaches the running proxy server, which supplies live
+// counters the event store cannot (open tunnels).
+func (h *DashboardHandler) SetProxyServer(ps ProxyServer) { h.proxyServer = ps }
 
 // trafficRanges is the set of ranges the traffic chart accepts.
 var trafficRanges = map[string]bool{"1h": true, "6h": true, "24h": true, "7d": true, "30d": true}

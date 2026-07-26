@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/events"
@@ -57,6 +58,19 @@ func (r *DashboardRepository) GetStats(ctx context.Context) (*models.DashboardSt
 	}
 	stats.SuccessRateGrowth = reqStats.SuccessRateToday - reqStats.SuccessRateYesterday
 	stats.ResponseTimeDelta = reqStats.ResponseTimeToday - reqStats.ResponseTimeYesterday
+
+	const tunnelWindow = 24 * time.Hour
+	tunnels, err := r.events.TunnelStats(ctx, tunnelWindow)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tunnel stats: %w", err)
+	}
+	stats.Tunnels = models.TunnelStats{
+		Today:           tunnels.Tunnels,
+		BytesUpToday:    tunnels.BytesUp,
+		BytesDownToday:  tunnels.BytesDown,
+		RequestsToday:   tunnels.Requests,
+		MeanConcurrency: tunnels.MeanConcurrency(tunnelWindow),
+	}
 
 	return &stats, nil
 }

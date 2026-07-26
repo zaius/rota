@@ -333,6 +333,84 @@ func (s *PostgresStore) RequestStats(ctx context.Context) (*RequestStats, error)
 	return &stats, nil
 }
 
+// InsertTunnel records one completed CONNECT tunnel.
+func (s *PostgresStore) InsertTunnel(ctx context.Context, event TunnelEvent) error {
+	query := `
+		INSERT INTO proxy_tunnels (
+			proxy_id, proxy_address, pool_id, username, host, domain,
+			bytes_up, bytes_down, requests, duration_ms, error, timestamp
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`
+
+	// Zero-value dimensions are stored as NULL: "not applicable", not "".
+	var poolID *int
+	if event.PoolID > 0 {
+		poolID = &event.PoolID
+	}
+	var username *string
+	if event.Username != "" {
+		username = &event.Username
+	}
+	var domain *string
+	if event.Domain != "" {
+		domain = &event.Domain
+	}
+	var errorMsg *string
+	if event.Error != "" {
+		errorMsg = &event.Error
+	}
+
+	_, err := s.db.Pool.Exec(
+		ctx,
+		query,
+		event.ProxyID,
+		event.ProxyAddress,
+		poolID,
+		username,
+		event.Host,
+		domain,
+		event.BytesUp,
+		event.BytesDown,
+		event.Requests,
+		event.DurationMs,
+		errorMsg,
+		pgTime(event.OpenedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert proxy tunnel: %w", err)
+	}
+	return nil
+}
+
+// TunnelStats aggregates tunnels that closed within the trailing window.
+func (s *PostgresStore) TunnelStats(ctx context.Context, window time.Duration) (*TunnelSummary, error) {
+	// Tunnels are bucketed by close time, not open time: a tunnel opened
+	// before the window but closed inside it did its work in the window.
+	query := `
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(bytes_up), 0),
+			COALESCE(SUM(bytes_down), 0),
+			COALESCE(SUM(requests), 0),
+			COALESCE(SUM(duration_ms), 0)
+		FROM proxy_tunnels
+		WHERE timestamp + make_interval(secs => duration_ms / 1000.0) >= NOW() - $1::interval
+	`
+
+	var stats TunnelSummary
+	err := s.db.Pool.QueryRow(ctx, query, window).Scan(
+		&stats.Tunnels,
+		&stats.BytesUp,
+		&stats.BytesDown,
+		&stats.Requests,
+		&stats.TotalDurationMs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tunnel stats: %w", err)
+	}
+	return &stats, nil
+}
+
 // ProxyRollup returns per-proxy request aggregates over the whole event
 // window.
 func (s *PostgresStore) ProxyRollup(ctx context.Context) ([]ProxyRequestStats, error) {
@@ -573,6 +651,10 @@ func (s *PostgresStore) applyRetentionPolicies(ctx context.Context, cfg Retentio
 			SELECT remove_retention_policy('proxy_requests', if_exists => true);
 			SELECT add_retention_policy('proxy_requests', INTERVAL '%d days', if_not_exists => true);
 		`, cfg.RequestRetentionDays))
+		statements = append(statements, fmt.Sprintf(`
+			SELECT remove_retention_policy('proxy_tunnels', if_exists => true);
+			SELECT add_retention_policy('proxy_tunnels', INTERVAL '%d days', if_not_exists => true);
+		`, cfg.RequestRetentionDays))
 	}
 
 	for _, sql := range statements {
@@ -587,7 +669,7 @@ func (s *PostgresStore) applyRetentionPolicies(ctx context.Context, cfg Retentio
 // portable fallback for servers without policy support. Non-positive periods
 // are skipped so a zero-value config can never delete everything.
 func (s *PostgresStore) applyRetentionDeletes(ctx context.Context, cfg RetentionConfig) error {
-	var logsDeleted, requestsDeleted int64
+	var logsDeleted, requestsDeleted, tunnelsDeleted int64
 
 	if cfg.RetentionDays > 0 {
 		res, err := s.db.Pool.Exec(ctx,
@@ -607,12 +689,21 @@ func (s *PostgresStore) applyRetentionDeletes(ctx context.Context, cfg Retention
 			return fmt.Errorf("failed to delete expired proxy requests: %w", err)
 		}
 		requestsDeleted = res.RowsAffected()
+
+		res, err = s.db.Pool.Exec(ctx,
+			`DELETE FROM proxy_tunnels WHERE timestamp < NOW() - make_interval(days => $1)`,
+			cfg.RequestRetentionDays)
+		if err != nil {
+			return fmt.Errorf("failed to delete expired proxy tunnels: %w", err)
+		}
+		tunnelsDeleted = res.RowsAffected()
 	}
 
-	if logsDeleted > 0 || requestsDeleted > 0 {
+	if logsDeleted > 0 || requestsDeleted > 0 || tunnelsDeleted > 0 {
 		s.logger.Info("applied event retention by deletion",
 			"logs_deleted", logsDeleted,
 			"requests_deleted", requestsDeleted,
+			"tunnels_deleted", tunnelsDeleted,
 		)
 	}
 	return nil

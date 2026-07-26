@@ -48,8 +48,10 @@ func newCHTestBackend(t *testing.T) storeBackend {
 	for _, stmt := range []string{
 		"TRUNCATE TABLE logs",
 		"TRUNCATE TABLE proxy_requests",
+		"TRUNCATE TABLE proxy_tunnels",
 		"ALTER TABLE logs MODIFY TTL toDateTime(timestamp) + toIntervalDay(30)",
 		"ALTER TABLE proxy_requests MODIFY TTL toDateTime(timestamp) + toIntervalDay(90)",
+		"ALTER TABLE proxy_tunnels MODIFY TTL toDateTime(timestamp) + toIntervalDay(90)",
 	} {
 		if err := store.conn.Exec(ctx, stmt); err != nil {
 			t.Fatalf("reset (%s): %v", stmt, err)

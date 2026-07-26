@@ -30,6 +30,7 @@ type ProxyServer interface {
 	ClearDomainCooldown(proxyID int, domain string) bool
 	ClearProxyDomainCooldowns(proxyID int) int
 	ListDomainCooldowns() []models.ProxyDomainCooldown
+	OpenTunnels() int64
 }
 
 // ProxyUserFrom returns the proxy user the request was authenticated as (set

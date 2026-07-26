@@ -27,11 +27,12 @@ const chainFailureThreshold = 3
 // individual attempt took — so per-proxy stats are charged per attempt, not
 // per retry loop.
 type PoolChain struct {
-	selectors []*PoolSelector
-	tracker   *UsageTracker
-	logger    *logger.Logger
-	maxRetry  int    // total upstream attempts across all pools
-	username  string // proxy user this chain serves; "" for the default chain
+	selectors  []*PoolSelector
+	tracker    *UsageTracker
+	logger     *logger.Logger
+	maxRetry   int    // total upstream attempts across all pools
+	username   string // proxy user this chain serves; "" for the default chain
+	inspectTLS bool   // user opted in to HTTPS interception
 
 	// failCounts tracks consecutive failures per proxy id, so a single transient
 	// error doesn't evict an otherwise-healthy proxy from the pool.
@@ -40,8 +41,10 @@ type PoolChain struct {
 }
 
 // NewPoolChain builds a PoolChain from an ordered list of ProxyPool objects
-// for the named proxy user.
-func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, maxRetry int, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
+// for the named proxy user. inspectTLS carries the user's opt-in to HTTPS
+// interception; the handler still needs a configured CA before it takes
+// effect.
+func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, maxRetry int, inspectTLS bool, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
 	selectors := make([]*PoolSelector, 0, len(pools))
 	for _, p := range pools {
 		selectors = append(selectors, NewPoolSelector(db, p, sessionMgr, domainCD))
@@ -52,9 +55,14 @@ func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, ma
 		logger:     log,
 		maxRetry:   maxRetry,
 		username:   username,
+		inspectTLS: inspectTLS,
 		failCounts: make(map[int]int),
 	}
 }
+
+// InspectTLS reports whether this chain's proxy user opted in to HTTPS
+// interception.
+func (c *PoolChain) InspectTLS() bool { return c.inspectTLS }
 
 // poolID returns the pool ID behind selector index selIdx (0 for the default
 // pool or an out-of-range index).
@@ -284,13 +292,86 @@ func (c *PoolChain) SendWithRetry(
 	return nil, 0, fmt.Errorf("all %d attempts failed, last: %w", maxAttempts, lastErr)
 }
 
+// TunnelBinding identifies the upstream proxy serving an established CONNECT
+// tunnel and carries the dimensions needed to account for it.
+//
+// The tunnel outlives ConnectWithRetry — it is handed to the caller to pump
+// bytes through — so the binding is what lets the caller attribute what happens
+// next (requests seen inside it, bytes moved, how long it lived) back to the
+// proxy, pool and user that served it.
+type TunnelBinding struct {
+	ProxyID  int
+	PoolID   int
+	Address  string
+	Host     string
+	OpenedAt time.Time
+
+	chain *PoolChain
+}
+
+// RecordRequest records one HTTP request observed inside the tunnel. It is
+// only ever called on the interception path — an opaque tunnel has no requests
+// to see.
+func (b *TunnelBinding) RecordRequest(method, url string, statusCode int, success bool, errMsg string, start time.Time) {
+	if b == nil || b.chain == nil {
+		return
+	}
+	b.chain.recordAttempt(RequestRecord{
+		ProxyID:      b.ProxyID,
+		ProxyAddress: b.Address,
+		PoolID:       b.PoolID,
+		RequestedURL: url,
+		Method:       method,
+		Success:      success,
+		StatusCode:   statusCode,
+		ResponseTime: int(time.Since(start).Milliseconds()),
+		ErrorMessage: errMsg,
+		Timestamp:    start,
+	})
+}
+
+// RecordClose records the tunnel's lifetime volume once it has torn down.
+// requests is 0 for an uninspected tunnel, where the payload is opaque.
+func (b *TunnelBinding) RecordClose(counts TunnelCounts, requests int, cause error) {
+	if b == nil || b.chain == nil || b.chain.tracker == nil || b.ProxyID <= 0 {
+		return
+	}
+
+	record := TunnelRecord{
+		ProxyID:      b.ProxyID,
+		ProxyAddress: b.Address,
+		PoolID:       b.PoolID,
+		Username:     b.chain.username,
+		Host:         b.Host,
+		BytesUp:      counts.BytesUp,
+		BytesDown:    counts.BytesDown,
+		Requests:     requests,
+		Duration:     time.Since(b.OpenedAt),
+		OpenedAt:     b.OpenedAt,
+	}
+	if cause != nil {
+		record.ErrorMessage = cause.Error()
+	}
+
+	chain := b.chain
+	go func() {
+		recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := chain.tracker.RecordTunnel(recordCtx, record); err != nil {
+			chain.logger.Error("failed to record proxy tunnel", "error", err)
+		}
+	}()
+}
+
 // ConnectWithRetry establishes a TCP tunnel (HTTPS CONNECT) through the chain.
+// The returned binding attributes everything that subsequently happens in the
+// tunnel back to the proxy that served it.
 func (c *PoolChain) ConnectWithRetry(
 	host string,
 	ctx context.Context,
 	rotationSettings *models.RotationSettings,
 	log *logger.Logger,
-) (net.Conn, int, error) {
+) (net.Conn, *TunnelBinding, error) {
 	tried := make(map[int]bool)
 	maxAttempts := c.maxRetry
 	if maxAttempts <= 0 {
@@ -301,7 +382,7 @@ func (c *PoolChain) ConnectWithRetry(
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		selectedProxy, selIdx, err := c.pickProxy(ctx, tried)
 		if err != nil {
-			return nil, 0, fmt.Errorf("no proxy available: %w", lastErr)
+			return nil, nil, fmt.Errorf("no proxy available: %w", lastErr)
 		}
 		tried[selectedProxy.ID] = true
 		attemptStart := time.Now()
@@ -324,10 +405,17 @@ func (c *PoolChain) ConnectWithRetry(
 		c.markSucceeded(selectedProxy.ID)
 		c.recordSuccess(selIdx, selectedProxy.ID, selectedProxy.Address, "CONNECT://"+host, "CONNECT", 200, attemptStart)
 		log.Info("pool chain CONNECT: success", "proxy", selectedProxy.Address, "host", host)
-		return conn, selectedProxy.ID, nil
+		return conn, &TunnelBinding{
+			ProxyID:  selectedProxy.ID,
+			PoolID:   c.poolID(selIdx),
+			Address:  selectedProxy.Address,
+			Host:     host,
+			OpenedAt: attemptStart,
+			chain:    c,
+		}, nil
 	}
 
-	return nil, 0, fmt.Errorf("all %d CONNECT attempts failed, last: %w", maxAttempts, lastErr)
+	return nil, nil, fmt.Errorf("all %d CONNECT attempts failed, last: %w", maxAttempts, lastErr)
 }
 
 // connectViaProxyStandalone dials host through the given proxy for a CONNECT
