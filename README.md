@@ -548,9 +548,50 @@ Once on, each request inside the tunnel produces a normal request event with its
 
 > **Before enabling, understand the trade-offs:**
 > - The client must **trust the CA**, or every intercepted request fails its certificate check.
-> - Interception **forces HTTP/1.1**. Per-request accounting means reading discrete messages, so h2 is not offered. This changes the protocol and TLS fingerprint the target sees — which matters if the target fingerprints clients.
+> - **The target sees Rota's handshake, not the client's.** Which handshake that is depends on the user's TLS fingerprint profile — see below. The default is Go's, which is recognizable.
 > - **Certificate-pinning targets will fail** regardless of trust. Add them to `TLS_INSPECT_BYPASS_DOMAINS`.
 > - The CA key can mint a certificate for **any** host. Treat it like any other signing key.
+
+### TLS fingerprint profiles
+
+Because interception replaces the client's TLS session, the target no longer sees the client's fingerprint — it sees Rota's. A **profile** decides what that is: instead of Go's stdlib handshake, Rota can present the fingerprint of a real device.
+
+A profile covers both layers Rota controls:
+
+- **TLS** — the ClientHello, which is what JA3 and JA4 are computed from: cipher list and order, extensions and their order, curves, signature algorithms, ALPN, GREASE.
+- **HTTP/2** — the SETTINGS frame values and their order, the connection window update, pseudo-header order, and priority frames. This is the "Akamai fingerprint", and it differs per client stack as much as the ClientHello does.
+
+| Profile | Presents |
+|---------|----------|
+| `go` (default) | Go's stdlib TLS, HTTP/1.1 only — no impersonation |
+| `ios` | Safari on iOS 26 (iPhone) |
+| `ios-18` | Safari on iOS 18.5 (iPhone) |
+| `android` | Chrome on Android (phone browser) |
+| `android-okhttp` | OkHttp 4 on Android 13 — the stack behind most native Android apps |
+| `chrome` | Chrome 146 desktop |
+| `firefox` | Firefox 148 desktop |
+
+**Set a default per user** with the **TLS fingerprint** dropdown, or `tls_profile` via the API.
+
+**Override per connection** with a `-profile-<name>` suffix on the proxy username, which composes with the existing session marker:
+
+```bash
+# Use the user's configured default
+curl -x http://alice:pass@localhost:8000 https://example.com
+
+# Override for this connection
+curl -x http://alice-profile-ios:pass@localhost:8000 https://example.com
+
+# Sticky session and a fingerprint together — profile goes last
+curl -x http://alice-session-abc123-profile-android:pass@localhost:8000 https://example.com
+```
+
+An unrecognized profile name is rejected with a `407` rather than quietly falling back, because a client that asked to look like an iPhone and silently got something else would only find out through unexplained blocking.
+
+> **What a profile does not do:**
+> - **It does not change your headers.** Rota forwards the client's headers as it received them, only reordering them to match the profile — it never rewrites `User-Agent`. An iOS handshake carrying a `python-requests` User-Agent is a sharper signal than either would be alone, so configure the client to match. Each profile publishes the User-Agent its real counterpart sends.
+> - **It cannot change the TCP/IP layer.** JA4T and p0f-style signals — window size, TTL, options ordering — come from whichever host actually terminates TCP with the target, which is your upstream proxy, not Rota. A datacenter exit reads as a datacenter Linux box no matter which phone is being imitated. Mobile and residential exits are unaffected by this; fixing it for datacenter exits would mean changing the exit, not the profile.
+> - **It is only as current as its capture.** These are transcribed from platform-labelled captures and go stale as the real clients update.
 
 ---
 

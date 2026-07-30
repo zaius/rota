@@ -398,6 +398,20 @@ func TestIntegration_UserUpdate_PartialFields(t *testing.T) {
 	if len(u.FallbackPoolIDs) != 0 {
 		t.Errorf("set: fallback_pool_ids should be empty, got %v", u.FallbackPoolIDs)
 	}
+
+	// tls_profile round-trips and follows the same omitted-keeps rule. It
+	// starts at the column default because Create was given no profile.
+	if created.TLSProfile != "" {
+		t.Errorf("create: tls_profile got %q want \"\"", created.TLSProfile)
+	}
+	u = update(`{"tls_profile":"ios-18"}`)
+	if u.TLSProfile != "ios-18" {
+		t.Errorf("set: tls_profile got %q want %q", u.TLSProfile, "ios-18")
+	}
+	u = update(`{"enabled":true}`)
+	if u.TLSProfile != "ios-18" {
+		t.Errorf("keep: tls_profile got %q want %q", u.TLSProfile, "ios-18")
+	}
 }
 
 // ApplyRequestStats denormalizes event-derived aggregates onto proxies:

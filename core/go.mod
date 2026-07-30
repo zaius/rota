@@ -19,6 +19,9 @@ require (
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
+	github.com/bogdanfinn/fhttp v0.6.8
+	github.com/bogdanfinn/tls-client v1.15.1
+	github.com/bogdanfinn/utls v1.7.7-barnius
 	github.com/go-playground/validator/v10 v10.22.1
 	github.com/robfig/cron/v3 v3.0.1
 )

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/tlsprofile"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
@@ -33,10 +34,9 @@ import (
 //   - The client must trust the configured CA, or every intercepted request
 //     fails its certificate check. Hosts that pin certificates will fail
 //     regardless of trust — put those in the bypass list.
-//   - Interception forces HTTP/1.1 (see connectALPN), because per-request
-//     accounting means reading discrete request/response messages. That changes
-//     the protocol and TLS fingerprint the target sees, which matters if the
-//     target is fingerprinting.
+//   - The target sees Rota's handshake, not the client's. Which handshake that
+//     is depends on the user's TLS profile: by default Go's, or the
+//     fingerprint of a real device. See package tlsprofile.
 type TLSInspector struct {
 	ca     *CertAuthority
 	bypass []string
@@ -48,12 +48,17 @@ type TLSInspector struct {
 	upstreamRoots *x509.CertPool
 }
 
-// connectALPN is the protocol set offered in both directions on an intercepted
-// tunnel. HTTP/2 is deliberately excluded: h2 multiplexes concurrent streams
-// over one connection, and demultiplexing it to count requests would mean
-// implementing an h2 server and client here. Restricting to http/1.1 keeps the
-// message loop a simple read-forward-read.
-var connectALPN = []string{"http/1.1"}
+// clientALPN is the protocol set offered to the client inside an intercepted
+// tunnel. HTTP/2 is deliberately excluded here: h2 multiplexes concurrent
+// streams over one connection, and demultiplexing it to count requests would
+// mean implementing an h2 server. Restricting the client leg to http/1.1 keeps
+// the message loop a simple read-forward-read.
+//
+// This says nothing about the upstream leg, which offers whatever the user's
+// profile advertises and commonly settles on h2. The client is Rota's own
+// user, so its fingerprint is nobody's concern; the target's view is, and that
+// is the leg the profile governs.
+var clientALPN = []string{"http/1.1"}
 
 // NewTLSInspector builds an inspector over a loaded CA. bypassDomains are
 // hosts (and their subdomains) that are never intercepted, for targets that
@@ -91,14 +96,22 @@ func (i *TLSInspector) ShouldInspect(host string) bool {
 // upstream connection, and shuttles HTTP messages between them, recording each
 // one against the binding.
 //
+// profile decides what the target sees of that upstream session — both the
+// ClientHello and, if it negotiates h2, the HTTP/2 framing. A nil profile is
+// treated as pass-through.
+//
 // It returns the wire bytes moved in each direction and the number of requests
 // observed. Both connections belong to the caller and are not closed here.
 func (i *TLSInspector) Serve(
 	clientConn, upstreamConn net.Conn,
 	host string,
 	binding *TunnelBinding,
+	profile *tlsprofile.Profile,
 	timeout time.Duration,
 ) (TunnelCounts, int, error) {
+	if profile == nil {
+		profile = tlsprofile.Passthrough
+	}
 	// Count at the wire, under TLS: the plaintext loop above cannot see record
 	// framing or handshake volume, and bandwidth is a wire question.
 	countedClient := newCountingConn(clientConn)
@@ -114,7 +127,7 @@ func (i *TLSInspector) Serve(
 
 	clientTLS := tls.Server(countedClient, &tls.Config{
 		MinVersion: tls.VersionTLS12,
-		NextProtos: connectALPN,
+		NextProtos: clientALPN,
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			// Prefer the SNI the client actually asked for; fall back to the
 			// CONNECT authority when the client sends none (bare-IP targets).
@@ -133,17 +146,16 @@ func (i *TLSInspector) Serve(
 		serverName = normalizeHost(negotiated)
 	}
 
-	upstreamTLS := tls.Client(countedUpstream, &tls.Config{
-		ServerName: serverName,
-		RootCAs:    i.upstreamRoots,
-		MinVersion: tls.VersionTLS12,
-		NextProtos: connectALPN,
-	})
-	if err := handshake(upstreamTLS, timeout); err != nil {
-		return counts(), 0, fmt.Errorf("upstream TLS handshake for %s: %w", host, err)
+	session, err := dialUpstream(countedUpstream, serverName, profile, i.upstreamRoots, timeout)
+	if err != nil {
+		return counts(), 0, err
 	}
 
-	requests := i.pump(clientTLS, upstreamTLS, host, serverName, binding, timeout)
+	i.logger.Debug("intercepted tunnel established",
+		"source", "proxy", "host", host,
+		"profile", profile.Name, "upstream_protocol", session.Protocol())
+
+	requests := i.pump(clientTLS, session, host, binding, timeout)
 	return counts(), requests, nil
 }
 
@@ -159,16 +171,17 @@ func handshake(conn *tls.Conn, timeout time.Duration) error {
 	return conn.Handshake()
 }
 
-// pump shuttles HTTP messages between the two TLS sessions until either side
-// closes, returning how many requests it carried.
+// pump shuttles HTTP messages between the client session and the upstream one
+// until either side closes, returning how many requests it carried.
 func (i *TLSInspector) pump(
-	clientTLS, upstreamTLS *tls.Conn,
-	host, serverName string,
+	clientTLS *tls.Conn,
+	session upstreamSession,
+	host string,
 	binding *TunnelBinding,
 	timeout time.Duration,
 ) int {
+	defer session.Close() //nolint:errcheck
 	clientReader := bufio.NewReader(clientTLS)
-	upstreamReader := bufio.NewReader(upstreamTLS)
 
 	requests := 0
 	for {
@@ -189,7 +202,7 @@ func (i *TLSInspector) pump(
 		url := "https://" + host + req.URL.RequestURI()
 		clientWantsClose := req.Close
 
-		resp, err := i.roundTrip(req, upstreamTLS, upstreamReader, timeout)
+		resp, err := session.RoundTrip(req, host, timeout)
 		if err != nil {
 			binding.RecordRequest(req.Method, url, 0, false, err.Error(), start)
 			i.logger.Warn("intercepted request failed",
@@ -205,9 +218,17 @@ func (i *TLSInspector) pump(
 
 		// A 101 hands the connection to another protocol (websockets), after
 		// which there are no more HTTP messages to parse — relay the rest
-		// verbatim.
+		// verbatim. Only HTTP/1.1 upstreams can get here: h2 has no 101, so a
+		// target that negotiated it cannot answer with one.
 		if resp.StatusCode == http.StatusSwitchingProtocols {
-			i.relayUpgrade(clientTLS, upstreamTLS, clientReader, upstreamReader, resp, req)
+			upstreamConn, upstreamReader, ok := session.Upgradable()
+			if !ok {
+				resp.Body.Close() //nolint:errcheck
+				i.logger.Warn("intercepted tunnel: upgrade on a non-upgradable protocol",
+					"source", "proxy", "host", host, "protocol", session.Protocol())
+				return requests
+			}
+			i.relayUpgrade(clientTLS, upstreamConn, clientReader, upstreamReader, resp, req)
 			return requests
 		}
 
@@ -226,44 +247,11 @@ func (i *TLSInspector) pump(
 	}
 }
 
-// roundTrip forwards one request upstream and reads its response, absorbing
-// any informational (1xx) responses that precede the real one — leaving those
-// unread would desynchronize the next read from the message stream.
-func (i *TLSInspector) roundTrip(
-	req *http.Request,
-	upstreamTLS *tls.Conn,
-	upstreamReader *bufio.Reader,
-	timeout time.Duration,
-) (*http.Response, error) {
-	if timeout > 0 {
-		if err := upstreamTLS.SetDeadline(time.Now().Add(timeout)); err != nil {
-			return nil, err
-		}
-		defer upstreamTLS.SetDeadline(time.Time{}) //nolint:errcheck
-	}
-
-	if err := req.Write(upstreamTLS); err != nil {
-		return nil, fmt.Errorf("forward request: %w", err)
-	}
-	req.Body.Close() //nolint:errcheck
-
-	for {
-		resp, err := http.ReadResponse(upstreamReader, req)
-		if err != nil {
-			return nil, fmt.Errorf("read response: %w", err)
-		}
-		// 101 is an upgrade, not an interim response — hand it to the caller.
-		if resp.StatusCode < 100 || resp.StatusCode > 199 || resp.StatusCode == http.StatusSwitchingProtocols {
-			return resp, nil
-		}
-		resp.Body.Close() //nolint:errcheck
-	}
-}
-
 // relayUpgrade forwards a 101 response and then copies the two connections
 // verbatim, including whatever each bufio.Reader has already buffered.
 func (i *TLSInspector) relayUpgrade(
-	clientTLS, upstreamTLS *tls.Conn,
+	clientTLS *tls.Conn,
+	upstreamTLS net.Conn,
 	clientReader, upstreamReader *bufio.Reader,
 	resp *http.Response,
 	req *http.Request,

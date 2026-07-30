@@ -25,7 +25,7 @@ func (r *UserRepository) List(ctx context.Context) ([]models.ProxyUser, error) {
 	query := `
 		SELECT pu.id, pu.username, pu.enabled,
 		       pu.main_pool_id, pu.fallback_pool_ids, pu.max_retries,
-		       COALESCE(pu.requests_per_minute, 0), pu.inspect_tls,
+		       COALESCE(pu.requests_per_minute, 0), pu.inspect_tls, pu.tls_profile,
 		       pu.created_at, pu.updated_at,
 		       COALESCE(pp.name, '') AS main_pool_name
 		FROM proxy_users pu
@@ -44,7 +44,7 @@ func (r *UserRepository) List(ctx context.Context) ([]models.ProxyUser, error) {
 		if err := rows.Scan(
 			&u.ID, &u.Username, &u.Enabled,
 			&u.MainPoolID, &u.FallbackPoolIDs, &u.MaxRetries,
-			&u.RequestsPerMinute, &u.InspectTLS,
+			&u.RequestsPerMinute, &u.InspectTLS, &u.TLSProfile,
 			&u.CreatedAt, &u.UpdatedAt, &u.MainPoolName,
 		); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
@@ -64,7 +64,7 @@ func (r *UserRepository) List(ctx context.Context) ([]models.ProxyUser, error) {
 func (r *UserRepository) GetByID(ctx context.Context, id int) (*models.ProxyUser, error) {
 	return r.scan(ctx, `SELECT id, username, password_hash, enabled,
 		main_pool_id, fallback_pool_ids, max_retries,
-		COALESCE(requests_per_minute, 0), inspect_tls,
+		COALESCE(requests_per_minute, 0), inspect_tls, tls_profile,
 		created_at, updated_at
 		FROM proxy_users WHERE id = $1`, id)
 }
@@ -73,7 +73,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id int) (*models.ProxyUser
 func (r *UserRepository) GetByUsername(ctx context.Context, username string) (*models.ProxyUser, error) {
 	return r.scan(ctx, `SELECT id, username, password_hash, enabled,
 		main_pool_id, fallback_pool_ids, max_retries,
-		COALESCE(requests_per_minute, 0), inspect_tls,
+		COALESCE(requests_per_minute, 0), inspect_tls, tls_profile,
 		created_at, updated_at
 		FROM proxy_users WHERE username = $1`, username)
 }
@@ -83,7 +83,7 @@ func (r *UserRepository) scan(ctx context.Context, query string, arg interface{}
 	err := r.db.Pool.QueryRow(ctx, query, arg).Scan(
 		&u.ID, &u.Username, &u.PasswordHash, &u.Enabled,
 		&u.MainPoolID, &u.FallbackPoolIDs, &u.MaxRetries,
-		&u.RequestsPerMinute, &u.InspectTLS,
+		&u.RequestsPerMinute, &u.InspectTLS, &u.TLSProfile,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
@@ -116,13 +116,13 @@ func (r *UserRepository) Create(ctx context.Context, req models.CreateProxyUserR
 
 	var u models.ProxyUser
 	err = r.db.Pool.QueryRow(ctx, `
-		INSERT INTO proxy_users (username, password_hash, enabled, main_pool_id, fallback_pool_ids, max_retries, requests_per_minute, inspect_tls)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO proxy_users (username, password_hash, enabled, main_pool_id, fallback_pool_ids, max_retries, requests_per_minute, inspect_tls, tls_profile)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, username, enabled, main_pool_id, fallback_pool_ids, max_retries,
-		          COALESCE(requests_per_minute, 0), inspect_tls, created_at, updated_at
-	`, req.Username, string(hash), req.Enabled, req.MainPoolID, fbIDs, maxRetries, req.RequestsPerMinute, req.InspectTLS,
+		          COALESCE(requests_per_minute, 0), inspect_tls, tls_profile, created_at, updated_at
+	`, req.Username, string(hash), req.Enabled, req.MainPoolID, fbIDs, maxRetries, req.RequestsPerMinute, req.InspectTLS, req.TLSProfile,
 	).Scan(&u.ID, &u.Username, &u.Enabled, &u.MainPoolID, &u.FallbackPoolIDs,
-		&u.MaxRetries, &u.RequestsPerMinute, &u.InspectTLS, &u.CreatedAt, &u.UpdatedAt)
+		&u.MaxRetries, &u.RequestsPerMinute, &u.InspectTLS, &u.TLSProfile, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
 	}
@@ -167,14 +167,15 @@ func (r *UserRepository) Update(ctx context.Context, id int, req models.UpdatePr
 			max_retries        = CASE WHEN $7 > 0 THEN $7 ELSE max_retries END,
 			requests_per_minute= COALESCE($8, requests_per_minute),
 			inspect_tls        = COALESCE($9, inspect_tls),
+			tls_profile        = COALESCE($10, tls_profile),
 			updated_at         = NOW()
-		WHERE id = $10
+		WHERE id = $11
 		RETURNING id, username, enabled, main_pool_id, fallback_pool_ids, max_retries,
-		          COALESCE(requests_per_minute, 0), inspect_tls, created_at, updated_at
+		          COALESCE(requests_per_minute, 0), inspect_tls, tls_profile, created_at, updated_at
 	`, hashPtr, req.Enabled, req.MainPoolID.Present, mainPoolID,
-		req.FallbackPoolIDs.Present, fbIDs, req.MaxRetries, req.RequestsPerMinute, req.InspectTLS, id,
+		req.FallbackPoolIDs.Present, fbIDs, req.MaxRetries, req.RequestsPerMinute, req.InspectTLS, req.TLSProfile, id,
 	).Scan(&u.ID, &u.Username, &u.Enabled, &u.MainPoolID, &u.FallbackPoolIDs,
-		&u.MaxRetries, &u.RequestsPerMinute, &u.InspectTLS, &u.CreatedAt, &u.UpdatedAt)
+		&u.MaxRetries, &u.RequestsPerMinute, &u.InspectTLS, &u.TLSProfile, &u.CreatedAt, &u.UpdatedAt)
 
 	if err == pgx.ErrNoRows {
 		return nil, nil

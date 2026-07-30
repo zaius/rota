@@ -132,6 +132,44 @@ func TestSplitSessionUsername(t *testing.T) {
 	}
 }
 
+func TestSplitProfileUsername(t *testing.T) {
+	cases := []struct {
+		raw     string
+		rest    string
+		profile string
+	}{
+		{"alice", "alice", ""},
+		{"alice-profile-ios", "alice", "ios"},
+		{"my-user-profile-android", "my-user", "android"},
+		{"alice-profile-", "alice", ""},
+		// Profile is stripped first, so what remains still parses as a
+		// session username — this is the composed form clients use.
+		{"alice-session-abc123-profile-ios", "alice-session-abc123", "ios"},
+		// Profile names containing the marker's own separator survive, because
+		// only the last marker is honoured.
+		{"alice-profile-android-okhttp", "alice", "android-okhttp"},
+	}
+	for _, c := range cases {
+		rest, profile := splitProfileUsername(c.raw)
+		if rest != c.rest || profile != c.profile {
+			t.Errorf("splitProfileUsername(%q) = (%q,%q), want (%q,%q)",
+				c.raw, rest, profile, c.rest, c.profile)
+		}
+	}
+}
+
+// TestSplitUsernameMarkersCompose checks the two markers together, which is
+// how a client that wants both a sticky session and a fingerprint has to write
+// the username.
+func TestSplitUsernameMarkersCompose(t *testing.T) {
+	rest, profile := splitProfileUsername("alice-session-tok9-profile-ios")
+	user, token := splitSessionUsername(rest)
+
+	if user != "alice" || token != "tok9" || profile != "ios" {
+		t.Errorf("got user=%q token=%q profile=%q, want alice/tok9/ios", user, token, profile)
+	}
+}
+
 func TestSessionManager_FindByToken(t *testing.T) {
 	m := NewSessionManager()
 	defer m.Stop()

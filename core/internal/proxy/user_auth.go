@@ -12,6 +12,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
+	"github.com/alpkeskin/rota/core/internal/tlsprofile"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -34,9 +35,25 @@ type sessionTokenKey struct{}
 // SessionTokenContextKey is exported for use in the handler / pool selector.
 var SessionTokenContextKey = sessionTokenKey{}
 
+// tlsProfileKey is the context key that carries a per-connection TLS profile
+// override parsed from the proxy username, overriding the user's stored one.
+type tlsProfileKey struct{}
+
+// TLSProfileContextKey is exported for use in the handler.
+var TLSProfileContextKey = tlsProfileKey{}
+
 // sessionMarker separates the base username from a sticky-session token in the
 // proxy username, e.g. "myuser-session-abc123" → user "myuser", token "abc123".
 const sessionMarker = "-session-"
+
+// profileMarker overrides the user's stored TLS profile for one connection,
+// e.g. "myuser-profile-ios". It is stripped before the session marker is read,
+// so the two compose as "myuser-session-abc123-profile-ios" — profile last.
+//
+// Both markers make part of the username namespace unusable, which is the
+// price of carrying per-connection options through a protocol that only offers
+// a username field.
+const profileMarker = "-profile-"
 
 // splitSessionUsername extracts a session token from a proxy username.
 // If the marker is absent it returns (raw, "").
@@ -46,6 +63,16 @@ func splitSessionUsername(raw string) (baseUser, token string) {
 		return raw, ""
 	}
 	return raw[:idx], raw[idx+len(sessionMarker):]
+}
+
+// splitProfileUsername extracts a TLS profile name from a proxy username.
+// If the marker is absent it returns (raw, "").
+func splitProfileUsername(raw string) (rest, profile string) {
+	idx := strings.LastIndex(raw, profileMarker)
+	if idx < 0 {
+		return raw, ""
+	}
+	return raw[:idx], raw[idx+len(profileMarker):]
 }
 
 // userEntry caches a resolved PoolChain and the verified password hash for a user.
@@ -111,10 +138,25 @@ func NewUserAuthMiddleware(
 func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *http.Response) {
 	rawUsername, password, ok := parseProxyAuth(req)
 	if ok {
-		// A session token may be embedded in the username ("user-session-<token>").
-		username, sessionToken := splitSessionUsername(rawUsername)
+		// A TLS profile and a session token may both be embedded in the
+		// username ("user-session-<token>-profile-<name>").
+		rest, profileName := splitProfileUsername(rawUsername)
+		username, sessionToken := splitSessionUsername(rest)
+
+		// An unrecognized profile name fails the connection rather than
+		// quietly serving the user's stored default. A client that asked to
+		// look like an iPhone and silently got something else would only find
+		// out through unexplained blocking, which is a far worse way to
+		// discover a typo than a 407.
+		profile, err := tlsprofile.Lookup(profileName)
+		if err != nil {
+			m.logger.Warn("proxy-user auth failed: bad TLS profile in username",
+				"username", username, "err", err)
+			return req, unauthorized()
+		}
+
 		if chain, err := m.resolve(req.Context(), username, password); err == nil {
-			return m.withChain(req, chain, sessionToken), nil
+			return m.withChain(req, chain, sessionToken, profileName, profile), nil
 		} else {
 			m.logger.Warn("proxy-user auth failed", "username", username, "err", err)
 		}
@@ -122,12 +164,24 @@ func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *h
 	return req, unauthorized()
 }
 
-// withChain attaches a PoolChain (and optional session token) to the request
-// context and strips the Proxy-Authorization header before forwarding.
-func (m *UserAuthMiddleware) withChain(req *http.Request, chain *PoolChain, sessionToken string) *http.Request {
+// withChain attaches a PoolChain (and optional session token and TLS profile
+// override) to the request context and strips the Proxy-Authorization header
+// before forwarding.
+func (m *UserAuthMiddleware) withChain(
+	req *http.Request,
+	chain *PoolChain,
+	sessionToken string,
+	profileName string,
+	profile *tlsprofile.Profile,
+) *http.Request {
 	ctx := context.WithValue(req.Context(), UserChainContextKey, chain)
 	if sessionToken != "" {
 		ctx = context.WithValue(ctx, SessionTokenContextKey, sessionToken)
+	}
+	// Only an explicitly named profile becomes an override; an absent marker
+	// leaves the chain's stored choice in place.
+	if profileName != "" {
+		ctx = context.WithValue(ctx, TLSProfileContextKey, profile)
 	}
 	req = req.WithContext(ctx)
 	req.Header.Del("Proxy-Authorization")
@@ -217,7 +271,7 @@ func (m *UserAuthMiddleware) buildChain(ctx context.Context, user *models.ProxyU
 		maxRetry = 5
 	}
 
-	chain := NewPoolChain(m.db, pools, user.Username, maxRetry, user.InspectTLS, m.sessionMgr, m.domainCD, m.tracker, m.logger)
+	chain := NewPoolChain(m.db, pools, user.Username, maxRetry, user.InspectTLS, user.TLSProfile, m.sessionMgr, m.domainCD, m.tracker, m.logger)
 	chain.Refresh(ctx)
 	return chain, nil
 }

@@ -56,6 +56,31 @@ func TestValidateStruct_User(t *testing.T) {
 		{"short password", models.CreateProxyUserRequest{Username: "u", Password: "x"}, "password must be at least 6"},
 		// max_retries is defaulted; zero must be allowed.
 		{"zero max_retries allowed", models.CreateProxyUserRequest{Username: "u", Password: "secret1"}, ""},
+		{"named tls_profile", models.CreateProxyUserRequest{Username: "u", Password: "secret1", TLSProfile: "ios-18"}, ""},
+		{"bad tls_profile", models.CreateProxyUserRequest{Username: "u", Password: "secret1", TLSProfile: "safari"}, "tls_profile must be one of"},
+		// "" is the stored default and means the Go fingerprint.
+		{"empty tls_profile allowed", models.CreateProxyUserRequest{Username: "u", Password: "secret1", TLSProfile: ""}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertValidation(t, &tc.req, tc.wantErr)
+		})
+	}
+}
+
+// A partial update carries tls_profile as a pointer: absent keeps the current
+// value, present must still be a known name.
+func TestValidateStruct_UserUpdate(t *testing.T) {
+	profile := func(s string) *string { return &s }
+
+	cases := []struct {
+		name    string
+		req     models.UpdateProxyUserRequest
+		wantErr string
+	}{
+		{"omitted tls_profile", models.UpdateProxyUserRequest{}, ""},
+		{"named tls_profile", models.UpdateProxyUserRequest{TLSProfile: profile("chrome")}, ""},
+		{"bad tls_profile", models.UpdateProxyUserRequest{TLSProfile: profile("safari")}, "tls_profile must be one of"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

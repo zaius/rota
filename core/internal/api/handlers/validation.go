@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -21,6 +22,11 @@ func newValidator() *validator.Validate {
 			return fld.Name
 		}
 		return name
+	})
+	// `tls_profile` is a oneof over models.TLSProfiles rather than a literal
+	// list in the struct tag, so the set of profiles is declared exactly once.
+	_ = v.RegisterValidation("tls_profile", func(fl validator.FieldLevel) bool {
+		return models.IsValidTLSProfile(fl.Field().String())
 	})
 	return v
 }
@@ -54,6 +60,8 @@ func fieldErrorMessage(fe validator.FieldError) string {
 		return fmt.Sprintf("%s must be at least %s", field, fe.Param())
 	case "max":
 		return fmt.Sprintf("%s must be at most %s", field, fe.Param())
+	case "tls_profile":
+		return fmt.Sprintf("%s must be one of: %s", field, strings.Join(models.TLSProfiles, ", "))
 	default:
 		return fmt.Sprintf("%s is invalid", field)
 	}

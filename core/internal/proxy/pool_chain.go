@@ -10,6 +10,7 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/alpkeskin/rota/core/internal/tlsprofile"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
@@ -33,6 +34,7 @@ type PoolChain struct {
 	maxRetry   int    // total upstream attempts across all pools
 	username   string // proxy user this chain serves; "" for the default chain
 	inspectTLS bool   // user opted in to HTTPS interception
+	tlsProfile *tlsprofile.Profile
 
 	// failCounts tracks consecutive failures per proxy id, so a single transient
 	// error doesn't evict an otherwise-healthy proxy from the pool.
@@ -43,12 +45,26 @@ type PoolChain struct {
 // NewPoolChain builds a PoolChain from an ordered list of ProxyPool objects
 // for the named proxy user. inspectTLS carries the user's opt-in to HTTPS
 // interception; the handler still needs a configured CA before it takes
-// effect.
-func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, maxRetry int, inspectTLS bool, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
+// effect. tlsProfileName is the user's stored fingerprint choice, which only
+// applies on intercepted connections.
+func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, maxRetry int, inspectTLS bool, tlsProfileName string, sessionMgr *SessionManager, domainCD *DomainCooldownManager, tracker *UsageTracker, log *logger.Logger) *PoolChain {
 	selectors := make([]*PoolSelector, 0, len(pools))
 	for _, p := range pools {
 		selectors = append(selectors, NewPoolSelector(db, p, sessionMgr, domainCD))
 	}
+
+	// The API validates this on the way in, so a bad value here means the row
+	// was written by something else. Falling back is right — refusing to build
+	// the chain would lock the user out of the proxy over a cosmetic setting —
+	// but it is loud, because the user is now being fingerprinted as Go while
+	// their configuration claims otherwise.
+	profile, err := tlsprofile.Lookup(tlsProfileName)
+	if err != nil {
+		log.Error("proxy user has an unknown TLS profile; falling back to no impersonation",
+			"source", "proxy", "username", username, "profile", tlsProfileName, "error", err)
+		profile = tlsprofile.Passthrough
+	}
+
 	return &PoolChain{
 		selectors:  selectors,
 		tracker:    tracker,
@@ -56,6 +72,7 @@ func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, ma
 		maxRetry:   maxRetry,
 		username:   username,
 		inspectTLS: inspectTLS,
+		tlsProfile: profile,
 		failCounts: make(map[int]int),
 	}
 }
@@ -63,6 +80,15 @@ func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, ma
 // InspectTLS reports whether this chain's proxy user opted in to HTTPS
 // interception.
 func (c *PoolChain) InspectTLS() bool { return c.inspectTLS }
+
+// TLSProfile returns the fingerprint this chain's user is configured to
+// present, never nil.
+func (c *PoolChain) TLSProfile() *tlsprofile.Profile {
+	if c.tlsProfile == nil {
+		return tlsprofile.Passthrough
+	}
+	return c.tlsProfile
+}
 
 // poolID returns the pool ID behind selector index selIdx (0 for the default
 // pool or an out-of-range index).

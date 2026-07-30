@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/tlsprofile"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
@@ -83,7 +84,7 @@ func startInspectedTunnelReadingAhead(t *testing.T, origin *httptest.Server, rea
 			}
 			stream = &prefixConn{Conn: proxyClientSide, prefix: head}
 		}
-		counts, requests, err := inspector.Serve(stream, upstreamConn, host, nil, 10*time.Second)
+		counts, requests, err := inspector.Serve(stream, upstreamConn, host, nil, tlsprofile.Passthrough, 10*time.Second)
 		proxyClientSide.Close()
 		done <- serveResult{counts: counts, requests: requests, err: err}
 	}()

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/alpkeskin/rota/core/internal/tlsprofile"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/google/uuid"
 )
@@ -200,7 +201,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 	}
 
 	if h.inspector != nil && chain.InspectTLS() && h.inspector.ShouldInspect(host) {
-		counts, requests, err := h.inspector.Serve(clientStream, upstreamConn, host, binding, h.tunnelTimeout())
+		counts, requests, err := h.inspector.Serve(clientStream, upstreamConn, host, binding, tlsProfileFor(reqCtx, chain), h.tunnelTimeout())
 		binding.RecordClose(counts, requests, err)
 		if err != nil {
 			h.logger.Warn("tunnel interception failed",
@@ -224,6 +225,16 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 	h.logger.Debug("tunnel closed",
 		"source", "proxy", "host", host,
 		"bytes_up", counts.BytesUp, "bytes_down", counts.BytesDown, "error", err)
+}
+
+// tlsProfileFor resolves which fingerprint to present on a tunnel: the
+// per-connection override from the proxy username if the client sent one,
+// otherwise the profile stored against the user.
+func tlsProfileFor(ctx context.Context, chain *PoolChain) *tlsprofile.Profile {
+	if override, ok := ctx.Value(TLSProfileContextKey).(*tlsprofile.Profile); ok && override != nil {
+		return override
+	}
+	return chain.TLSProfile()
 }
 
 // drainBuffered returns any bytes the HTTP server read past the CONNECT

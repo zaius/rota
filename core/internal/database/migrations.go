@@ -731,6 +731,24 @@ var migrations = []Migration{
 			DROP TABLE IF EXISTS proxy_tunnels;
 		`,
 	},
+	{
+		Version:     29,
+		Description: "Add proxy_users.tls_profile",
+		// Which client TLS/HTTP2 fingerprint Rota presents to the target server
+		// once it owns the handshake. Only meaningful with inspect_tls on:
+		// without interception the client makes its own handshake and Rota never
+		// sees it. Default '' means the Go stdlib fingerprint — what every
+		// intercepted user already gets. Names are validated in the API against
+		// models.TLSProfiles, not by a CHECK constraint, so adding a profile does
+		// not need a migration.
+		Up: `
+			ALTER TABLE proxy_users
+			  ADD COLUMN IF NOT EXISTS tls_profile TEXT NOT NULL DEFAULT '';
+		`,
+		Down: `
+			ALTER TABLE proxy_users DROP COLUMN IF EXISTS tls_profile;
+		`,
+	},
 }
 
 // migrationLockKey is an arbitrary constant identifying Rota's migration

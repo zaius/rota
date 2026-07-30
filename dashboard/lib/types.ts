@@ -383,6 +383,33 @@ export interface Job {
 }
 
 // ── Proxy Users ────────────────────────────────────────────────────────────
+
+/**
+ * Client TLS/HTTP2 fingerprint Rota presents to the target server for a user
+ * whose traffic is intercepted. "" is the stored default and behaves as "go".
+ * Must stay in sync with models.TLSProfiles in the core.
+ */
+export type TLSProfile =
+  | ""
+  | "go"
+  | "ios"
+  | "ios-18"
+  | "android"
+  | "android-okhttp"
+  | "chrome"
+  | "firefox"
+
+/** Profile names with their labels, in the order the dropdown shows them. */
+export const TLS_PROFILES: { value: TLSProfile; label: string }[] = [
+  { value: "go", label: "Go (no impersonation)" },
+  { value: "ios", label: "Safari on iOS 26 (iPhone)" },
+  { value: "ios-18", label: "Safari on iOS 18.5 (iPhone)" },
+  { value: "android", label: "Chrome on Android (phone browser)" },
+  { value: "android-okhttp", label: "OkHttp 4 on Android 13 (native app)" },
+  { value: "chrome", label: "Chrome 146 (desktop)" },
+  { value: "firefox", label: "Firefox 148 (desktop)" },
+]
+
 export interface ProxyUser {
   id: number
   username: string
@@ -393,6 +420,7 @@ export interface ProxyUser {
   max_retries: number
   requests_per_minute: number
   inspect_tls: boolean
+  tls_profile: TLSProfile
   created_at: string
   updated_at: string
 }
@@ -406,6 +434,7 @@ export interface CreateProxyUserRequest {
   max_retries: number
   requests_per_minute?: number
   inspect_tls?: boolean
+  tls_profile?: TLSProfile
 }
 
 export interface UpdateProxyUserRequest {
@@ -416,6 +445,7 @@ export interface UpdateProxyUserRequest {
   max_retries?: number
   requests_per_minute?: number
   inspect_tls?: boolean
+  tls_profile?: TLSProfile
 }
 
 export interface CreatePoolRequest {
