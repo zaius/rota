@@ -751,62 +751,28 @@ var migrations = []Migration{
 	},
 }
 
-// migrationLockKey is an arbitrary constant identifying Rota's migration
-// advisory lock, so two instances starting together serialize instead of both
-// trying to apply the same migration.
+// migrationLockKey serializes each migration transaction across instances.
 const migrationLockKey int64 = 4927562011
 
 // Migrate runs all pending migrations. It is safe to call from multiple
-// instances concurrently: a session advisory lock serializes them, and pending
-// migrations are determined per-version (not by MAX(version)), so a migration
-// backfilled with a lower version number than one already applied is still run.
+// instances concurrently, and a migration backfilled below the current maximum
+// version is still applied.
 func (db *DB) Migrate(ctx context.Context) error {
 	db.logger.Info("starting database migrations")
 
-	// Hold the advisory lock on a dedicated connection for the whole run.
-	conn, err := db.Pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to acquire connection for migration lock: %w", err)
-	}
-	defer conn.Release()
-
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
-		return fmt.Errorf("failed to acquire migration advisory lock: %w", err)
-	}
-	defer func() {
-		// Use a fresh context so unlock still runs if ctx was cancelled.
-		if _, err := conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockKey); err != nil {
-			db.logger.Warn("failed to release migration advisory lock", "error", err)
-		}
-	}()
-
-	// Sort migrations by version
 	sort.Slice(migrations, func(i, j int) bool {
 		return migrations[i].Version < migrations[j].Version
 	})
 
-	applied, err := db.appliedVersions(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to load applied migrations: %w", err)
-	}
-
-	// Apply any migration whose version has not been recorded yet.
 	appliedCount := 0
 	for _, migration := range migrations {
-		if applied[migration.Version] {
-			continue
-		}
-
-		db.logger.Info("applying migration",
-			"version", migration.Version,
-			"description", migration.Description,
-		)
-
-		if err := db.applyMigration(ctx, migration); err != nil {
+		applied, err := db.applyPendingMigration(ctx, migration)
+		if err != nil {
 			return fmt.Errorf("failed to apply migration %d: %w", migration.Version, err)
 		}
-
-		appliedCount++
+		if applied {
+			appliedCount++
+		}
 	}
 
 	if appliedCount == 0 {
@@ -879,15 +845,42 @@ func (db *DB) getCurrentVersion(ctx context.Context) (int, error) {
 	return version, nil
 }
 
-// applyMigration applies a single migration
-func (db *DB) applyMigration(ctx context.Context, migration Migration) error {
-	return pgx.BeginFunc(ctx, db.Pool, func(tx pgx.Tx) error {
-		// Execute migration
+func (db *DB) applyPendingMigration(ctx context.Context, migration Migration) (bool, error) {
+	applied := false
+	err := pgx.BeginFunc(ctx, db.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLockKey); err != nil {
+			return fmt.Errorf("failed to acquire migration lock: %w", err)
+		}
+
+		var tableExists bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT FROM information_schema.tables
+				WHERE table_schema = 'public' AND table_name = 'schema_migrations'
+			)`).Scan(&tableExists); err != nil {
+			return fmt.Errorf("failed to inspect migration table: %w", err)
+		}
+		if tableExists {
+			var alreadyApplied bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS (SELECT FROM schema_migrations WHERE version = $1)`,
+				migration.Version,
+			).Scan(&alreadyApplied); err != nil {
+				return fmt.Errorf("failed to inspect migration version: %w", err)
+			}
+			if alreadyApplied {
+				return nil
+			}
+		}
+
+		db.logger.Info("applying migration",
+			"version", migration.Version,
+			"description", migration.Description,
+		)
 		if _, err := tx.Exec(ctx, migration.Up); err != nil {
 			return fmt.Errorf("failed to execute migration: %w", err)
 		}
 
-		// Record migration
 		query := `
 			INSERT INTO schema_migrations (version, description, applied_at)
 			VALUES ($1, $2, $3)
@@ -896,8 +889,10 @@ func (db *DB) applyMigration(ctx context.Context, migration Migration) error {
 			return fmt.Errorf("failed to record migration: %w", err)
 		}
 
+		applied = true
 		return nil
 	})
+	return applied, err
 }
 
 // Rollback rolls back the last migration

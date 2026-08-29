@@ -7,6 +7,7 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -29,10 +30,10 @@ type Config struct {
 // DefaultConfig returns default database pool configuration
 func DefaultConfig() *Config {
 	return &Config{
-		MaxConns:          50,
-		MinConns:          5,
+		MaxConns:          8,
+		MinConns:          2,
 		MaxConnLifetime:   time.Hour,
-		MaxConnIdleTime:   30 * time.Minute,
+		MaxConnIdleTime:   5 * time.Minute,
 		HealthCheckPeriod: time.Minute,
 		ConnectTimeout:    10 * time.Second,
 	}
@@ -59,6 +60,7 @@ func New(ctx context.Context, cfg *config.DatabaseConfig, poolCfg *Config, log *
 	poolConfig.MaxConnLifetime = poolCfg.MaxConnLifetime
 	poolConfig.MaxConnIdleTime = poolCfg.MaxConnIdleTime
 	poolConfig.HealthCheckPeriod = poolCfg.HealthCheckPeriod
+	poolConfig.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
 
 	// Set connect timeout
 	connectCtx, cancel := context.WithTimeout(ctx, poolCfg.ConnectTimeout)
