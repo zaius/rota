@@ -100,13 +100,13 @@ func (s *PostgresStore) InsertLog(ctx context.Context, entry LogEntry) error {
 		metadata["source"] = entry.Source
 	}
 
-	var metadataJSON []byte
+	var metadataJSON any
 	if metadata != nil {
-		var err error
-		metadataJSON, err = json.Marshal(metadata)
+		encoded, err := json.Marshal(metadata)
 		if err != nil {
 			return fmt.Errorf("failed to marshal metadata: %w", err)
 		}
+		metadataJSON = string(encoded)
 	}
 
 	ts := entry.Timestamp

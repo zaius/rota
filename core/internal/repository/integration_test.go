@@ -69,6 +69,32 @@ func cleanTables(t *testing.T, db *database.DB) {
 	}
 }
 
+func TestIntegration_SeedDefaultsJSON(t *testing.T) {
+	db := testDB(t)
+	repo := NewSettingsRepository(db)
+	ctx := context.Background()
+	key := "healthcheck"
+	if _, err := db.Pool.Exec(ctx, `DELETE FROM settings WHERE key = $1`, key); err != nil {
+		t.Fatalf("clear default setting: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Pool.Exec(ctx, `DELETE FROM settings WHERE key = $1`, key); err != nil {
+			t.Errorf("clean default setting: %v", err)
+		}
+	})
+
+	if err := repo.SeedDefaults(ctx); err != nil {
+		t.Fatalf("seed defaults: %v", err)
+	}
+	value, err := repo.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("get default setting: %v", err)
+	}
+	if value["url"] != "https://api.ipify.org" {
+		t.Fatalf("unexpected setting: %#v", value)
+	}
+}
+
 func TestIntegration_Upsert_CreatesThenUpdates(t *testing.T) {
 	db := testDB(t)
 	cleanTables(t, db)

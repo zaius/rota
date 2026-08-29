@@ -88,7 +88,7 @@ func (r *SettingsRepository) Set(ctx context.Context, key string, value map[stri
 		SET value = EXCLUDED.value, updated_at = NOW()
 	`
 
-	_, err = r.db.Pool.Exec(ctx, query, key, valueJSON)
+	_, err = r.db.Pool.Exec(ctx, query, key, string(valueJSON))
 	if err != nil {
 		return fmt.Errorf("failed to set setting: %w", err)
 	}
@@ -112,7 +112,7 @@ func (r *SettingsRepository) UpdateAll(ctx context.Context, settings *models.Set
 				 VALUES ($1, $2, NOW())
 				 ON CONFLICT (key) DO UPDATE
 				 SET value = EXCLUDED.value, updated_at = NOW()`,
-				key, valueJSON); err != nil {
+				key, string(valueJSON)); err != nil {
 				return fmt.Errorf("failed to set setting %q: %w", key, err)
 			}
 		}
@@ -185,7 +185,7 @@ func (r *SettingsRepository) writeSettings(ctx context.Context, values map[strin
 			if err != nil {
 				return fmt.Errorf("failed to marshal default for %q: %w", key, err)
 			}
-			if _, err := tx.Exec(ctx, query, key, valueJSON); err != nil {
+			if _, err := tx.Exec(ctx, query, key, string(valueJSON)); err != nil {
 				return fmt.Errorf("failed to write setting %q: %w", key, err)
 			}
 		}
