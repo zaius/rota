@@ -5,7 +5,6 @@ import {
   ChartResponse,
   TrafficChartResponse,
   LogsResponse,
-  SystemMetrics,
   Settings,
   AuthResponse,
   AddProxyRequest,
@@ -348,11 +347,6 @@ class ApiClient {
     }
 
     return response.blob()
-  }
-
-  // System Metrics
-  async getSystemMetrics(): Promise<SystemMetrics> {
-    return this.request<SystemMetrics>("/api/v1/metrics/system")
   }
 
   // Settings

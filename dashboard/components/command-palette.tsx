@@ -15,7 +15,6 @@ import {
   FileText,
   Settings,
   LogOut,
-  Activity
 } from "lucide-react"
 import { api } from "@/lib/api"
 
@@ -57,12 +56,6 @@ export function CommandPalette() {
           >
             <Network className="mr-2 h-4 w-4" />
             <span>Proxy Management</span>
-          </CommandItem>
-          <CommandItem
-            onSelect={() => runCommand(() => navigate("/dashboard/metrics"))}
-          >
-            <Activity className="mr-2 h-4 w-4" />
-            <span>System Metrics</span>
           </CommandItem>
           <CommandItem
             onSelect={() => runCommand(() => navigate("/dashboard/logs"))}

@@ -10,7 +10,6 @@ import {
   Moon,
   Sun,
   Command,
-  Activity,
   LogOut,
   Download,
   Layers,
@@ -64,11 +63,6 @@ const navigation = [
     title: "Proxy Users",
     url: "/dashboard/users",
     icon: Users,
-  },
-  {
-    title: "System Metrics",
-    url: "/dashboard/metrics",
-    icon: Activity,
   },
   {
     title: "Proxy Logs",

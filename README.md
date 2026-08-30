@@ -88,10 +88,9 @@ Whether you're conducting web scraping operations, performing security research,
 - 🧹 **Dead Proxy Cleanup**: Configurable automatic removal of long-failed or low-quality proxies
 
 ### Web Dashboard
-- 📊 **Real-Time Metrics**: Live statistics, charts, and system monitoring
+- 📊 **Real-Time Metrics**: Live statistics, charts, and traffic monitoring
 - 🔄 **Proxy Management**: Add, edit, delete, and test proxies through the UI
 - 📝 **Live Logs**: WebSocket-based real-time log streaming
-- 💻 **System Monitoring**: CPU, memory, disk, and runtime metrics
 - ⚙️ **Configuration**: Manage settings through the web interface
 - 🎨 **Modern UI**: Beautiful, responsive design with dark mode support
 - 📱 **Mobile-Friendly**: Fully responsive across all devices

@@ -104,32 +104,6 @@ export interface LogsResponse {
   }
 }
 
-export interface SystemMetrics {
-  memory: {
-    total: number
-    used: number
-    available: number
-    percentage: number
-  }
-  cpu: {
-    percentage: number
-    cores: number
-  }
-  disk: {
-    total: number
-    used: number
-    free: number
-    percentage: number
-  }
-  runtime: {
-    goroutines: number
-    threads: number
-    gc_pause_count: number
-    mem_alloc: number
-    mem_sys: number
-  }
-}
-
 export interface Settings {
   rotation: {
     follow_redirect: boolean

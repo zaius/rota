@@ -70,7 +70,6 @@ type Server struct {
 	logsHandler          *handlers.LogsHandler
 	settingsHandler      *handlers.SettingsHandler
 	websocketHandler     *handlers.WebSocketHandler
-	metricsHandler       *handlers.MetricsHandler
 	sourceHandler        *handlers.SourceHandler
 	formatHistoryHandler *handlers.FormatHistoryHandler
 	poolHandler          *handlers.PoolHandler
@@ -108,7 +107,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	logsHandler := handlers.NewLogsHandler(deps.EventStore, log)
 	settingsHandler := handlers.NewSettingsHandler(deps.SettingsRepo, log, nil) // onUpdate set below
 	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, deps.ProxyRepo, deps.EventStore, log, cfg.CORSAllowedOrigins)
-	metricsHandler := handlers.NewMetricsHandler(log)
 	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.FormatHistoryRepo, deps.SourceSvc, log)
 	formatHistoryHandler := handlers.NewFormatHistoryHandler(deps.FormatHistoryRepo, log)
 	poolHandler := handlers.NewPoolHandler(deps.PoolRepo, deps.PoolSvc, log)
@@ -160,7 +158,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		logsHandler:          logsHandler,
 		settingsHandler:      settingsHandler,
 		websocketHandler:     websocketHandler,
-		metricsHandler:       metricsHandler,
 		sourceHandler:        sourceHandler,
 		formatHistoryHandler: formatHistoryHandler,
 		poolHandler:          poolHandler,
@@ -290,9 +287,6 @@ func (s *Server) setupRoutes() {
 			r.Get("/status", s.healthHandler.Status)
 			r.Get("/database/health", s.healthHandler.DatabaseHealth)
 			r.Get("/database/stats", s.healthHandler.DatabaseStats)
-
-			// System Metrics
-			r.Get("/metrics/system", s.metricsHandler.GetSystemMetrics)
 
 			// Dashboard endpoints
 			r.Get("/dashboard/stats", s.dashboardHandler.GetStats)
