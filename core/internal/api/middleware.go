@@ -6,9 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -33,6 +35,26 @@ func LoggerMiddleware(log *logger.Logger) func(next http.Handler) http.Handler {
 				"remote_addr", r.RemoteAddr,
 				"request_id", middleware.GetReqID(r.Context()),
 			)
+		})
+	}
+}
+
+// MetricsMiddleware records request count and duration per matched chi route
+// pattern — the pattern, not the raw path, so path parameters never explode
+// label cardinality. It must run before routing so the pattern is populated by
+// the time the handler returns.
+func MetricsMiddleware() func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			next.ServeHTTP(ww, r)
+
+			route := ""
+			if rctx := chi.RouteContext(r.Context()); rctx != nil {
+				route = rctx.RoutePattern()
+			}
+			metrics.RecordAPIRequest(r.Context(), route, r.Method, ww.Status(), time.Since(start))
 		})
 	}
 }

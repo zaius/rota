@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
+	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/tlsprofile"
@@ -152,6 +153,7 @@ func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *h
 		if err != nil {
 			m.logger.Warn("proxy-user auth failed: bad TLS profile in username",
 				"username", username, "err", err)
+			metrics.RecordAuthRejection(req.Context(), "bad_profile")
 			return req, unauthorized()
 		}
 
@@ -159,8 +161,11 @@ func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *h
 			return m.withChain(req, chain, sessionToken, profileName, profile), nil
 		} else {
 			m.logger.Warn("proxy-user auth failed", "username", username, "err", err)
+			metrics.RecordAuthRejection(req.Context(), "bad_credentials")
+			return req, unauthorized()
 		}
 	}
+	metrics.RecordAuthRejection(req.Context(), "missing_credentials")
 	return req, unauthorized()
 }
 

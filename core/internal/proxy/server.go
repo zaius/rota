@@ -9,6 +9,7 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/events"
+	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
@@ -159,6 +160,14 @@ func New(
 		ReadTimeout: time.Duration(settings.Rotation.Timeout) * time.Second,
 		IdleTimeout: 60 * time.Second,
 	}
+
+	// Live gauges: open tunnels, sticky sessions, domain cooldowns. Recording
+	// is a no-op until (unless) main installs the metrics SDK.
+	metrics.RegisterProxyObservables(
+		handler.OpenTunnels,
+		func() int64 { return int64(len(sessionMgr.List())) },
+		func() int64 { return int64(len(domainCD.List())) },
+	)
 
 	s := &Server{
 		router:       router,

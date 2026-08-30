@@ -109,7 +109,7 @@ Whether you're conducting web scraping operations, performing security research,
 - 🔧 **Easy Configuration**: All config via `.env` — see `.env.example` for all options
 - 🏥 **Health Checks**: Built-in health endpoints for monitoring
 - 🛑 **Graceful Shutdown**: Clean shutdown with connection draining
-- 📊 **Observability**: Structured JSON logging and metrics endpoints
+- 📊 **Observability**: Structured JSON logging, a Prometheus `/metrics` endpoint, and optional OTLP push to any OpenTelemetry backend (SigNoz, Grafana, Datadog, ...)
 
 ---
 
@@ -157,6 +157,8 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `EVENT_STORE` | `postgres` | Backend for logs + request history: `postgres` or `clickhouse` |
 | `CLICKHOUSE_PASSWORD` | `rota_password` | ClickHouse password (when `EVENT_STORE=clickhouse`) |
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `METRICS_ENABLED` | `true` | Prometheus `/metrics` endpoint + optional OTLP push — see [Metrics & Observability](#-metrics--observability) |
+| `METRICS_BEARER_TOKEN` | *(empty)* | When set, `/metrics` requires `Authorization: Bearer <token>` |
 | `AUTH_IP_MAX_ATTEMPTS` | `10` | Failed login attempts before an IP is blocked |
 | `AUTH_IP_WINDOW_MINUTES` | `10` | Sliding window (minutes) to count per-IP failures |
 | `AUTH_IP_BLOCK_MINUTES` | `30` | How long a blocked IP cannot attempt login |
@@ -592,6 +594,65 @@ An unrecognized profile name is rejected with a `407` rather than quietly fallin
 > - **It does not change your headers.** Rota forwards the client's headers as it received them, only reordering them to match the profile — it never rewrites `User-Agent`. An iOS handshake carrying a `python-requests` User-Agent is a sharper signal than either would be alone, so configure the client to match. Each profile publishes the User-Agent its real counterpart sends.
 > - **It cannot change the TCP/IP layer.** JA4T and p0f-style signals — window size, TTL, options ordering — come from whichever host actually terminates TCP with the target, which is your upstream proxy, not Rota. A datacenter exit reads as a datacenter Linux box no matter which phone is being imitated. Mobile and residential exits are unaffected by this; fixing it for datacenter exits would mean changing the exit, not the profile.
 > - **It is only as current as its capture.** These are transcribed from platform-labelled captures and go stale as the real clients update.
+
+---
+
+## 📡 Metrics & Observability
+
+Rota instruments itself once with OpenTelemetry and exports through two paths — use either or both:
+
+- **Pull (default)**: `GET http://<host>:8001/metrics` serves Prometheus exposition format. Zero configuration; point Prometheus, SigNoz's collector, Grafana Alloy, or any Prometheus-compatible scraper at it.
+- **Push (opt-in)**: set the standard `OTEL_EXPORTER_OTLP_*` env vars and Rota pushes the same metrics over OTLP — no scraper or collector required.
+
+### What's exported
+
+| Metric | Type | Labels |
+|---|---|---|
+| `rota_proxy_requests_total` | counter | `pool`, `user`, `outcome`, `status_class` — every upstream attempt (retries count separately) |
+| `rota_proxy_request_duration_seconds` | histogram | `pool`, `outcome` |
+| `rota_proxy_tunnels_total` / `rota_proxy_tunnel_duration_seconds` | counter / histogram | completed CONNECT tunnels by `pool`, `user`, `outcome` |
+| `rota_proxy_tunnel_io_bytes_total` | counter | tunnel volume by `direction` (`up`/`down`), `pool`, `user` |
+| `rota_proxy_open_tunnels` | gauge | CONNECT tunnels live right now |
+| `rota_proxy_sessions_active` | gauge | live sticky-session bindings |
+| `rota_proxy_domain_cooldowns_active` | gauge | active domain-scoped cooldowns |
+| `rota_proxy_auth_rejections_total` | counter | 407s by `reason` |
+| `rota_proxy_ratelimit_rejections_total` | counter | 429s from the per-IP limiter |
+| `rota_proxies` | gauge | fleet size by `status` |
+| `rota_pool_proxies` | gauge | per-pool proxy counts by `pool`, `status` |
+| `rota_proxy_users` | gauge | configured proxy users by `enabled` |
+| `rota_healthcheck_checks_total` / `rota_healthcheck_duration_seconds` | counter / histogram | health-check probes by `outcome` |
+| `rota_source_fetches_total` / `rota_source_proxies_imported_total` | counter | source list fetches and new proxies imported |
+| `rota_pool_alerts_total` | counter | alert webhooks by delivery `outcome` |
+| `rota_api_requests_total` / `rota_api_request_duration_seconds` | counter / histogram | management API traffic by `route`, `method`, `status` |
+| `go_*` / `process_*` | various | Go runtime: memory, GC, goroutines |
+
+Labels stay bounded by design: pools and proxy users are labels, individual proxy IDs and target domains are not — per-proxy and per-domain analytics live in the event store and dashboard instead.
+
+### Scraping (Prometheus, SigNoz collector, ...)
+
+```yaml
+# prometheus.yml — or the prometheus receiver in SigNoz's otel-collector config
+scrape_configs:
+  - job_name: rota
+    static_configs:
+      - targets: ["rota:8001"]
+    # Only needed when METRICS_BEARER_TOKEN is set:
+    authorization:
+      credentials: <token>
+```
+
+### Pushing over OTLP (SigNoz direct, no collector)
+
+```bash
+# .env — SigNoz Cloud
+OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.<region>.signoz.cloud:443
+OTEL_EXPORTER_OTLP_HEADERS=signoz-ingestion-key=<your-key>
+
+# .env — self-hosted SigNoz (or any OTLP backend)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://signoz-otel-collector:4318
+```
+
+All standard OpenTelemetry variables are honored (`OTEL_EXPORTER_OTLP_PROTOCOL` for `grpc` vs `http/protobuf`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, ...); Rota adds nothing vendor-specific. Set `METRICS_ENABLED=false` to disable the pipeline entirely.
 
 ---
 

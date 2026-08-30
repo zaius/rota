@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
@@ -88,7 +89,9 @@ func (w *AlertWatcher) check(ctx context.Context) {
 			"threshold", rule.MinActiveProxies,
 		)
 
-		if err := w.fire(ctx, rule, *pool); err != nil {
+		err = w.fire(ctx, rule, *pool)
+		metrics.RecordPoolAlert(ctx, err == nil)
+		if err != nil {
 			w.log.Error("failed to fire pool alert webhook",
 				"rule_id", rule.ID,
 				"url", redactWebhookURL(rule.WebhookURL),

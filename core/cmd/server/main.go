@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -35,6 +36,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/events"
+	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/proxy"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/services"
@@ -46,6 +48,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// metricsHTTPHandler returns the /metrics handler, or nil when metrics are
+// disabled (a nil api.Deps.Metrics leaves the route unregistered).
+func metricsHTTPHandler(p *metrics.Provider) http.Handler {
+	if p == nil {
+		return nil
+	}
+	return p.Handler()
 }
 
 func run() error {
@@ -62,8 +73,22 @@ func run() error {
 		"api_port", cfg.APIPort,
 	)
 
-	// Initialize database
 	ctx := context.Background()
+
+	// Install the metrics pipeline before anything records: a Prometheus
+	// /metrics endpoint on the API server, plus OTLP push when the standard
+	// OTEL_EXPORTER_OTLP_* env vars are set. When disabled, no SDK is
+	// installed and every instrument in internal/metrics stays a no-op.
+	var metricsProvider *metrics.Provider
+	if cfg.MetricsEnabled {
+		var err error
+		metricsProvider, err = metrics.Setup(ctx, cfg.MetricsBearerToken, log)
+		if err != nil {
+			return fmt.Errorf("failed to set up metrics: %w", err)
+		}
+	}
+
+	// Initialize database
 	db, err := database.New(ctx, &cfg.Database, database.DefaultConfig(), log)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
@@ -175,7 +200,11 @@ func run() error {
 	logCleanupSvc := services.NewLogCleanupService(eventStore, settingsRepo, log)
 	statsRefresher := services.NewStatsRefresher(eventStore, proxyRepo, time.Minute, log)
 
-	svcManager := services.NewManager(log, geoSvc, sourceSvc, poolSvc, alertWatcher, cleanupSvc, logCleanupSvc, statsRefresher)
+	backgroundSvcs := []services.Service{geoSvc, sourceSvc, poolSvc, alertWatcher, cleanupSvc, logCleanupSvc, statsRefresher}
+	if metricsProvider != nil {
+		backgroundSvcs = append(backgroundSvcs, metrics.NewFleetPoller(db, poolRepo, 30*time.Second, log))
+	}
+	svcManager := services.NewManager(log, backgroundSvcs...)
 
 	// Optional HTTPS interception. Without a configured CA the inspector is
 	// nil and every CONNECT tunnel stays opaque, regardless of what any proxy
@@ -212,6 +241,7 @@ func run() error {
 		AdminRepo:         adminRepo,
 		SourceSvc:         sourceSvc,
 		PoolSvc:           poolSvc,
+		Metrics:           metricsHTTPHandler(metricsProvider),
 	})
 
 	// Set proxy server reference in API server for reload functionality
@@ -280,6 +310,14 @@ func run() error {
 	// Wait for shutdown to complete
 	shutdownWg.Wait()
 	close(shutdownErrors)
+
+	// Stop the metrics pipeline last, so the final OTLP push (if configured)
+	// still sees everything the servers recorded on the way down.
+	if metricsProvider != nil {
+		if err := metricsProvider.Shutdown(ctx); err != nil {
+			log.Warn("metrics provider did not shut down cleanly", "error", err)
+		}
+	}
 
 	// Collect any shutdown errors
 	var shutdownErr error

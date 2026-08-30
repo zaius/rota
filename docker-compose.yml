@@ -31,6 +31,16 @@ services:
       - CLICKHOUSE_USER=${CLICKHOUSE_USER:-rota}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-rota_password}
       - CLICKHOUSE_DB=${CLICKHOUSE_DB:-rota}
+      # Prometheus metrics at GET :8001/metrics; see .env.example for the
+      # OTEL_* vars that additionally enable OTLP push (e.g. to SigNoz).
+      - METRICS_ENABLED=${METRICS_ENABLED:-true}
+      - METRICS_BEARER_TOKEN=${METRICS_BEARER_TOKEN:-}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - OTEL_EXPORTER_OTLP_PROTOCOL=${OTEL_EXPORTER_OTLP_PROTOCOL:-}
+      - OTEL_METRIC_EXPORT_INTERVAL=${OTEL_METRIC_EXPORT_INTERVAL:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-}
+      - OTEL_RESOURCE_ATTRIBUTES=${OTEL_RESOURCE_ATTRIBUTES:-}
     networks:
       - rota-network
     healthcheck:

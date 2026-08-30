@@ -55,6 +55,18 @@ type Config struct {
 	// TLSInspect configures optional HTTPS interception (TLS_INSPECT_*).
 	TLSInspect TLSInspectConfig
 
+	// MetricsEnabled controls the OpenTelemetry metrics pipeline: the
+	// Prometheus /metrics endpoint on the API port and, when the standard
+	// OTEL_EXPORTER_OTLP_* env vars are set, OTLP push. (METRICS_ENABLED,
+	// default true)
+	MetricsEnabled bool
+
+	// MetricsBearerToken, when set, requires scrapers to send
+	// "Authorization: Bearer <token>" on GET /metrics. Empty leaves the
+	// endpoint unauthenticated, the usual choice for internal-network
+	// deployments. (METRICS_BEARER_TOKEN)
+	MetricsBearerToken string
+
 	// Auth brute-force protection
 	// Per-IP: after AuthIPMaxAttempts failures within AuthIPWindowMinutes,
 	// that IP is blocked for AuthIPBlockMinutes.
@@ -151,6 +163,9 @@ func Load() (*Config, error) {
 			CAKeyFile:     getEnv("TLS_INSPECT_CA_KEY", ""),
 			BypassDomains: getEnvAsSlice("TLS_INSPECT_BYPASS_DOMAINS", nil),
 		},
+
+		MetricsEnabled:     getEnvAsBool("METRICS_ENABLED", true),
+		MetricsBearerToken: getEnv("METRICS_BEARER_TOKEN", ""),
 
 		AuthIPMaxAttempts:      getEnvAsInt("AUTH_IP_MAX_ATTEMPTS", 10),
 		AuthIPWindowMinutes:    getEnvAsInt("AUTH_IP_WINDOW_MINUTES", 10),

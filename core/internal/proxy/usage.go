@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/events"
+	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/repository"
 )
 
@@ -41,6 +42,8 @@ type RequestRecord struct {
 
 // RecordRequest records a proxy request and updates statistics
 func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) error {
+	metrics.RecordProxyRequest(ctx, record.PoolID, record.Username, record.Success, record.StatusCode, record.ResponseTime)
+
 	// Record the request outcome in the event store. The target domain is
 	// derived from the URL with the same normalization as domain cooldowns,
 	// so per-domain analytics line up with proxy_domain_cooldowns entries.
@@ -139,6 +142,9 @@ type TunnelRecord struct {
 // establishment already advanced the health state machine when it opened, and
 // a tunnel torn down by either peer is normal, not a proxy failure.
 func (t *UsageTracker) RecordTunnel(ctx context.Context, record TunnelRecord) error {
+	metrics.RecordProxyTunnel(ctx, record.PoolID, record.Username, record.ErrorMessage == "",
+		record.BytesUp, record.BytesDown, int(record.Duration.Milliseconds()))
+
 	err := t.events.InsertTunnel(ctx, events.TunnelEvent{
 		ProxyID:      record.ProxyID,
 		ProxyAddress: record.ProxyAddress,
@@ -161,6 +167,7 @@ func (t *UsageTracker) RecordTunnel(ctx context.Context, record TunnelRecord) er
 
 // RecordHealthCheck records a health check result
 func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, success bool, responseTime int, errorMsg string) error {
+	metrics.RecordHealthCheck(ctx, success, responseTime)
 	now := time.Now()
 
 	status := "active"

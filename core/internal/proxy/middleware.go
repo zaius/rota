@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"golang.org/x/time/rate"
 )
@@ -52,6 +53,7 @@ func (m *RateLimitMiddleware) HandleRequest(req *http.Request) (*http.Request, *
 
 	// Check rate limit
 	if !m.allow(clientIP) {
+		metrics.RecordRateLimitRejection(req.Context())
 		return req, m.tooManyRequests()
 	}
 

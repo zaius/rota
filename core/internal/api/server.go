@@ -37,6 +37,10 @@ type Deps struct {
 
 	SourceSvc *services.SourceService
 	PoolSvc   *services.PoolService
+
+	// Metrics, when non-nil, is served at GET /metrics (Prometheus exposition
+	// format). It is nil when metrics are disabled.
+	Metrics http.Handler
 }
 
 // Server represents the API server
@@ -53,6 +57,7 @@ type Server struct {
 	authRL            *authRateLimiter
 	controlRL         *authRateLimiter
 	userRepo          *repository.UserRepository
+	metricsHTTP       http.Handler
 
 	// Proxy server reference for reloading
 	proxyServer handlers.ProxyServer
@@ -147,6 +152,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		authRL:               authRL,
 		controlRL:            controlRL,
 		userRepo:             deps.UserRepo,
+		metricsHTTP:          deps.Metrics,
 		authHandler:          authHandler,
 		healthHandler:        healthHandler,
 		dashboardHandler:     dashboardHandler,
@@ -231,6 +237,7 @@ func (s *Server) setupMiddleware() {
 	if s.trustProxyHeaders {
 		s.router.Use(middleware.RealIP)
 	}
+	s.router.Use(MetricsMiddleware())
 	s.router.Use(LoggerMiddleware(s.logger))
 	s.router.Use(middleware.Recoverer)
 	// No global timeout — health-check routes need minutes; individual routes handle their own timeouts
@@ -243,6 +250,13 @@ func (s *Server) setupRoutes() {
 	// HEAD too — probes like wget --spider and some load balancers send HEAD,
 	// and chi would otherwise answer 405. net/http drops the body for HEAD.
 	s.router.Head("/health", s.healthHandler.Health)
+
+	// Prometheus exposition endpoint. Not behind the admin JWT — scrapers
+	// don't do login flows; the handler itself enforces the optional bearer
+	// token (METRICS_BEARER_TOKEN).
+	if s.metricsHTTP != nil {
+		s.router.Get("/metrics", s.metricsHTTP.ServeHTTP)
+	}
 
 	// Auth: only login is public; everything else requires a valid JWT
 	// Auth rate limiter wraps the login handler — per-IP block + global lockout

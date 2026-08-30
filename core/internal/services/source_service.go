@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/lineformat"
+	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
@@ -83,6 +84,7 @@ func (s *SourceService) FetchNow(ctx context.Context, sourceID int) (*models.Pro
 		return nil, 0, fmt.Errorf("source not found: %w", err)
 	}
 	imported, total, fetchErr := s.fetchAndImport(ctx, src)
+	metrics.RecordSourceFetch(ctx, fetchErr == nil, imported)
 	_ = s.sourceRepo.UpdateFetchResult(ctx, src.ID, imported, total, fetchErr)
 	if fetchErr != nil {
 		return src, 0, fetchErr
@@ -117,6 +119,7 @@ func (s *SourceService) fetchDueSources(ctx context.Context) {
 	for _, src := range sources {
 		srcCopy := src
 		imported, total, fetchErr := s.fetchAndImport(ctx, &srcCopy)
+		metrics.RecordSourceFetch(ctx, fetchErr == nil, imported)
 		if updateErr := s.sourceRepo.UpdateFetchResult(ctx, src.ID, imported, total, fetchErr); updateErr != nil {
 			s.logger.Error("failed to update source fetch result", "source_id", src.ID, "error", updateErr)
 		}
