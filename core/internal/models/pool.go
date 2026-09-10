@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // ProxyPool is a named group of proxies filtered by geo or manually managed
 type ProxyPool struct {
@@ -165,6 +169,53 @@ type UpdatePoolRequest struct {
 type GeoFilter struct {
 	CountryCode string `json:"country_code"`
 	CityName    string `json:"city_name,omitempty"`
+}
+
+// GeoFilterAllCountries is the wildcard country code. A pool carrying it
+// matches every proxy regardless of geo data, so membership follows the
+// proxies wherever their IPs move instead of pinning a fixed country list.
+const GeoFilterAllCountries = "*"
+
+// IsAllCountries reports whether the filter is the any-country wildcard.
+func (f GeoFilter) IsAllCountries() bool { return f.CountryCode == GeoFilterAllCountries }
+
+// NormalizeGeoFilters trims and upper-cases country codes, drops exact
+// duplicates, and rejects entries the sync query can't act on. A nil input
+// stays nil so callers can tell "not provided" from "clear all".
+func NormalizeGeoFilters(filters []GeoFilter) ([]GeoFilter, error) {
+	if filters == nil {
+		return nil, nil
+	}
+	out := make([]GeoFilter, 0, len(filters))
+	seen := make(map[GeoFilter]struct{}, len(filters))
+	for _, f := range filters {
+		f.CountryCode = strings.ToUpper(strings.TrimSpace(f.CountryCode))
+		f.CityName = strings.TrimSpace(f.CityName)
+		switch {
+		case f.CountryCode == "":
+			return nil, fmt.Errorf("geo filter: country_code is required")
+		case f.IsAllCountries() && f.CityName != "":
+			return nil, fmt.Errorf("geo filter: %q matches all countries and cannot take a city", GeoFilterAllCountries)
+		case !f.IsAllCountries() && (len(f.CountryCode) < 2 || len(f.CountryCode) > 3):
+			return nil, fmt.Errorf("geo filter: %q is not a country code (use e.g. US, or %q for all)", f.CountryCode, GeoFilterAllCountries)
+		}
+		if _, dup := seen[f]; dup {
+			continue
+		}
+		seen[f] = struct{}{}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// HasAllCountries reports whether any filter in the list is the wildcard.
+func HasAllCountries(filters []GeoFilter) bool {
+	for _, f := range filters {
+		if f.IsAllCountries() {
+			return true
+		}
+	}
+	return false
 }
 
 // GeoSummary is an aggregated view of geo distribution in the proxy table

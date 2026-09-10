@@ -8,8 +8,8 @@ import {
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import {
-  ProxyPool, PoolProxy, Job, CreatePoolRequest,
-  PoolAlertRule, CreatePoolAlertRuleRequest,
+  ProxyPool, PoolProxy, Job, CreatePoolRequest, GeoFilter,
+  PoolAlertRule, CreatePoolAlertRuleRequest, GEO_FILTER_ALL,
 } from "@/lib/types"
 import { useResourceQuery } from "@/hooks/use-resource-query"
 import { EmptyState } from "@/components/crud/empty-state"
@@ -45,6 +45,11 @@ const ROTATION_LABELS: Record<string, string> = {
 
 const FLAG_CDN = (cc: string) =>
   `https://flagcdn.com/16x12/${cc.toLowerCase()}.png`
+
+const hasAllCountries = (filters?: GeoFilter[]) =>
+  (filters ?? []).some(f => f.country_code === GEO_FILTER_ALL)
+
+const geoFilterKey = (f: GeoFilter) => `${f.country_code}-${f.city_name ?? ""}`
 
 const statusColor = (s: string) =>
   s === "active" ? "text-green-500" : s === "failed" ? "text-red-500" : "text-yellow-500"
@@ -100,6 +105,8 @@ export default function PoolsPage() {
   const [editPool, setEditPool] = useState<ProxyPool | null>(null)
   const [form, setForm] = useState<CreatePoolRequest>(DEFAULT_POOL_FORM)
   const [saving, setSaving] = useState(false)
+  const formAllCountries = hasAllCountries(form.geo_filters)
+  const formGeoCount = form.geo_filters?.length ?? 0
 
   // Quick-add geo filter inside edit dialog
   const [newGeoCountry, setNewGeoCountry] = useState("")
@@ -395,15 +402,33 @@ export default function PoolsPage() {
                           {pool.description && (
                             <p className="text-xs text-muted-foreground mt-0.5 truncate">{pool.description}</p>
                           )}
-                          <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
-                            {pool.country_code && (
+                          <div className="flex items-center gap-2 mt-2 text-xs text-muted-foreground flex-wrap">
+                            {hasAllCountries(pool.geo_filters) ? (
                               <span className="flex items-center gap-1">
-                                <img src={FLAG_CDN(pool.country_code)} alt={pool.country_code} className="h-3" />
-                                {pool.country_code}
+                                <Globe className="h-3 w-3" /> All countries
                               </span>
+                            ) : (pool.geo_filters?.length ?? 0) > 0 ? (
+                              <>
+                                {pool.geo_filters!.slice(0, 8).map(f => (
+                                  <span key={geoFilterKey(f)} className="flex items-center gap-1">
+                                    <img src={FLAG_CDN(f.country_code)} alt={f.country_code} className="h-3" />
+                                    {f.country_code}{f.city_name ? `/${f.city_name}` : ""}
+                                  </span>
+                                ))}
+                                {pool.geo_filters!.length > 8 && <span>+{pool.geo_filters!.length - 8}</span>}
+                              </>
+                            ) : (
+                              <>
+                                {pool.country_code && (
+                                  <span className="flex items-center gap-1">
+                                    <img src={FLAG_CDN(pool.country_code)} alt={pool.country_code} className="h-3" />
+                                    {pool.country_code}
+                                  </span>
+                                )}
+                                {pool.region_name && <span>{pool.region_name}</span>}
+                                {pool.city_name && <span>{pool.city_name}</span>}
+                              </>
                             )}
-                            {pool.region_name && <span>{pool.region_name}</span>}
-                            {pool.city_name && <span>{pool.city_name}</span>}
                           </div>
                         </div>
                         <div className="flex flex-col items-end gap-1 text-xs shrink-0">
@@ -500,6 +525,19 @@ export default function PoolsPage() {
                         <div>Health check: <code className="text-xs bg-muted px-1 rounded">{selectedPool.health_check_cron}</code>
                           {" → "}<span className="text-muted-foreground">{selectedPool.health_check_url}</span>
                         </div>
+                        {(selectedPool.geo_filters?.length ?? 0) > 0 && (
+                          <div className="flex gap-1 flex-wrap items-center">
+                            <Globe className="h-3 w-3 text-muted-foreground" />
+                            {hasAllCountries(selectedPool.geo_filters)
+                              ? <Badge variant="outline" className="text-xs">All countries</Badge>
+                              : selectedPool.geo_filters!.map(f => (
+                                <Badge key={geoFilterKey(f)} variant="outline" className="text-xs gap-1">
+                                  <img src={FLAG_CDN(f.country_code)} alt={f.country_code} className="h-3" />
+                                  {f.country_code}{f.city_name ? ` / ${f.city_name}` : ""}
+                                </Badge>
+                              ))}
+                          </div>
+                        )}
                         {(selectedPool.isp_filters?.length ?? 0) > 0 && (
                           <div className="flex gap-1 flex-wrap">
                             <span className="text-muted-foreground">ISP:</span>
@@ -706,57 +744,113 @@ export default function PoolsPage() {
                 />
               </div>
 
-              {/* Multi-country geo filters — lets a pool match proxies from multiple countries */}
+              {/* Multi-country geo filters — a pool matches proxies from any of the listed
+                  countries, or takes every proxy (GEO_FILTER_ALL) and follows them wherever
+                  their IPs move */}
               <div className="col-span-2 flex flex-col gap-2 border rounded-md p-3">
                 <div className="flex items-center justify-between">
                   <Label className="text-sm font-medium">Countries in this pool</Label>
                   <span className="text-xs text-muted-foreground">
-                    {form.geo_filters?.length ?? 0} filter{(form.geo_filters?.length ?? 0) === 1 ? "" : "s"}
+                    {formAllCountries ? "all countries" : `${formGeoCount} filter${formGeoCount === 1 ? "" : "s"}`}
                   </span>
                 </div>
 
-                {/* Existing filters as removable badges */}
-                <div className="flex flex-wrap gap-1.5 min-h-[28px]">
-                  {(form.geo_filters ?? []).length === 0 && (
-                    <span className="text-xs text-muted-foreground italic">
-                      No country filters yet — this pool will not sync any proxies. Add at least one below.
-                    </span>
-                  )}
-                  {(form.geo_filters ?? []).map((f, idx) => (
-                    <Badge key={`${f.country_code}-${f.city_name ?? ""}-${idx}`} variant="secondary" className="gap-1 pr-1">
-                      <img src={FLAG_CDN(f.country_code)} alt={f.country_code} className="h-3" />
-                      <span className="font-mono text-xs">{f.country_code.toUpperCase()}</span>
-                      {f.city_name && <span className="text-xs text-muted-foreground">/ {f.city_name}</span>}
-                      <button
-                        type="button"
-                        className="ml-0.5 rounded hover:bg-muted-foreground/20 px-1 text-xs leading-none"
-                        onClick={() => setForm({
-                          ...form,
-                          geo_filters: (form.geo_filters ?? []).filter((_, i) => i !== idx),
-                        })}
-                        title="Remove"
-                      >
-                        ×
-                      </button>
-                    </Badge>
-                  ))}
-                </div>
+                {formAllCountries ? (
+                  <>
+                    <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+                      <Badge variant="secondary" className="gap-1 pr-1">
+                        <Globe className="h-3 w-3" />
+                        <span className="text-xs">All countries</span>
+                        <button
+                          type="button"
+                          className="ml-0.5 rounded hover:bg-muted-foreground/20 px-1 text-xs leading-none"
+                          onClick={() => setForm({ ...form, geo_filters: [] })}
+                          title="Pick specific countries instead"
+                        >
+                          ×
+                        </button>
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Every proxy in inventory joins this pool and stays in it wherever its IP moves,
+                      including proxies whose location hasn't been resolved yet. Remove this to pick
+                      specific countries.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    {/* Existing filters as removable badges */}
+                    <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+                      {formGeoCount === 0 && (
+                        <span className="text-xs text-muted-foreground italic">
+                          No country filters yet — this pool will not sync any proxies. Add one below, or pick All countries.
+                        </span>
+                      )}
+                      {(form.geo_filters ?? []).map((f, idx) => (
+                        <Badge key={`${f.country_code}-${f.city_name ?? ""}-${idx}`} variant="secondary" className="gap-1 pr-1">
+                          <img src={FLAG_CDN(f.country_code)} alt={f.country_code} className="h-3" />
+                          <span className="font-mono text-xs">{f.country_code.toUpperCase()}</span>
+                          {f.city_name && <span className="text-xs text-muted-foreground">/ {f.city_name}</span>}
+                          <button
+                            type="button"
+                            className="ml-0.5 rounded hover:bg-muted-foreground/20 px-1 text-xs leading-none"
+                            onClick={() => setForm({
+                              ...form,
+                              geo_filters: (form.geo_filters ?? []).filter((_, i) => i !== idx),
+                            })}
+                            title="Remove"
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
 
-                {/* Quick-add row: country code + optional city + Add button */}
-                <div className="flex gap-2 items-end pt-1">
-                  <div className="flex flex-col gap-1 flex-1">
-                    <Label htmlFor="new-geo-cc" className="text-xs">Country</Label>
-                    <Input
-                      id="new-geo-cc"
-                      placeholder="BR"
-                      maxLength={3}
-                      value={newGeoCountry}
-                      onChange={e => setNewGeoCountry(e.target.value.toUpperCase())}
-                      onKeyDown={e => {
-                        if (e.key === "Enter") {
-                          e.preventDefault()
+                    {/* Quick-add row: country code + optional city + Add button */}
+                    <div className="flex gap-2 items-end pt-1">
+                      <div className="flex flex-col gap-1 flex-1">
+                        <Label htmlFor="new-geo-cc" className="text-xs">Country</Label>
+                        <Input
+                          id="new-geo-cc"
+                          placeholder="BR"
+                          maxLength={3}
+                          value={newGeoCountry}
+                          onChange={e => setNewGeoCountry(e.target.value.toUpperCase())}
+                          onKeyDown={e => {
+                            if (e.key === "Enter") {
+                              e.preventDefault()
+                              const cc = newGeoCountry.trim().toUpperCase()
+                              if (!cc) return
+                              const existing = form.geo_filters ?? []
+                              if (existing.some(f => f.country_code === cc && (f.city_name ?? "") === newGeoCity.trim())) {
+                                toast.error("Already added")
+                                return
+                              }
+                              setForm({
+                                ...form,
+                                geo_filters: [...existing, { country_code: cc, ...(newGeoCity.trim() ? { city_name: newGeoCity.trim() } : {}) }],
+                              })
+                              setNewGeoCountry("")
+                              setNewGeoCity("")
+                            }
+                          }}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1 flex-[2]">
+                        <Label htmlFor="new-geo-city" className="text-xs">City (optional)</Label>
+                        <Input
+                          id="new-geo-city"
+                          placeholder="Leave empty for whole country"
+                          value={newGeoCity}
+                          onChange={e => setNewGeoCity(e.target.value)}
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => {
                           const cc = newGeoCountry.trim().toUpperCase()
-                          if (!cc) return
+                          if (!cc) { toast.error("Enter a country code"); return }
                           const existing = form.geo_filters ?? []
                           if (existing.some(f => f.country_code === cc && (f.city_name ?? "") === newGeoCity.trim())) {
                             toast.error("Already added")
@@ -768,71 +862,55 @@ export default function PoolsPage() {
                           })
                           setNewGeoCountry("")
                           setNewGeoCity("")
-                        }
-                      }}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1 flex-[2]">
-                    <Label htmlFor="new-geo-city" className="text-xs">City (optional)</Label>
-                    <Input
-                      id="new-geo-city"
-                      placeholder="Leave empty for whole country"
-                      value={newGeoCity}
-                      onChange={e => setNewGeoCity(e.target.value)}
-                    />
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => {
-                      const cc = newGeoCountry.trim().toUpperCase()
-                      if (!cc) { toast.error("Enter a country code"); return }
-                      const existing = form.geo_filters ?? []
-                      if (existing.some(f => f.country_code === cc && (f.city_name ?? "") === newGeoCity.trim())) {
-                        toast.error("Already added")
-                        return
-                      }
-                      setForm({
-                        ...form,
-                        geo_filters: [...existing, { country_code: cc, ...(newGeoCity.trim() ? { city_name: newGeoCity.trim() } : {}) }],
-                      })
-                      setNewGeoCountry("")
-                      setNewGeoCity("")
-                    }}
-                  >
-                    <Plus className="h-4 w-4 mr-1" /> Add
-                  </Button>
-                </div>
-
-                {/* Quick-pick common countries from existing proxy inventory */}
-                {geoCountries.length > 0 && (
-                  <div className="pt-2 border-t mt-1 flex flex-col gap-1.5">
-                    <Label className="text-xs text-muted-foreground">Quick pick from inventory</Label>
-                    <div className="flex flex-wrap gap-1">
-                      {geoCountries.slice(0, 12).map(gc => {
-                        const already = (form.geo_filters ?? []).some(f => f.country_code === gc.country_code && !f.city_name)
-                        return (
-                          <Button
-                            key={gc.country_code}
-                            type="button"
-                            size="sm"
-                            variant={already ? "secondary" : "outline"}
-                            disabled={already}
-                            className="h-6 px-2 text-xs"
-                            onClick={() => setForm({
-                              ...form,
-                              geo_filters: [...(form.geo_filters ?? []), { country_code: gc.country_code }],
-                            })}
-                            title={`${gc.country_name ?? gc.country_code} — ${gc.total} proxies`}
-                          >
-                            <img src={FLAG_CDN(gc.country_code)} alt={gc.country_code} className="h-3 mr-1" />
-                            {gc.country_code}
-                            <span className="ml-1 text-muted-foreground">({gc.total})</span>
-                          </Button>
-                        )
-                      })}
+                        }}
+                      >
+                        <Plus className="h-4 w-4 mr-1" /> Add
+                      </Button>
                     </div>
-                  </div>
+
+                    {/* Quick-pick: everything, or common countries from existing proxy inventory */}
+                    <div className="pt-2 border-t mt-1 flex flex-col gap-1.5">
+                      <Label className="text-xs text-muted-foreground">Quick pick from inventory</Label>
+                      <div className="flex flex-wrap gap-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-xs"
+                          onClick={() => {
+                            if (formGeoCount > 0) toast(`Replaced ${formGeoCount} country filter${formGeoCount === 1 ? "" : "s"} with All countries`)
+                            setForm({ ...form, geo_filters: [{ country_code: GEO_FILTER_ALL }] })
+                          }}
+                          title="Match every proxy regardless of country — the pool follows proxies when their IPs move"
+                        >
+                          <Globe className="h-3 w-3 mr-1" />
+                          All countries
+                        </Button>
+                        {geoCountries.slice(0, 12).map(gc => {
+                          const already = (form.geo_filters ?? []).some(f => f.country_code === gc.country_code && !f.city_name)
+                          return (
+                            <Button
+                              key={gc.country_code}
+                              type="button"
+                              size="sm"
+                              variant={already ? "secondary" : "outline"}
+                              disabled={already}
+                              className="h-6 px-2 text-xs"
+                              onClick={() => setForm({
+                                ...form,
+                                geo_filters: [...(form.geo_filters ?? []), { country_code: gc.country_code }],
+                              })}
+                              title={`${gc.country_name ?? gc.country_code} — ${gc.total} proxies`}
+                            >
+                              <img src={FLAG_CDN(gc.country_code)} alt={gc.country_code} className="h-3 mr-1" />
+                              {gc.country_code}
+                              <span className="ml-1 text-muted-foreground">({gc.total})</span>
+                            </Button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </>
                 )}
               </div>
 
@@ -877,6 +955,10 @@ export default function PoolsPage() {
                     A session keeps its proxy until released or idle this long.
                     Clients pick a session via the proxy username:
                     <code className="ml-1">user-session-&lt;id&gt;</code>
+                    {" "}Each session reserves an exclusive proxy per target hostname.
+                    Add <code>-scope-&lt;group&gt;</code> to share a reservation scope
+                    across hostnames. When no proxy is available, clients receive
+                    593 (No Proxy Available) with a Retry-After header.
                   </p>
                 </div>
               )}

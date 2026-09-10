@@ -60,6 +60,7 @@ Whether you're conducting web scraping operations, performing security research,
 ### Proxy Pools
 - 🗂️ **Named Pools**: Group proxies by any combination of countries, cities, ISPs, or custom tags
 - ☑️ **Multi-Filter Builder**: Pick geo locations, ISP substrings, or proxy tags — mix freely in one pool
+- 🌐 **All Countries**: Use the `*` country filter to take every proxy and follow them wherever their IPs move, instead of maintaining a country list
 - 🔄 **Auto / Manual Sync**: `sync_mode: auto` rebuilds membership on every import; `manual` keeps it frozen until you trigger sync explicitly
 - 🔁 **Rotation Strategies**: Per-pool `roundrobin`, `random`, `sticky` (hold N requests per IP), or `session` (hold one proxy per client session until released or idle)
 - 📌 **Session Stickiness**: Pin a proxy to a client-chosen session via the proxy username (`user-session-<id>`); released explicitly, on idle TTL, or when the proxy is invalidated
@@ -428,19 +429,42 @@ Set a pool's `rotation_method` to `session` to keep the **same proxy** for a who
 curl -x "http://alice-session-job42:password@your-proxy-host:8000" https://example.com
 curl -x "http://alice-session-job42:password@your-proxy-host:8000" https://example.com/next
 
-# A different token gets a different proxy
+# A different token gets an exclusive proxy for the same target hostname
 curl -x "http://alice-session-other:password@your-proxy-host:8000" https://example.com
 ```
 
+Reservations are exclusive within a **scope**, across users and pools in the same Rota process. By default the scope is the target hostname, normalized to lowercase without a port or trailing dot. Different hostnames may reuse a proxy; subdomains are separate scopes. A session token is owned by its authenticated proxy user, so two users choosing the same token still have separate sessions. Each `(user, pool, token, scope)` has its own sticky binding.
+
+To group several hostnames (such as a site's subdomains), append a shared scope identifier to the username:
+
+```bash
+curl -x "http://alice-session-job42-scope-shopping:password@your-proxy-host:8000" https://www.example.com
+curl -x "http://alice-session-job43-scope-shopping:password@your-proxy-host:8000" https://api.example.com
+```
+
+These sessions must use different proxies because both use `shopping`. Scope identifiers use the same normalization as hostnames. Use the same scope for every session that must avoid overlap. An optional TLS profile goes last: `alice-session-job42-scope-shopping-profile-ios`. Omitting `-scope-` (or supplying an empty scope) uses the target hostname.
+
+When every eligible proxy in the main and fallback pools is reserved, on cooldown, or unavailable, Rota returns its custom **593 (No Proxy Available)** status for both HTTP and HTTPS CONNECT, before forwarding anything upstream. A target service's `503` is forwarded unchanged:
+
+```http
+HTTP/1.1 593 status code 593
+Retry-After: 5
+X-Rota-Error: no_proxy_available
+
+no proxy available; wait and retry
+```
+
+Wait at least five seconds and retry with the same username. `Retry-After` is a polling interval; an active session can extend its idle TTL, so availability is not guaranteed at that time. Existing sessions can continue using their reserved proxy. Session reservations also apply to fallback pools when the main pool uses session rotation. Upstream connection/request failures continue to return `502 Bad Gateway`.
+
 A session binding is held until one of:
 
-- **You release it** — `POST /api/v1/sessions/release` with `{"token":"job42"}` (add `"pool_id":<id>` to scope to one pool)
+- **You release it** — `POST /api/v1/sessions/release` with `{"token":"job42"}` (add `"pool_id":<id>` to restrict to one pool and/or `"scope":"shopping"` for one reservation scope)
 - **It goes idle** — no requests for `session_ttl_minutes` (default 10, configurable per pool)
 - **Its proxy is invalidated or fails** — the session automatically rebinds to a fresh proxy on the next request
 
-Inspect live bindings with `GET /api/v1/sessions`.
+Inspect live bindings, including `username` and `scope`, with `GET /api/v1/sessions`. Both session release and session invalidation accept optional `scope` and `pool_id` filters. Admin callers can also filter by `username`; proxy-user callers can only control their own sessions in their assigned pools. Omitted filters apply across the caller's matching bindings. Reservations are held in memory and reset when Rota restarts; separate Rota processes do not coordinate reservations.
 
-> Requests with no `-session-` token in the username fall back to round-robin, so a `session` pool stays safe to use without a token.
+> Requests with no `-session-` token in the username fall back to round-robin, skipping proxies reserved for that target hostname. Other rotation methods also respect existing reservations.
 
 ### Knowing which proxy served a request
 
@@ -493,7 +517,7 @@ curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
   -d '{"token": "job42", "minutes": 30}'
 ```
 
-Proxy-user calls are scoped to the user's own pools: only proxies that belong to the user's main/fallback pools can be invalidated, and only sessions in those pools are visible. The endpoints share the same brute-force protection as the login endpoint. Reactivation stays admin-only — prefer invalidating with `minutes` so the proxy comes back on its own.
+Proxy-user calls are scoped to the user's own pools: only proxies that belong to the user's main/fallback pools can be invalidated, and session operations only match that user's own bindings in those pools. The endpoints share the same brute-force protection as the login endpoint. Reactivation stays admin-only — prefer invalidating with `minutes` so the proxy comes back on its own.
 
 ---
 

@@ -95,6 +95,12 @@ func (h *PoolHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.StickCount <= 0 {
 		req.StickCount = 10
 	}
+	geoFilters, err := models.NormalizeGeoFilters(req.GeoFilters)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.GeoFilters = geoFilters
 
 	pool, err := h.poolRepo.Create(r.Context(), req)
 	if err != nil {
@@ -164,6 +170,12 @@ func (h *PoolHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	geoFilters, err := models.NormalizeGeoFilters(req.GeoFilters)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.GeoFilters = geoFilters
 	pool, err := h.poolRepo.Update(r.Context(), id, req)
 	if err != nil || pool == nil {
 		writeError(w, http.StatusNotFound, "pool not found or update failed")

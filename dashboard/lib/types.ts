@@ -326,9 +326,13 @@ export interface GeoCityItem {
 }
 
 export interface GeoFilter {
+  /** ISO country code, or GEO_FILTER_ALL to match every proxy regardless of country. */
   country_code: string
   city_name?: string
 }
+
+/** Wildcard country code: the pool takes every proxy and follows them wherever their IPs move. */
+export const GEO_FILTER_ALL = "*"
 
 export type JobStatus = "pending" | "running" | "done" | "failed"
 export type JobKind = "pool_health_check" | "bulk_test"

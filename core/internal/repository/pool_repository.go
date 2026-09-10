@@ -739,16 +739,24 @@ func (r *PoolRepository) SyncPoolByFilters(ctx context.Context, pool models.Prox
 		return nil
 	}
 
-	// Geo filters (OR between filters)
-	for _, f := range geoFilters {
-		if f.CityName != "" {
-			if err := addIDs(`SELECT id FROM proxies WHERE country_code=$1 AND city_name ILIKE $2`,
-				f.CountryCode, "%"+f.CityName+"%"); err != nil {
-				return 0, nil, err
-			}
-		} else {
-			if err := addIDs(`SELECT id FROM proxies WHERE country_code=$1`, f.CountryCode); err != nil {
-				return 0, nil, err
+	// Geo filters (OR between filters). The any-country wildcard takes every
+	// proxy — including ones whose geo lookup hasn't landed yet — so the pool
+	// keeps following its proxies when their IPs move country.
+	if models.HasAllCountries(geoFilters) {
+		if err := addIDs(`SELECT id FROM proxies`); err != nil {
+			return 0, nil, err
+		}
+	} else {
+		for _, f := range geoFilters {
+			if f.CityName != "" {
+				if err := addIDs(`SELECT id FROM proxies WHERE country_code=$1 AND city_name ILIKE $2`,
+					f.CountryCode, "%"+f.CityName+"%"); err != nil {
+					return 0, nil, err
+				}
+			} else {
+				if err := addIDs(`SELECT id FROM proxies WHERE country_code=$1`, f.CountryCode); err != nil {
+					return 0, nil, err
+				}
 			}
 		}
 	}

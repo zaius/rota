@@ -500,6 +500,73 @@ func TestIntegration_ApplyRequestStats(t *testing.T) {
 	}
 }
 
+func TestIntegration_SyncPoolByFilters_AllCountries(t *testing.T) {
+	db := testDB(t)
+	cleanTables(t, db)
+	poolRepo := NewPoolRepository(db)
+	ctx := context.Background()
+
+	usID := mustProxy(t, db, "us1:80", "US")
+	deID := mustProxy(t, db, "de1:80", "DE")
+	// A proxy whose geo lookup hasn't landed yet.
+	var unknownID int
+	if err := db.Pool.QueryRow(ctx,
+		`INSERT INTO proxies (address, protocol, status) VALUES ('x1:80','http','active') RETURNING id`).Scan(&unknownID); err != nil {
+		t.Fatalf("insert ungeotagged proxy: %v", err)
+	}
+
+	pool, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "everything", RotationMethod: "roundrobin", StickCount: 1, SyncMode: "auto"})
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	if err := poolRepo.SetGeoFilters(ctx, pool.ID, []models.GeoFilter{{CountryCode: models.GeoFilterAllCountries}}); err != nil {
+		t.Fatalf("set geo filters: %v", err)
+	}
+
+	total, newIDs, err := poolRepo.SyncPoolByFilters(ctx, *pool)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if total != 3 || len(newIDs) != 3 {
+		t.Fatalf("wildcard should take every proxy, got total=%d new=%d", total, len(newIDs))
+	}
+
+	// A proxy that shows up later, in a country nobody picked, joins on the
+	// next sync without touching the filters.
+	frID := mustProxy(t, db, "fr1:80", "FR")
+	total, newIDs, err = poolRepo.SyncPoolByFilters(ctx, *pool)
+	if err != nil {
+		t.Fatalf("re-sync: %v", err)
+	}
+	if total != 4 || len(newIDs) != 1 || newIDs[0] != frID {
+		t.Fatalf("expected the FR proxy to be the one new member, got total=%d new=%v", total, newIDs)
+	}
+
+	// Narrowing back to one country drops the rest.
+	if err := poolRepo.SetGeoFilters(ctx, pool.ID, []models.GeoFilter{{CountryCode: "US"}}); err != nil {
+		t.Fatalf("narrow filters: %v", err)
+	}
+	total, _, err = poolRepo.SyncPoolByFilters(ctx, *pool)
+	if err != nil {
+		t.Fatalf("narrowed sync: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("expected 1 member after narrowing to US, got %d", total)
+	}
+	for _, tc := range []struct {
+		id   int
+		want bool
+	}{{usID, true}, {deID, false}, {unknownID, false}, {frID, false}} {
+		var isMember bool
+		if err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pool_proxies WHERE pool_id=$1 AND proxy_id=$2)`, pool.ID, tc.id).Scan(&isMember); err != nil {
+			t.Fatalf("member check: %v", err)
+		}
+		if isMember != tc.want {
+			t.Errorf("proxy %d membership = %v, want %v", tc.id, isMember, tc.want)
+		}
+	}
+}
+
 func TestIntegration_AttachFilters_LoadsEveryKind(t *testing.T) {
 	db := testDB(t)
 	cleanTables(t, db)
