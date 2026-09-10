@@ -135,8 +135,13 @@ func (h *SourceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		req.CleanupDays = 365
 	}
 	src, err := h.sourceRepo.Update(r.Context(), id, req)
-	if err != nil || src == nil {
-		writeError(w, http.StatusNotFound, "source not found or update failed")
+	if err != nil {
+		h.logger.Error("failed to update source", "source_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update source")
+		return
+	}
+	if src == nil {
+		writeError(w, http.StatusNotFound, "source not found")
 		return
 	}
 	h.rememberFormat(r.Context(), req.Format)

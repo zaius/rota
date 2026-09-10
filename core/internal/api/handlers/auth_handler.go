@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -42,6 +43,7 @@ func NewAuthHandler(settingsRepo *repository.SettingsRepository, adminRepo *repo
 //	@Success		200		{object}	models.LoginResponse	"Login successful"
 //	@Failure		400		{object}	models.ErrorResponse	"Invalid request"
 //	@Failure		401		{object}	models.ErrorResponse	"Invalid credentials"
+//	@Failure		500		{object}	models.ErrorResponse	"Internal server error"
 //	@Router			/auth/login [post]
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req models.LoginRequest
@@ -52,8 +54,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	// Verify against DB (bcrypt)
 	if err := h.adminRepo.Authenticate(r.Context(), req.Username, req.Password); err != nil {
-		h.logger.Warn("failed login attempt", "username", req.Username)
-		writeError(w, http.StatusUnauthorized, "Invalid credentials")
+		if errors.Is(err, repository.ErrAdminAuthentication) {
+			h.logger.Warn("failed login attempt", "username", req.Username)
+			writeError(w, http.StatusUnauthorized, "Invalid credentials")
+		} else {
+			h.logger.Error("admin authentication failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "Internal server error")
+		}
 		return
 	}
 

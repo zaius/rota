@@ -63,7 +63,12 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, err := h.userRepo.GetByID(r.Context(), id)
-	if err != nil || u == nil {
+	if err != nil {
+		h.logger.Error("failed to get user", "user_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to get user")
+		return
+	}
+	if u == nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
@@ -115,8 +120,13 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, err := h.userRepo.Update(r.Context(), id, req)
-	if err != nil || u == nil {
-		writeError(w, http.StatusNotFound, "user not found or update failed")
+	if err != nil {
+		h.logger.Error("failed to update user", "user_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update user")
+		return
+	}
+	if u == nil {
+		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 	h.notifyUserChanged(u.Username)

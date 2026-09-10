@@ -2,12 +2,16 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// ErrAdminAuthentication indicates a missing account or incorrect password.
+var ErrAdminAuthentication = errors.New("invalid credentials")
 
 // AdminRepository manages dashboard admin credentials stored in DB.
 type AdminRepository struct {
@@ -43,22 +47,23 @@ func (r *AdminRepository) Seed(ctx context.Context, username, password string) e
 	return err
 }
 
-// Authenticate checks username+password and returns username on success.
+// Authenticate returns ErrAdminAuthentication for rejected credentials and
+// preserves operational errors so callers can distinguish an outage from a bad login.
 func (r *AdminRepository) Authenticate(ctx context.Context, username, password string) error {
 	var hash string
 	err := r.db.Pool.QueryRow(ctx,
 		`SELECT password_hash FROM admin_credentials WHERE username = $1`,
 		username,
 	).Scan(&hash)
-	if err == pgx.ErrNoRows {
-		return fmt.Errorf("invalid credentials")
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrAdminAuthentication
 	}
 	if err != nil {
 		return fmt.Errorf("db error: %w", err)
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
-		return fmt.Errorf("invalid credentials")
+		return ErrAdminAuthentication
 	}
 	return nil
 }

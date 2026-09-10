@@ -304,8 +304,6 @@ Rota cannot always identify whether the proxy or target caused a failure. Ordina
 | Invalid credentials / auth rate limit | `401` / `429` (with `Retry-After`) |
 | Internal failure / source-fetch failure / unavailable service | `500` / `502` / `503` |
 
-Known API exceptions: some [pool](core/internal/api/handlers/pool_handler.go), [user](core/internal/api/handlers/user_handler.go), and [source](core/internal/api/handlers/source_handler.go) operations mask database errors as `404`; [admin login](core/internal/api/handlers/auth_handler.go) masks them as `401`. These should become `500`, not custom codes.
-
 **HTTPS:** Errors before tunnel establishment appear on the CONNECT response. After CONNECT succeeds, opaque-tunnel/TLS failures close the connection; Rota cannot inject HTTP into encrypted traffic. TLS inspection can return `592` for failed HTTP forwarding. Errors after response headers are sent cannot change the status.
 
 ## 📌 Session Stickiness & Proxy Invalidation

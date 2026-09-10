@@ -62,7 +62,12 @@ func (h *PoolHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pool, err := h.poolRepo.GetByID(r.Context(), id)
-	if err != nil || pool == nil {
+	if err != nil {
+		h.logger.Error("failed to get pool", "pool_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to get pool")
+		return
+	}
+	if pool == nil {
 		writeError(w, http.StatusNotFound, "pool not found")
 		return
 	}
@@ -177,8 +182,13 @@ func (h *PoolHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	req.GeoFilters = geoFilters
 	pool, err := h.poolRepo.Update(r.Context(), id, req)
-	if err != nil || pool == nil {
-		writeError(w, http.StatusNotFound, "pool not found or update failed")
+	if err != nil {
+		h.logger.Error("failed to update pool", "pool_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update pool")
+		return
+	}
+	if pool == nil {
+		writeError(w, http.StatusNotFound, "pool not found")
 		return
 	}
 
@@ -326,7 +336,12 @@ func (h *PoolHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&body)
 
 	pool, err := h.poolRepo.GetByID(r.Context(), id)
-	if err != nil || pool == nil {
+	if err != nil {
+		h.logger.Error("failed to get pool", "pool_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to get pool")
+		return
+	}
+	if pool == nil {
 		writeError(w, http.StatusNotFound, "pool not found")
 		return
 	}
@@ -425,7 +440,12 @@ func (h *PoolHandler) Export(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pool, err := h.poolRepo.GetByID(r.Context(), id)
-	if err != nil || pool == nil {
+	if err != nil {
+		h.logger.Error("failed to get pool", "pool_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to get pool")
+		return
+	}
+	if pool == nil {
 		writeError(w, http.StatusNotFound, "pool not found")
 		return
 	}
@@ -574,8 +594,13 @@ func (h *PoolHandler) UpdateAlertRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rule, err := h.poolRepo.UpdateAlertRule(r.Context(), poolID, ruleID, req)
-	if err != nil || rule == nil {
-		writeError(w, http.StatusNotFound, "rule not found or update failed")
+	if err != nil {
+		h.logger.Error("failed to update alert rule", "pool_id", poolID, "rule_id", ruleID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update alert rule")
+		return
+	}
+	if rule == nil {
+		writeError(w, http.StatusNotFound, "rule not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, rule)
