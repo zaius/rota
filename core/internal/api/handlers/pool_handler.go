@@ -42,6 +42,15 @@ func (h *PoolHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list pools")
 		return
 	}
+	ptrs := make([]*models.ProxyPool, len(pools))
+	for i := range pools {
+		ptrs[i] = &pools[i]
+	}
+	if err := h.poolRepo.AttachFilters(r.Context(), ptrs...); err != nil {
+		h.logger.Error("failed to load pool filters", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list pools")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"pools": pools})
 }
 
@@ -55,6 +64,11 @@ func (h *PoolHandler) Get(w http.ResponseWriter, r *http.Request) {
 	pool, err := h.poolRepo.GetByID(r.Context(), id)
 	if err != nil || pool == nil {
 		writeError(w, http.StatusNotFound, "pool not found")
+		return
+	}
+	if err := h.poolRepo.AttachFilters(r.Context(), pool); err != nil {
+		h.logger.Error("failed to load pool filters", "pool_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load pool")
 		return
 	}
 	writeJSON(w, http.StatusOK, pool)
@@ -124,13 +138,13 @@ func (h *PoolHandler) Create(w http.ResponseWriter, r *http.Request) {
 		h.logger.Info("pool synced after create", "pool_id", pool.ID, "count", syncCount)
 	}
 
-	// Return pool with updated counts
+	// Return pool with updated counts and the filters as stored
 	if updated, err := h.poolRepo.GetByID(r.Context(), pool.ID); err == nil && updated != nil {
 		pool = updated
 	}
-	pool.GeoFilters = filters
-	pool.ISPFilters = req.ISPFilters
-	pool.TagFilters = req.TagFilters
+	if err := h.poolRepo.AttachFilters(r.Context(), pool); err != nil {
+		h.logger.Warn("failed to load pool filters", "pool_id", pool.ID, "error", err)
+	}
 	writeJSON(w, http.StatusCreated, pool)
 }
 
@@ -190,10 +204,10 @@ func (h *PoolHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		if updated, err := h.poolRepo.GetByID(r.Context(), id); err == nil && updated != nil {
 			pool = updated
-			pool.GeoFilters = req.GeoFilters
-			pool.ISPFilters = req.ISPFilters
-			pool.TagFilters = req.TagFilters
 		}
+	}
+	if err := h.poolRepo.AttachFilters(r.Context(), pool); err != nil {
+		h.logger.Warn("failed to load pool filters", "pool_id", id, "error", err)
 	}
 
 	writeJSON(w, http.StatusOK, pool)

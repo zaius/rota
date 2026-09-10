@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strconv"
 	"testing"
 
@@ -496,5 +497,55 @@ func TestIntegration_ApplyRequestStats(t *testing.T) {
 	}
 	if written != 0 {
 		t.Errorf("repeat apply: want 0 rows written, got %d", written)
+	}
+}
+
+func TestIntegration_AttachFilters_LoadsEveryKind(t *testing.T) {
+	db := testDB(t)
+	cleanTables(t, db)
+	poolRepo := NewPoolRepository(db)
+	ctx := context.Background()
+
+	poolA, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "a", RotationMethod: "roundrobin", StickCount: 1})
+	if err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	poolB, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "b", RotationMethod: "roundrobin", StickCount: 1})
+	if err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+	a, b := poolA.ID, poolB.ID
+	if err := poolRepo.SetGeoFilters(ctx, a, []models.GeoFilter{{CountryCode: "US"}, {CountryCode: "DE", CityName: "Berlin"}}); err != nil {
+		t.Fatalf("geo: %v", err)
+	}
+	if err := poolRepo.SetISPFilters(ctx, a, []string{"Comcast"}); err != nil {
+		t.Fatalf("isp: %v", err)
+	}
+	if err := poolRepo.SetTagFilters(ctx, b, []string{"resi"}); err != nil {
+		t.Fatalf("tag: %v", err)
+	}
+
+	pools, err := poolRepo.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	ptrs := make([]*models.ProxyPool, len(pools))
+	for i := range pools {
+		ptrs[i] = &pools[i]
+	}
+	if err := poolRepo.AttachFilters(ctx, ptrs...); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	byID := map[int]models.ProxyPool{}
+	for _, p := range pools {
+		byID[p.ID] = p
+	}
+
+	wantGeo := []models.GeoFilter{{CountryCode: "DE", CityName: "Berlin"}, {CountryCode: "US"}}
+	if got := byID[a]; !reflect.DeepEqual(got.GeoFilters, wantGeo) || !reflect.DeepEqual(got.ISPFilters, []string{"Comcast"}) || got.TagFilters != nil {
+		t.Fatalf("pool a filters = geo %#v isp %#v tag %#v", got.GeoFilters, got.ISPFilters, got.TagFilters)
+	}
+	if got := byID[b]; got.GeoFilters != nil || got.ISPFilters != nil || !reflect.DeepEqual(got.TagFilters, []string{"resi"}) {
+		t.Fatalf("pool b filters = geo %#v isp %#v tag %#v", got.GeoFilters, got.ISPFilters, got.TagFilters)
 	}
 }

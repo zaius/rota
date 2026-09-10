@@ -345,6 +345,78 @@ func (r *PoolRepository) SetGeoFilters(ctx context.Context, poolID int, filters 
 	})
 }
 
+// AttachFilters loads the geo, ISP, and tag filters onto every given pool in
+// three queries. List and GetByID deliberately leave the filter fields empty:
+// the proxy hot path calls them per request and never needs filters.
+func (r *PoolRepository) AttachFilters(ctx context.Context, pools ...*models.ProxyPool) error {
+	if len(pools) == 0 {
+		return nil
+	}
+	byID := make(map[int]*models.ProxyPool, len(pools))
+	ids := make([]int, 0, len(pools))
+	for _, p := range pools {
+		p.GeoFilters, p.ISPFilters, p.TagFilters = nil, nil, nil
+		byID[p.ID] = p
+		ids = append(ids, p.ID)
+	}
+
+	geoRows, err := r.db.Pool.Query(ctx,
+		`SELECT pool_id, country_code, COALESCE(city_name,'')
+		 FROM pool_geo_filters WHERE pool_id = ANY($1) ORDER BY country_code, city_name`, ids)
+	if err != nil {
+		return fmt.Errorf("load geo filters: %w", err)
+	}
+	for geoRows.Next() {
+		var poolID int
+		var f models.GeoFilter
+		if err := geoRows.Scan(&poolID, &f.CountryCode, &f.CityName); err != nil {
+			geoRows.Close()
+			return err
+		}
+		if p := byID[poolID]; p != nil {
+			p.GeoFilters = append(p.GeoFilters, f)
+		}
+	}
+	geoRows.Close()
+
+	ispRows, err := r.db.Pool.Query(ctx,
+		`SELECT pool_id, isp FROM pool_isp_filters WHERE pool_id = ANY($1) ORDER BY isp`, ids)
+	if err != nil {
+		return fmt.Errorf("load isp filters: %w", err)
+	}
+	for ispRows.Next() {
+		var poolID int
+		var isp string
+		if err := ispRows.Scan(&poolID, &isp); err != nil {
+			ispRows.Close()
+			return err
+		}
+		if p := byID[poolID]; p != nil {
+			p.ISPFilters = append(p.ISPFilters, isp)
+		}
+	}
+	ispRows.Close()
+
+	tagRows, err := r.db.Pool.Query(ctx,
+		`SELECT pool_id, tag FROM pool_tag_filters WHERE pool_id = ANY($1) ORDER BY tag`, ids)
+	if err != nil {
+		return fmt.Errorf("load tag filters: %w", err)
+	}
+	for tagRows.Next() {
+		var poolID int
+		var tag string
+		if err := tagRows.Scan(&poolID, &tag); err != nil {
+			tagRows.Close()
+			return err
+		}
+		if p := byID[poolID]; p != nil {
+			p.TagFilters = append(p.TagFilters, tag)
+		}
+	}
+	tagRows.Close()
+	return nil
+}
+
 // GetCitiesByCountry returns city-level breakdown for a given country code
 func (r *PoolRepository) GetCitiesByCountry(ctx context.Context, countryCode string) ([]models.GeoCitySummary, error) {
 	query := `
