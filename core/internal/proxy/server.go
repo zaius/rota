@@ -283,31 +283,12 @@ func (s *Server) ListSessions() []SessionInfo {
 	return s.sessionMgr.List()
 }
 
-// ReleaseSession drops a sticky session for a specific pool. Returns true if a
-// binding existed.
-func (s *Server) ReleaseSession(poolID int, token string) bool {
-	if s.sessionMgr == nil {
-		return false
-	}
-	return s.sessionMgr.Release(poolID, token)
-}
-
-// ReleaseSessionToken drops a sticky session across all pools. Returns the count
-// of bindings removed.
-func (s *Server) ReleaseSessionToken(token string) int {
+// ReleaseSessions drops bindings matching the caller's token, user, pools and scope.
+func (s *Server) ReleaseSessions(filter SessionFilter) int {
 	if s.sessionMgr == nil {
 		return 0
 	}
-	return s.sessionMgr.ReleaseToken(token)
-}
-
-// ReleaseSessionTokenInPools drops a sticky session's bindings restricted to
-// the given pools. Returns the count of bindings removed.
-func (s *Server) ReleaseSessionTokenInPools(token string, poolIDs []int) int {
-	if s.sessionMgr == nil {
-		return 0
-	}
-	return s.sessionMgr.ReleaseTokenInPools(token, poolIDs)
+	return s.sessionMgr.ReleaseSessions(filter)
 }
 
 // SessionsForToken returns the live sticky-session bindings for a token across

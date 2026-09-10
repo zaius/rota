@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,7 +42,7 @@ func connectViaHTTPStandalone(p *models.Proxy, host string, timeout time.Duratio
 
 	conn, err := net.DialTimeout("tcp", p.Address, timeout)
 	if err != nil {
-		return nil, fmt.Errorf("dial proxy %s: %w", p.Address, err)
+		return nil, forwardingFailure("proxy_connect_failed", fmt.Errorf("dial proxy %s: %w", p.Address, err))
 	}
 
 	_ = conn.SetDeadline(time.Now().Add(timeout))
@@ -58,21 +60,42 @@ func connectViaHTTPStandalone(p *models.Proxy, host string, timeout time.Duratio
 
 	if _, err := conn.Write([]byte(req)); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("send CONNECT to %s: %w", p.Address, err)
+		return nil, forwardingFailure("proxy_handshake_failed", fmt.Errorf("send CONNECT to %s: %w", p.Address, err))
 	}
 
 	line, err := readCONNECTResponse(conn)
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("read CONNECT response from %s: %w", p.Address, err)
+		return nil, forwardingFailure("proxy_handshake_failed", fmt.Errorf("read CONNECT response from %s: %w", p.Address, err))
 	}
-	if !strings.Contains(line, "200") {
+	status, err := connectResponseStatus(line)
+	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("CONNECT to %s rejected: %s", p.Address, line)
+		return nil, forwardingFailure("proxy_handshake_failed", err)
+	}
+	if status < 200 || status >= 300 {
+		conn.Close()
+		reason := "proxy_connect_rejected"
+		if status == http.StatusProxyAuthRequired {
+			reason = "upstream_proxy_auth_failed"
+		}
+		return nil, forwardingFailure(reason, fmt.Errorf("CONNECT to %s rejected: %s", p.Address, line))
 	}
 
 	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
+}
+
+func connectResponseStatus(line string) (int, error) {
+	parts := strings.SplitN(line, " ", 3)
+	if len(parts) >= 2 {
+		_, _, versionOK := http.ParseHTTPVersion(parts[0])
+		status, err := strconv.Atoi(parts[1])
+		if versionOK && err == nil && len(parts[1]) == 3 && status >= 100 && status <= 599 {
+			return status, nil
+		}
+	}
+	return 0, fmt.Errorf("invalid CONNECT response: %s", line)
 }
 
 // readCONNECTResponse reads the proxy's CONNECT reply up to the end of the
@@ -102,9 +125,6 @@ func readCONNECTResponse(conn net.Conn) (string, error) {
 			}
 		}
 		if err != nil {
-			if len(buf) > 0 {
-				break // return what we have; the caller validates the status line
-			}
 			return "", err
 		}
 	}

@@ -23,9 +23,7 @@ type ProxyServer interface {
 	InvalidateUser(username string)
 	ListSessions() []proxy.SessionInfo
 	SessionsForToken(token string) []proxy.SessionInfo
-	ReleaseSession(poolID int, token string) bool
-	ReleaseSessionToken(token string) int
-	ReleaseSessionTokenInPools(token string, poolIDs []int) int
+	ReleaseSessions(filter proxy.SessionFilter) int
 	SetDomainCooldown(proxyID int, domain string, until time.Time, reason string)
 	ClearDomainCooldown(proxyID int, domain string) bool
 	ClearProxyDomainCooldowns(proxyID int) int
@@ -243,10 +241,12 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 // proxy for that domain.
 //
 //	@Summary		Invalidate the proxy bound to a session
-//	@Description	Look up the sticky session by token and invalidate the proxy it is bound to. Pass "pool_id" to scope to a single pool, "minutes"/"reason"/"domain" as for proxy invalidation. Authenticates with an admin JWT or proxy-user Basic credentials (scoped to the user's pools).
+//	@Description	Look up bindings by token, optionally restricting pool_id, reservation scope, or username (admin). Proxy users only match their own bindings in their assigned pools. minutes/reason/domain control proxy invalidation.
 //	@Tags			sessions
 //	@Param			token	body	string	true	"Session token"
 //	@Param			pool_id	body	int		false	"Restrict to a single pool"
+//	@Param			scope	body	string	false	"Restrict to a reservation scope"
+//	@Param			username	body	string	false	"Restrict to a session owner (admin)"
 //	@Param			minutes	body	int		false	"Cooldown minutes (default 30; 0 = until reactivated)"
 //	@Param			reason	body	string	false	"Why the proxy was invalidated"
 //	@Param			domain	body	string	false	"Scope the cooldown to this domain"
@@ -254,8 +254,10 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 //	@Router			/sessions/invalidate [post]
 func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Token  string `json:"token"`
-		PoolID *int   `json:"pool_id"`
+		Token    string `json:"token"`
+		PoolID   *int   `json:"pool_id"`
+		Scope    string `json:"scope"`
+		Username string `json:"username"`
 		invalidateBody
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
@@ -268,6 +270,14 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 	}
 
 	sessions := h.proxyServer.SessionsForToken(body.Token)
+	reservationScope := proxy.NormalizeSessionScope(body.Scope)
+	filtered := sessions[:0]
+	for _, s := range sessions {
+		if (reservationScope == "" || s.Scope == reservationScope) && (body.Username == "" || s.Username == body.Username) {
+			filtered = append(filtered, s)
+		}
+	}
+	sessions = filtered
 	if body.PoolID != nil {
 		filtered := sessions[:0]
 		for _, s := range sessions {
@@ -277,7 +287,7 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 		}
 		sessions = filtered
 	}
-	// Proxy-user callers only see sessions in their own pools. Out-of-scope
+	// Proxy-user callers only see their own sessions in their assigned pools. Out-of-scope
 	// bindings are reported as not found, not as forbidden, so the endpoint
 	// does not leak other pools' session tokens.
 	if pu := ProxyUserFrom(r.Context()); pu != nil {
@@ -287,7 +297,7 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 		}
 		filtered := sessions[:0]
 		for _, s := range sessions {
-			if scope[s.PoolID] {
+			if scope[s.PoolID] && s.Username == pu.Username {
 				filtered = append(filtered, s)
 			}
 		}
@@ -443,20 +453,23 @@ func (h *ProxyControlHandler) ListSessions(w http.ResponseWriter, r *http.Reques
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": sessions})
 }
 
-// ReleaseSession drops a sticky session. Provide a token (released across all
-// pools) and optionally a pool_id to scope the release to a single pool.
-// Proxy-user callers can only release sessions in their own pools.
+// ReleaseSession drops bindings matching a token and optional pool/scope/owner.
+// Proxy-user callers can only release their own sessions in their assigned pools.
 //
 //	@Summary		Release a sticky session
 //	@Tags			sessions
 //	@Param			token	body	string	true	"Session token"
 //	@Param			pool_id	body	int		false	"Restrict to a single pool"
+//	@Param			scope	body	string	false	"Restrict to a reservation scope"
+//	@Param			username	body	string	false	"Restrict to a session owner (admin)"
 //	@Success		200	{object}	map[string]interface{}
 //	@Router			/sessions/release [post]
 func (h *ProxyControlHandler) ReleaseSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Token  string `json:"token"`
-		PoolID *int   `json:"pool_id"`
+		Token    string `json:"token"`
+		PoolID   *int   `json:"pool_id"`
+		Scope    string `json:"scope"`
+		Username string `json:"username"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
 		writeError(w, http.StatusBadRequest, "token is required")
@@ -482,17 +495,15 @@ func (h *ProxyControlHandler) ReleaseSession(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	released := 0
-	switch {
-	case body.PoolID != nil:
-		if h.proxyServer.ReleaseSession(*body.PoolID, body.Token) {
-			released = 1
-		}
-	case pu != nil:
-		released = h.proxyServer.ReleaseSessionTokenInPools(body.Token, pu.PoolIDs())
-	default:
-		released = h.proxyServer.ReleaseSessionToken(body.Token)
+	filter := proxy.SessionFilter{Token: body.Token, Username: body.Username, Scope: proxy.NormalizeSessionScope(body.Scope)}
+	if pu != nil {
+		filter.Username = pu.Username
+		filter.PoolIDs = append([]int{}, pu.PoolIDs()...)
 	}
+	if body.PoolID != nil {
+		filter.PoolIDs = []int{*body.PoolID}
+	}
+	released := h.proxyServer.ReleaseSessions(filter)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

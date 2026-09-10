@@ -3,7 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/base64"
-	"fmt"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -36,6 +36,11 @@ type sessionTokenKey struct{}
 // SessionTokenContextKey is exported for use in the handler / pool selector.
 var SessionTokenContextKey = sessionTokenKey{}
 
+type sessionScopeKey struct{}
+
+// SessionScopeContextKey carries an optional reservation scope from the username.
+var SessionScopeContextKey = sessionScopeKey{}
+
 // tlsProfileKey is the context key that carries a per-connection TLS profile
 // override parsed from the proxy username, overriding the user's stored one.
 type tlsProfileKey struct{}
@@ -47,11 +52,29 @@ var TLSProfileContextKey = tlsProfileKey{}
 // proxy username, e.g. "myuser-session-abc123" → user "myuser", token "abc123".
 const sessionMarker = "-session-"
 
+// scopeMarker follows the session token and precedes an optional TLS profile:
+// "user-session-job42-scope-example.com-profile-ios".
+const scopeMarker = "-scope-"
+
+// NormalizeSessionScope canonicalizes explicit identifiers like default hosts.
+func NormalizeSessionScope(raw string) string { return normalizeHost(raw) }
+
+func splitSessionScope(raw string) (rest, scope string) {
+	// Only interpret the suffix after a session marker, leaving ordinary
+	// usernames containing "-scope-" usable.
+	sessionIdx := strings.LastIndex(raw, sessionMarker)
+	idx := strings.LastIndex(raw, scopeMarker)
+	if sessionIdx < 0 || idx < sessionIdx+len(sessionMarker) {
+		return raw, ""
+	}
+	return raw[:idx], NormalizeSessionScope(raw[idx+len(scopeMarker):])
+}
+
 // profileMarker overrides the user's stored TLS profile for one connection,
 // e.g. "myuser-profile-ios". It is stripped before the session marker is read,
 // so the two compose as "myuser-session-abc123-profile-ios" — profile last.
 //
-// Both markers make part of the username namespace unusable, which is the
+// These markers make part of the username namespace unusable, which is the
 // price of carrying per-connection options through a protocol that only offers
 // a username field.
 const profileMarker = "-profile-"
@@ -139,9 +162,10 @@ func NewUserAuthMiddleware(
 func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *http.Response) {
 	rawUsername, password, ok := parseProxyAuth(req)
 	if ok {
-		// A TLS profile and a session token may both be embedded in the
-		// username ("user-session-<token>-profile-<name>").
+		// Parse suffixes from the outside in:
+		// user-session-<token>-scope-<id>-profile-<name>.
 		rest, profileName := splitProfileUsername(rawUsername)
+		rest, sessionScope := splitSessionScope(rest)
 		username, sessionToken := splitSessionUsername(rest)
 
 		// An unrecognized profile name fails the connection rather than
@@ -154,34 +178,45 @@ func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *h
 			m.logger.Warn("proxy-user auth failed: bad TLS profile in username",
 				"username", username, "err", err)
 			metrics.RecordAuthRejection(req.Context(), "bad_profile")
-			return req, unauthorized()
+			return req, unauthorized("invalid_tls_profile")
 		}
 
 		if chain, err := m.resolve(req.Context(), username, password); err == nil {
-			return m.withChain(req, chain, sessionToken, profileName, profile), nil
+			return m.withChain(req, chain, sessionToken, sessionScope, profileName, profile), nil
 		} else {
 			m.logger.Warn("proxy-user auth failed", "username", username, "err", err)
+			if !errors.Is(err, repository.ErrProxyAuthentication) {
+				return req, &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					ProtoMajor: 1, ProtoMinor: 1,
+					Header: http.Header{ProxyErrorHeader: {"rota_internal_error"}},
+				}
+			}
 			metrics.RecordAuthRejection(req.Context(), "bad_credentials")
-			return req, unauthorized()
+			return req, unauthorized("proxy_auth_required")
 		}
 	}
 	metrics.RecordAuthRejection(req.Context(), "missing_credentials")
-	return req, unauthorized()
+	return req, unauthorized("proxy_auth_required")
 }
 
-// withChain attaches a PoolChain (and optional session token and TLS profile
+// withChain attaches a PoolChain (and optional session token, scope and TLS profile
 // override) to the request context and strips the Proxy-Authorization header
 // before forwarding.
 func (m *UserAuthMiddleware) withChain(
 	req *http.Request,
 	chain *PoolChain,
 	sessionToken string,
+	sessionScope string,
 	profileName string,
 	profile *tlsprofile.Profile,
 ) *http.Request {
 	ctx := context.WithValue(req.Context(), UserChainContextKey, chain)
 	if sessionToken != "" {
 		ctx = context.WithValue(ctx, SessionTokenContextKey, sessionToken)
+	}
+	if sessionScope != "" {
+		ctx = context.WithValue(ctx, SessionScopeContextKey, sessionScope)
 	}
 	// Only an explicitly named profile becomes an override; an absent marker
 	// leaves the chain's stored choice in place.
@@ -217,14 +252,14 @@ func (m *UserAuthMiddleware) resolve(ctx context.Context, username, password str
 		// For even higher throughput, consider storing a fast HMAC of password+secret
 		// instead — but bcrypt cache is sufficient for most workloads.
 		if err := bcryptCompare(entry.verifiedPwHash, password); err != nil {
-			return nil, fmt.Errorf("invalid credentials")
+			return nil, repository.ErrProxyAuthentication
 		}
 		return entry.chain, nil
 	}
 
 	// ── Slow path: full DB lookup + bcrypt (runs at most once per 60s per user) ──
 	if m.userRepo == nil {
-		return nil, fmt.Errorf("proxy user auth is not configured")
+		return nil, repository.ErrProxyAuthentication
 	}
 	user, err := m.userRepo.Authenticate(ctx, username, password)
 	if err != nil {
@@ -364,7 +399,7 @@ func parseProxyAuth(req *http.Request) (string, string, bool) {
 }
 
 // unauthorized builds a 407 response (standalone, no receiver needed).
-func unauthorized() *http.Response {
+func unauthorized(reason string) *http.Response {
 	resp := &http.Response{
 		StatusCode: http.StatusProxyAuthRequired,
 		ProtoMajor: 1,
@@ -372,5 +407,6 @@ func unauthorized() *http.Response {
 		Header:     make(http.Header),
 	}
 	resp.Header.Set("Proxy-Authenticate", `Basic realm="Rota Proxy"`)
+	resp.Header.Set(ProxyErrorHeader, reason)
 	return resp
 }

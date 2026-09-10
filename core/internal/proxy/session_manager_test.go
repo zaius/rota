@@ -1,114 +1,160 @@
 package proxy
 
 import (
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/alpkeskin/rota/core/internal/models"
 )
 
-func TestSessionManager_BindGet(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
+func reserveForTest(m *SessionManager, key sessionIdentity, proxyID int, ttl time.Duration) error {
+	_, err := m.selectProxy(key, ttl, func(_ int, available func(int) bool) (*models.Proxy, error) {
+		if !available(proxyID) {
+			return nil, ErrNoProxyAvailable
+		}
+		return &models.Proxy{ID: proxyID}, nil
+	})
+	return err
+}
 
-	if _, ok := m.Get(1, "tok"); ok {
-		t.Fatal("expected no binding before Bind")
-	}
-
-	m.Bind(1, "tok", 42, time.Minute)
-	pid, ok := m.Get(1, "tok")
-	if !ok || pid != 42 {
-		t.Fatalf("expected proxy 42, got %d ok=%v", pid, ok)
-	}
-
-	// Different pool, same token → independent binding.
-	if _, ok := m.Get(2, "tok"); ok {
-		t.Fatal("token must be scoped per pool")
+func mustReserve(t *testing.T, m *SessionManager, key sessionIdentity, proxyID int, ttl time.Duration) {
+	t.Helper()
+	if err := reserveForTest(m, key, proxyID, ttl); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestSessionManager_EmptyTokenIgnored(t *testing.T) {
+func TestSessionManager_ExclusiveWithinScope(t *testing.T) {
 	m := NewSessionManager()
 	defer m.Stop()
-
-	m.Bind(1, "", 7, time.Minute)
-	if _, ok := m.Get(1, ""); ok {
-		t.Fatal("empty token must never bind")
+	first := sessionIdentity{poolID: 1, username: "alice", token: "a", scope: "example.com"}
+	mustReserve(t, m, first, 42, time.Minute)
+	for _, key := range []sessionIdentity{
+		{poolID: 1, username: "alice", token: "b", scope: "example.com"},
+		{poolID: 2, username: "alice", token: "b", scope: "example.com"},
+		{poolID: 1, username: "bob", token: "a", scope: "example.com"},
+		{poolID: 1, scope: "example.com"}, // requests without a token
+	} {
+		if err := reserveForTest(m, key, 42, time.Minute); !errors.Is(err, ErrNoProxyAvailable) {
+			t.Fatalf("%+v must not take another session's proxy: %v", key, err)
+		}
+	}
+	mustReserve(t, m, first, 42, time.Minute)
+	other := first
+	other.scope = "other.com"
+	mustReserve(t, m, other, 42, time.Minute)
+	if got := m.List(); len(got) != 2 {
+		t.Fatalf("want two scoped bindings, got %v", got)
 	}
 }
 
-func TestSessionManager_IdleExpiry(t *testing.T) {
+func TestSessionManager_ReleaseAndExpiryFreeReservations(t *testing.T) {
+	for _, action := range []string{"release", "release_token", "release_pools", "evict", "expire"} {
+		t.Run(action, func(t *testing.T) {
+			m := NewSessionManager()
+			defer m.Stop()
+			key := sessionIdentity{poolID: 1, token: "a", scope: "example.com"}
+			mustReserve(t, m, key, 42, time.Minute)
+			switch action {
+			case "release":
+				if !m.Release(1, "a") || m.Release(1, "a") {
+					t.Fatal("release existence incorrect")
+				}
+			case "release_token":
+				if n := m.ReleaseToken("a"); n != 1 {
+					t.Fatalf("released %d", n)
+				}
+			case "release_pools":
+				if n := m.ReleaseTokenInPools("a", []int{1}); n != 1 {
+					t.Fatalf("released %d", n)
+				}
+			case "evict":
+				if n := m.Evict(42); n != 1 {
+					t.Fatalf("evicted %d", n)
+				}
+			case "expire":
+				m.mu.Lock()
+				m.sessions[key].lastUsed = time.Now().Add(-time.Hour)
+				m.mu.Unlock()
+			}
+			key.token = "b"
+			mustReserve(t, m, key, 42, time.Minute)
+			if got := m.FindByToken("a"); len(got) != 0 {
+				t.Fatalf("old binding remains: %v", got)
+			}
+		})
+	}
+}
+
+func TestSessionManager_RebindAndRefresh(t *testing.T) {
 	m := NewSessionManager()
 	defer m.Stop()
+	key := sessionIdentity{poolID: 1, token: "a", scope: "example.com"}
+	mustReserve(t, m, key, 42, time.Minute)
+	created := m.List()[0].CreatedAt
+	m.mu.Lock()
+	m.sessions[key].lastUsed = time.Now().Add(-30 * time.Second)
+	m.mu.Unlock()
+	mustReserve(t, m, key, 43, 2*time.Minute)
+	got := m.FindByToken("a")[0]
+	if got.ProxyID != 43 || got.CreatedAt != created || time.Since(got.LastUsed) > time.Second {
+		t.Fatalf("rebind did not preserve creation and refresh use: %+v", got)
+	}
+	if got.ExpiresAt.Sub(got.LastUsed) != 2*time.Minute {
+		t.Fatal("TTL not refreshed")
+	}
+	key.token = "b"
+	mustReserve(t, m, key, 42, time.Minute) // old proxy was freed
+}
 
-	// Bind with an already-elapsed TTL so the next Get treats it as idle.
-	m.Bind(1, "tok", 9, time.Nanosecond)
+func TestSessionManager_EmptyTokenDoesNotBind(t *testing.T) {
+	m := NewSessionManager()
+	defer m.Stop()
+	mustReserve(t, m, sessionIdentity{poolID: 1}, 42, time.Minute)
+	if len(m.List()) != 0 {
+		t.Fatal("empty token must not bind")
+	}
+}
+
+func TestSessionManager_ListAndFindSkipExpired(t *testing.T) {
+	m := NewSessionManager()
+	defer m.Stop()
+	key := sessionIdentity{poolID: 1, token: "a"}
+	mustReserve(t, m, key, 42, time.Nanosecond)
 	time.Sleep(time.Millisecond)
-
-	if _, ok := m.Get(1, "tok"); ok {
-		t.Fatal("expected binding to be expired after idle TTL")
+	if len(m.FindByToken("a")) != 0 || len(m.List()) != 0 {
+		t.Fatal("expired binding visible")
 	}
+	key.token = "b"
+	mustReserve(t, m, key, 42, time.Minute)
 }
 
-func TestSessionManager_Release(t *testing.T) {
+func TestSessionManager_ReleaseScopeAndEvictAcrossScopes(t *testing.T) {
 	m := NewSessionManager()
 	defer m.Stop()
-
-	m.Bind(1, "tok", 5, time.Minute)
-	if !m.Release(1, "tok") {
-		t.Fatal("Release should report an existing binding")
+	for _, key := range []sessionIdentity{
+		{poolID: 1, token: "a", scope: "one"},
+		{poolID: 1, token: "a", scope: "two"},
+		{poolID: 2, token: "a", scope: "three"},
+		{poolID: 3, token: "b", scope: "four"},
+	} {
+		mustReserve(t, m, key, 42, time.Minute)
 	}
-	if _, ok := m.Get(1, "tok"); ok {
-		t.Fatal("binding should be gone after Release")
+	if len(m.FindByToken("a")) != 3 {
+		t.Fatal("missing token bindings")
 	}
-	if m.Release(1, "tok") {
-		t.Fatal("Release of missing binding should report false")
+	if n := m.ReleaseTokenInPools("a", []int{1}); n != 2 {
+		t.Fatalf("released %d", n)
 	}
-}
-
-func TestSessionManager_ReleaseToken(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
-
-	m.Bind(1, "tok", 5, time.Minute)
-	m.Bind(2, "tok", 6, time.Minute)
-	m.Bind(3, "other", 7, time.Minute)
-
-	if n := m.ReleaseToken("tok"); n != 2 {
-		t.Fatalf("expected 2 bindings released, got %d", n)
+	if len(m.FindByToken("a")) != 1 || len(m.FindByToken("b")) != 1 {
+		t.Fatal("released outside scope")
 	}
-	if _, ok := m.Get(3, "other"); !ok {
-		t.Fatal("unrelated token should survive")
-	}
-}
-
-func TestSessionManager_Evict(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
-
-	m.Bind(1, "a", 42, time.Minute)
-	m.Bind(2, "b", 42, time.Minute)
-	m.Bind(3, "c", 99, time.Minute)
-
 	if n := m.Evict(42); n != 2 {
-		t.Fatalf("expected 2 bindings evicted for proxy 42, got %d", n)
+		t.Fatalf("evicted %d", n)
 	}
-	if _, ok := m.Get(3, "c"); !ok {
-		t.Fatal("binding to a different proxy should survive eviction")
-	}
-}
-
-func TestSessionManager_RebindRefreshesIdle(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
-
-	m.Bind(1, "tok", 1, time.Minute)
-	// Re-Get should refresh lastUsed; binding stays alive.
-	if _, ok := m.Get(1, "tok"); !ok {
-		t.Fatal("binding should be live")
-	}
-	// Rebind to a new proxy keeps the session key but points elsewhere.
-	m.Bind(1, "tok", 2, time.Minute)
-	if pid, ok := m.Get(1, "tok"); !ok || pid != 2 {
-		t.Fatalf("expected rebind to proxy 2, got %d ok=%v", pid, ok)
+	if len(m.List()) != 0 {
+		t.Fatal("eviction left bindings")
 	}
 }
 
@@ -170,62 +216,27 @@ func TestSplitUsernameMarkersCompose(t *testing.T) {
 	}
 }
 
-func TestSessionManager_FindByToken(t *testing.T) {
+func TestSessionManager_FilteredRelease(t *testing.T) {
 	m := NewSessionManager()
 	defer m.Stop()
-
-	m.Bind(1, "tok", 42, time.Minute)
-	m.Bind(2, "tok", 43, time.Minute)
-	m.Bind(3, "other", 44, time.Minute)
-
-	found := m.FindByToken("tok")
-	if len(found) != 2 {
-		t.Fatalf("expected 2 bindings for token, got %d", len(found))
+	for i, key := range []sessionIdentity{
+		{poolID: 1, username: "alice", token: "job", scope: "one"},
+		{poolID: 1, username: "alice", token: "job", scope: "two"},
+		{poolID: 1, username: "bob", token: "job", scope: "one"},
+		{poolID: 2, username: "alice", token: "job", scope: "one"},
+	} {
+		mustReserve(t, m, key, i+1, time.Minute)
 	}
-	proxies := map[int]bool{}
-	for _, s := range found {
-		if s.Token != "tok" {
-			t.Fatalf("expected token 'tok', got %q", s.Token)
-		}
-		proxies[s.ProxyID] = true
+	filter := SessionFilter{Token: "job", Username: "alice", Scope: "one", PoolIDs: []int{1}}
+	if n := m.ReleaseSessions(filter); n != 1 {
+		t.Fatalf("released %d", n)
 	}
-	if !proxies[42] || !proxies[43] {
-		t.Fatalf("expected proxies 42 and 43, got %v", proxies)
+	if len(m.List()) != 3 {
+		t.Fatal("released unrelated binding")
 	}
-
-	if got := m.FindByToken("missing"); len(got) != 0 {
-		t.Fatalf("expected no bindings for unknown token, got %d", len(got))
+	filter.PoolIDs = []int{}
+	if n := m.ReleaseSessions(filter); n != 0 {
+		t.Fatal("empty allowed pools released a binding")
 	}
-}
-
-func TestSessionManager_FindByTokenSkipsExpired(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
-
-	m.Bind(1, "tok", 42, time.Nanosecond)
-	time.Sleep(time.Millisecond)
-
-	if got := m.FindByToken("tok"); len(got) != 0 {
-		t.Fatalf("expected expired binding to be invisible, got %d", len(got))
-	}
-}
-
-func TestSessionManager_ReleaseTokenInPools(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
-
-	m.Bind(1, "tok", 42, time.Minute)
-	m.Bind(2, "tok", 43, time.Minute)
-	m.Bind(3, "tok", 44, time.Minute)
-
-	// Only pools 1 and 2 are in scope; the binding in pool 3 must survive.
-	if n := m.ReleaseTokenInPools("tok", []int{1, 2}); n != 2 {
-		t.Fatalf("expected 2 bindings released, got %d", n)
-	}
-	if _, ok := m.Get(3, "tok"); !ok {
-		t.Fatal("binding outside the pool scope must survive")
-	}
-	if _, ok := m.Get(1, "tok"); ok {
-		t.Fatal("binding in scope should be gone")
-	}
+	mustReserve(t, m, sessionIdentity{poolID: 1, username: "carol", token: "new", scope: "one"}, 1, time.Minute)
 }

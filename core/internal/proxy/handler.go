@@ -106,7 +106,7 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 	chain, ok := chainFromContext(reqCtx)
 	if !ok {
 		h.logger.Error("no proxy chain on request", "request_id", requestID)
-		http.Error(w, "no proxy pool available", http.StatusBadGateway)
+		writeRotaError(w, http.StatusInternalServerError, "rota_internal_error", "no proxy chain on request")
 		return
 	}
 
@@ -119,7 +119,7 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 			"error", err,
 			"duration_ms", duration,
 		)
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeProxyError(w, err)
 		return
 	}
 
@@ -148,7 +148,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 	chain, ok := chainFromContext(reqCtx)
 	if !ok {
 		h.logger.Error("no proxy chain on CONNECT request", "host", host)
-		http.Error(w, "no proxy pool available", http.StatusBadGateway)
+		writeRotaError(w, http.StatusInternalServerError, "rota_internal_error", "no proxy chain on request")
 		return
 	}
 
@@ -159,7 +159,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 			"host", host,
 			"error", err,
 		)
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeProxyError(w, err)
 		return
 	}
 	defer upstreamConn.Close()
@@ -168,7 +168,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		h.logger.Error("ResponseWriter does not support Hijack")
-		http.Error(w, "hijack not supported", http.StatusInternalServerError)
+		writeRotaError(w, http.StatusInternalServerError, "rota_internal_error", "hijack not supported")
 		return
 	}
 
@@ -281,7 +281,7 @@ func stripConnectionTokens(h http.Header) {
 // copyResponse writes an *http.Response to an http.ResponseWriter.
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	if resp == nil {
-		http.Error(w, "empty upstream response", http.StatusBadGateway)
+		writeRotaError(w, StatusForwardingFailed, "upstream_request_failed", "empty upstream response")
 		return
 	}
 	defer resp.Body.Close()
@@ -295,10 +295,9 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 		if _, hop := hopHeaders[k]; hop {
 			continue
 		}
-		// The proxy-ID header is Rota's own signal; an upstream echoing or
-		// forging it must not override (or duplicate) the value set by the
-		// handler.
-		if k == ProxyIDHeader {
+		// Rota owns proxy attribution and error attribution. An upstream must
+		// not override the selected ID or impersonate a Rota-generated error.
+		if strings.EqualFold(k, ProxyIDHeader) || strings.EqualFold(k, ProxyErrorHeader) {
 			continue
 		}
 		for _, v := range vv {

@@ -207,7 +207,7 @@ func (i *TLSInspector) pump(
 			binding.RecordRequest(req.Method, url, 0, false, err.Error(), start)
 			i.logger.Warn("intercepted request failed",
 				"source", "proxy", "host", host, "method", req.Method, "error", err)
-			writeGatewayError(clientTLS, req)
+			writeGatewayError(clientTLS, req, err)
 			return requests
 		}
 
@@ -215,6 +215,8 @@ func (i *TLSInspector) pump(
 		// path scores an attempt. A 403 or 429 is an answer — the status code
 		// is recorded alongside, which is what makes blocks visible.
 		binding.RecordRequest(req.Method, url, resp.StatusCode, true, "", start)
+		// Error attribution belongs to Rota, even inside an inspected tunnel.
+		resp.Header.Del(ProxyErrorHeader)
 
 		// A 101 hands the connection to another protocol (websockets), after
 		// which there are no more HTTP messages to parse — relay the rest
@@ -282,13 +284,13 @@ func (i *TLSInspector) relayUpgrade(
 }
 
 // writeGatewayError reports an upstream failure to the client in-band, so a
-// client inside the tunnel sees a 502 rather than a truncated connection.
-func writeGatewayError(w io.Writer, req *http.Request) {
+// client inside the tunnel sees Rota's forwarding status.
+func writeGatewayError(w io.Writer, req *http.Request, cause error) {
 	resp := &http.Response{
-		StatusCode:    http.StatusBadGateway,
+		StatusCode:    StatusForwardingFailed,
 		ProtoMajor:    1,
 		ProtoMinor:    1,
-		Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+		Header:        http.Header{"Content-Type": {"text/plain; charset=utf-8"}, ProxyErrorHeader: {forwardingReason(cause)}},
 		Body:          http.NoBody,
 		ContentLength: 0,
 		Close:         true,

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/alpkeskin/rota/core/internal/database"
@@ -9,6 +10,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// ErrProxyAuthentication identifies rejected credentials, distinct from a
+// database failure that prevented authentication from being checked.
+var ErrProxyAuthentication = errors.New("invalid proxy-user credentials")
 
 // UserRepository handles proxy_users database operations
 type UserRepository struct {
@@ -198,14 +203,17 @@ func (r *UserRepository) Delete(ctx context.Context, id int) error {
 // Authenticate checks username/password and returns the user if valid.
 func (r *UserRepository) Authenticate(ctx context.Context, username, password string) (*models.ProxyUser, error) {
 	u, err := r.GetByUsername(ctx, username)
-	if err != nil || u == nil {
-		return nil, fmt.Errorf("user not found")
+	if err != nil {
+		return nil, fmt.Errorf("lookup proxy user: %w", err)
+	}
+	if u == nil {
+		return nil, ErrProxyAuthentication
 	}
 	if !u.Enabled {
-		return nil, fmt.Errorf("user disabled")
+		return nil, ErrProxyAuthentication
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
-		return nil, fmt.Errorf("invalid password")
+		return nil, ErrProxyAuthentication
 	}
 	return u, nil
 }

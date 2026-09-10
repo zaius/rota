@@ -110,78 +110,79 @@ func (ps *PoolSelector) HasActive() bool {
 // proxies on a domain cooldown for that host are skipped — they remain
 // selectable for other targets.
 func (ps *PoolSelector) Select(ctx context.Context) (*models.Proxy, error) {
+	return ps.selectExcluding(ctx, nil, false)
+}
+
+// selectExcluding skips proxies already attempted by the request. forceSession
+// preserves reservations when a session chain falls back to another pool mode.
+func (ps *PoolSelector) selectExcluding(ctx context.Context, tried map[int]bool, forceSession bool) (*models.Proxy, error) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
 	if len(ps.proxies) == 0 {
-		return nil, fmt.Errorf("pool %d has no active proxies", ps.poolID)
+		return nil, fmt.Errorf("pool %d: %w", ps.poolID, ErrNoProxyAvailable)
 	}
 
 	host, _ := ctx.Value(TargetHostContextKey).(string)
-
-	return ps.selectLocked(ctx, host)
-}
-
-// selectLocked dispatches to the pool's rotation method. Caller must hold
-// ps.mu.
-func (ps *PoolSelector) selectLocked(ctx context.Context, host string) (*models.Proxy, error) {
-	switch ps.method {
-	case "random":
-		// Load balancing is not a security decision, so the non-cryptographic
-		// generator is the right tool here: it needs no syscall, cannot fail, and
-		// keeps the selection path allocation-free. Select() guarantees the slice
-		// is non-empty, so IntN cannot be called with zero.
-		p := ps.proxies[rand.IntN(len(ps.proxies))]
-		if !ps.cooledForHost(p.ID, host) {
-			return p, nil
+	scope, _ := ctx.Value(SessionScopeContextKey).(string)
+	if scope == "" {
+		scope = normalizeHost(host)
+	}
+	key := sessionIdentity{poolID: ps.poolID, scope: scope}
+	if chain, ok := chainFromContext(ctx); ok {
+		key.username = chain.username
+	}
+	method := ps.method
+	if forceSession {
+		method = "session"
+	}
+	if method == "session" {
+		key.token, _ = ctx.Value(SessionTokenContextKey).(string)
+	}
+	choose := func(boundID int, available func(int) bool) (*models.Proxy, error) {
+		eligible := func(id int) bool {
+			return !tried[id] && !ps.cooledForHost(id, host) && available(id)
 		}
-		// Re-draw among the proxies still eligible for this host.
-		var eligible []*models.Proxy
-		for _, c := range ps.proxies {
-			if !ps.cooledForHost(c.ID, host) {
-				eligible = append(eligible, c)
-			}
-		}
-		if len(eligible) == 0 {
-			return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
-		}
-		return eligible[rand.IntN(len(eligible))], nil
-
-	case "session":
-		// Bind a proxy to the client's session token and hold it until the
-		// session is released, goes idle (TTL), or its proxy disappears.
-		token, _ := ctx.Value(SessionTokenContextKey).(string)
-		if token == "" || ps.sessionMgr == nil {
-			// No session token supplied → behave like round-robin.
-			return ps.nextRoundRobinLocked(host)
-		}
-		if boundID, ok := ps.sessionMgr.Get(ps.poolID, token); ok {
+		if boundID != 0 {
 			for _, p := range ps.proxies {
-				if p.ID == boundID {
-					if !ps.cooledForHost(p.ID, host) {
-						return p, nil
-					}
-					// Bound proxy is on a domain cooldown for this host —
-					// rebind below; the whole session moves to a fresh proxy.
-					break
+				if p.ID == boundID && eligible(p.ID) {
+					return p, nil
 				}
 			}
-			// Bound proxy no longer available (failed/invalidated/cooled down) —
-			// fall through to rebind to a fresh one.
 		}
-		p, err := ps.nextRoundRobinLocked(host)
-		if err != nil {
-			return nil, err
+		return ps.selectLocked(method, eligible)
+	}
+	if ps.sessionMgr != nil {
+		return ps.sessionMgr.selectProxy(key, ps.sessionTTL, choose)
+	}
+	return choose(0, func(int) bool { return true })
+}
+
+// selectLocked applies rotation among eligible proxies. Caller holds ps.mu.
+func (ps *PoolSelector) selectLocked(method string, eligible func(int) bool) (*models.Proxy, error) {
+	switch method {
+	case "random":
+		p := ps.proxies[rand.IntN(len(ps.proxies))]
+		if eligible(p.ID) {
+			return p, nil
 		}
-		ps.sessionMgr.Bind(ps.poolID, token, p.ID, ps.sessionTTL)
-		return p, nil
+		var candidates []*models.Proxy
+		for _, p := range ps.proxies {
+			if eligible(p.ID) {
+				candidates = append(candidates, p)
+			}
+		}
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("pool %d: %w", ps.poolID, ErrNoProxyAvailable)
+		}
+		return candidates[rand.IntN(len(candidates))], nil
 
 	case "stick":
 		if ps.stick <= 0 {
 			ps.stick = 10
 		}
 		p := ps.proxies[ps.stickIdx]
-		if !ps.cooledForHost(p.ID, host) {
+		if eligible(p.ID) {
 			ps.stickServed++
 			if ps.stickServed >= ps.stick {
 				// advance to next proxy round-robin style
@@ -190,34 +191,33 @@ func (ps *PoolSelector) selectLocked(ctx context.Context, host string) (*models.
 			}
 			return p, nil
 		}
-		// The sticky proxy is on a domain cooldown for this host only. Serve a
-		// substitute eligible proxy for this request alone, WITHOUT touching the
+		// The sticky proxy is unavailable for this request. Serve a
+		// substitute eligible proxy for this request alone, without touching the
 		// shared stickIdx/stickServed — other hosts keep the sticky proxy and its
 		// serve count, and this host resumes it once the cooldown expires.
 		for i := 1; i < len(ps.proxies); i++ {
 			cand := ps.proxies[(ps.stickIdx+i)%len(ps.proxies)]
-			if !ps.cooledForHost(cand.ID, host) {
+			if eligible(cand.ID) {
 				return cand, nil
 			}
 		}
-		return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
+		return nil, fmt.Errorf("pool %d: %w", ps.poolID, ErrNoProxyAvailable)
 
-	default: // roundrobin
-		return ps.nextRoundRobinLocked(host)
+	default: // roundrobin, or a new/unbound session
+		return ps.nextRoundRobinLocked(eligible)
 	}
 }
 
-// nextRoundRobinLocked returns the next proxy in round-robin order, skipping
-// proxies on a domain cooldown for host. Caller must hold ps.mu.
-func (ps *PoolSelector) nextRoundRobinLocked(host string) (*models.Proxy, error) {
+// nextRoundRobinLocked returns the next eligible proxy. Caller holds ps.mu.
+func (ps *PoolSelector) nextRoundRobinLocked(eligible func(int) bool) (*models.Proxy, error) {
 	for range ps.proxies {
 		p := ps.proxies[ps.rrIdx]
 		ps.rrIdx = (ps.rrIdx + 1) % len(ps.proxies)
-		if !ps.cooledForHost(p.ID, host) {
+		if eligible(p.ID) {
 			return p, nil
 		}
 	}
-	return nil, fmt.Errorf("pool %d has no proxies available for host %q", ps.poolID, host)
+	return nil, fmt.Errorf("pool %d: %w", ps.poolID, ErrNoProxyAvailable)
 }
 
 // cooledForHost reports whether a proxy is on a domain cooldown covering host.

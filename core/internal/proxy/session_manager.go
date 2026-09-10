@@ -1,30 +1,43 @@
 package proxy
 
 import (
-	"fmt"
+	"errors"
 	"sync"
 	"time"
+
+	"github.com/alpkeskin/rota/core/internal/models"
 )
 
-// SessionManager holds sticky session→proxy bindings for the "session" rotation
-// method. It is a process-wide singleton so bindings survive the periodic
-// rebuild of per-user PoolChains (which happens every ~60s on auth-cache expiry).
-//
-// A session is identified by a client-supplied token carried in the proxy
-// username (e.g. "myuser-session-abc123" → token "abc123"). A binding is kept
-// until one of the following happens:
-//   - the client explicitly releases it (ReleaseToken / Release)
-//   - it goes idle for longer than the pool's session TTL (reaped)
-//   - the bound proxy is invalidated / fails (Evict, or rebind on next Select)
+// ErrNoProxyAvailable signals temporary capacity exhaustion, including pools
+// whose proxies are all reserved or on cooldown.
+var ErrNoProxyAvailable = errors.New("no proxy available; wait and retry")
+
+// SessionManager owns process-wide sticky bindings and exclusive reservations.
+// A proxy can have only one session owner per scope, including when that proxy
+// appears in several pools. Bindings survive per-user PoolChain rebuilds, and
+// are released explicitly, on idle expiry, or when the proxy is evicted.
 type SessionManager struct {
-	mu       sync.Mutex
-	sessions map[string]*sessionEntry // key: "poolID:token"
-	stop     chan struct{}
+	mu           sync.Mutex
+	sessions     map[sessionIdentity]*sessionEntry
+	reservations map[reservationKey]sessionIdentity
+	stop         chan struct{}
+}
+
+// Scope is an explicit client identifier or the normalized target hostname.
+// Username prevents users reusing a token from sharing a binding accidentally.
+type sessionIdentity struct {
+	poolID   int
+	username string
+	token    string
+	scope    string
+}
+
+type reservationKey struct {
+	proxyID int
+	scope   string
 }
 
 type sessionEntry struct {
-	poolID    int
-	token     string
 	proxyID   int
 	createdAt time.Time
 	lastUsed  time.Time
@@ -34,193 +47,197 @@ type sessionEntry struct {
 // SessionInfo is the externally-visible view of a live session binding.
 type SessionInfo struct {
 	PoolID    int       `json:"pool_id"`
+	Username  string    `json:"username"`
 	Token     string    `json:"token"`
+	Scope     string    `json:"scope"`
 	ProxyID   int       `json:"proxy_id"`
 	CreatedAt time.Time `json:"created_at"`
 	LastUsed  time.Time `json:"last_used"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// NewSessionManager creates a SessionManager and starts its idle-reaper.
+// SessionFilter restricts control operations. Nil PoolIDs means all pools;
+// an empty non-nil list matches none. Empty Username/Scope mean all values.
+type SessionFilter struct {
+	Token    string
+	Username string
+	Scope    string
+	PoolIDs  []int
+}
+
+func (f SessionFilter) matches(key sessionIdentity) bool {
+	if key.token != f.Token || (f.Username != "" && key.username != f.Username) || (f.Scope != "" && key.scope != f.Scope) {
+		return false
+	}
+	if f.PoolIDs == nil {
+		return true
+	}
+	for _, id := range f.PoolIDs {
+		if id == key.poolID {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *SessionManager) ReleaseSessions(filter SessionFilter) int {
+	return m.releaseMatching(filter.matches)
+}
+
 func NewSessionManager() *SessionManager {
 	m := &SessionManager{
-		sessions: make(map[string]*sessionEntry),
-		stop:     make(chan struct{}),
+		sessions:     make(map[sessionIdentity]*sessionEntry),
+		reservations: make(map[reservationKey]sessionIdentity),
+		stop:         make(chan struct{}),
 	}
 	go m.reapLoop()
 	return m
 }
 
-func sessionKey(poolID int, token string) string {
-	return fmt.Sprintf("%d:%s", poolID, token)
-}
-
-// Get returns the proxy bound to (poolID, token) if a live binding exists,
-// refreshing its idle timer. ok is false if there is no binding (or it expired).
-func (m *SessionManager) Get(poolID int, token string) (proxyID int, ok bool) {
-	if token == "" {
-		return 0, false
-	}
-	now := time.Now()
+// selectProxy checks ownership, selects, and reserves under one lock shared by
+// all pool selectors. choose must not call back into the manager. An empty
+// token selects an unreserved proxy without creating a sticky binding.
+func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, choose func(boundID int, available func(int) bool) (*models.Proxy, error)) (*models.Proxy, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	e, exists := m.sessions[sessionKey(poolID, token)]
-	if !exists {
-		return 0, false
+	now := time.Now()
+	boundID := 0
+	if e := m.liveLocked(key, now); e != nil && key.token != "" {
+		boundID = e.proxyID
 	}
-	if now.Sub(e.lastUsed) > e.ttl {
-		delete(m.sessions, sessionKey(poolID, token))
-		return 0, false
+	available := func(proxyID int) bool {
+		owner, reserved := m.reservations[reservationKey{proxyID, key.scope}]
+		if !reserved || m.liveLocked(owner, now) == nil {
+			return true
+		}
+		return key.token != "" && owner == key
 	}
-	e.lastUsed = now
-	return e.proxyID, true
-}
-
-// Bind creates or replaces the binding for (poolID, token) → proxyID.
-func (m *SessionManager) Bind(poolID int, token string, proxyID int, ttl time.Duration) {
-	if token == "" {
-		return
+	p, err := choose(boundID, available)
+	if err != nil {
+		return nil, err
+	}
+	if key.token == "" {
+		return p, nil
 	}
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
 	}
-	now := time.Now()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := sessionKey(poolID, token)
-	if e, ok := m.sessions[key]; ok {
-		e.proxyID = proxyID
-		e.lastUsed = now
-		e.ttl = ttl
-		return
+	e := m.sessions[key]
+	if e == nil {
+		e = &sessionEntry{createdAt: now}
+	} else {
+		delete(m.reservations, reservationKey{e.proxyID, key.scope})
 	}
-	m.sessions[key] = &sessionEntry{
-		poolID:    poolID,
-		token:     token,
-		proxyID:   proxyID,
-		createdAt: now,
-		lastUsed:  now,
-		ttl:       ttl,
-	}
+	e.proxyID, e.lastUsed, e.ttl = p.ID, now, ttl
+	m.sessions[key] = e
+	m.reservations[reservationKey{p.ID, key.scope}] = key
+	return p, nil
 }
 
-// Release drops the binding for (poolID, token). Returns true if one existed.
-func (m *SessionManager) Release(poolID int, token string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := sessionKey(poolID, token)
-	if _, ok := m.sessions[key]; ok {
+func (m *SessionManager) liveLocked(key sessionIdentity, now time.Time) *sessionEntry {
+	e := m.sessions[key]
+	if e != nil && now.Sub(e.lastUsed) > e.ttl {
+		m.deleteLocked(key)
+		return nil
+	}
+	return e
+}
+
+func (m *SessionManager) deleteLocked(key sessionIdentity) {
+	if e := m.sessions[key]; e != nil {
+		delete(m.reservations, reservationKey{e.proxyID, key.scope})
 		delete(m.sessions, key)
-		return true
 	}
-	return false
 }
 
-// ReleaseToken drops every binding matching token across all pools.
-// Returns the number of bindings removed.
+// Release drops the token's bindings in this pool, across users and scopes.
+func (m *SessionManager) Release(poolID int, token string) bool {
+	return m.releaseMatching(func(key sessionIdentity) bool {
+		return key.poolID == poolID && key.token == token
+	}) > 0
+}
+
+// ReleaseToken drops every binding matching token across all pools and scopes.
 func (m *SessionManager) ReleaseToken(token string) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	n := 0
-	for key, e := range m.sessions {
-		if e.token == token {
-			delete(m.sessions, key)
-			n++
-		}
-	}
-	return n
+	return m.releaseMatching(func(key sessionIdentity) bool { return key.token == token })
 }
 
-// ReleaseTokenInPools drops the token's bindings restricted to the given pools.
-// Returns the number of bindings removed. Used when the caller (a proxy user)
-// is only allowed to touch sessions in its own pools.
+// ReleaseTokenInPools restricts release to the proxy user's allowed pools.
 func (m *SessionManager) ReleaseTokenInPools(token string, poolIDs []int) int {
 	allowed := make(map[int]bool, len(poolIDs))
 	for _, id := range poolIDs {
 		allowed[id] = true
 	}
+	return m.releaseMatching(func(key sessionIdentity) bool {
+		return key.token == token && allowed[key.poolID]
+	})
+}
+
+func (m *SessionManager) releaseMatching(matches func(sessionIdentity) bool) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n := 0
-	for key, e := range m.sessions {
-		if e.token == token && allowed[e.poolID] {
-			delete(m.sessions, key)
+	for key := range m.sessions {
+		if matches(key) {
+			m.deleteLocked(key)
 			n++
 		}
 	}
 	return n
 }
 
-// FindByToken returns the live (non-expired) bindings for a session token
-// across all pools.
+// FindByToken returns live bindings for the token across all pools and scopes.
 func (m *SessionManager) FindByToken(token string) []SessionInfo {
-	now := time.Now()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []SessionInfo
-	for _, e := range m.sessions {
-		if e.token != token || now.Sub(e.lastUsed) > e.ttl {
-			continue
-		}
-		out = append(out, SessionInfo{
-			PoolID:    e.poolID,
-			Token:     e.token,
-			ProxyID:   e.proxyID,
-			CreatedAt: e.createdAt,
-			LastUsed:  e.lastUsed,
-			ExpiresAt: e.lastUsed.Add(e.ttl),
-		})
-	}
-	return out
+	return m.listMatching(func(key sessionIdentity) bool { return key.token == token })
 }
 
-// Evict drops every binding pointing at proxyID (used when a proxy is
-// invalidated or fails). Bound sessions rebind to a fresh proxy on next use.
-// Returns the number of bindings removed.
+// Evict drops every binding pointing at proxyID. Sessions rebind on next use.
 func (m *SessionManager) Evict(proxyID int) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n := 0
 	for key, e := range m.sessions {
 		if e.proxyID == proxyID {
-			delete(m.sessions, key)
+			m.deleteLocked(key)
 			n++
 		}
 	}
 	return n
 }
 
-// List returns a snapshot of all live session bindings.
 func (m *SessionManager) List() []SessionInfo {
+	return m.listMatching(func(sessionIdentity) bool { return true })
+}
+
+func (m *SessionManager) listMatching(matches func(sessionIdentity) bool) []SessionInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]SessionInfo, 0, len(m.sessions))
-	for _, e := range m.sessions {
+	now := time.Now()
+	out := make([]SessionInfo, 0)
+	for key := range m.sessions {
+		e := m.liveLocked(key, now)
+		if e == nil || !matches(key) {
+			continue
+		}
 		out = append(out, SessionInfo{
-			PoolID:    e.poolID,
-			Token:     e.token,
-			ProxyID:   e.proxyID,
-			CreatedAt: e.createdAt,
-			LastUsed:  e.lastUsed,
+			PoolID: key.poolID, Username: key.username, Token: key.token, Scope: key.scope,
+			ProxyID: e.proxyID, CreatedAt: e.createdAt, LastUsed: e.lastUsed,
 			ExpiresAt: e.lastUsed.Add(e.ttl),
 		})
 	}
 	return out
 }
 
-// reapLoop periodically removes idle (expired) sessions.
 func (m *SessionManager) reapLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			now := time.Now()
 			m.mu.Lock()
-			for key, e := range m.sessions {
-				if now.Sub(e.lastUsed) > e.ttl {
-					delete(m.sessions, key)
-				}
+			now := time.Now()
+			for key := range m.sessions {
+				m.liveLocked(key, now)
 			}
 			m.mu.Unlock()
 		case <-m.stop:
@@ -229,7 +246,4 @@ func (m *SessionManager) reapLoop() {
 	}
 }
 
-// Stop terminates the reaper goroutine.
-func (m *SessionManager) Stop() {
-	close(m.stop)
-}
+func (m *SessionManager) Stop() { close(m.stop) }

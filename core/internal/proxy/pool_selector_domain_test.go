@@ -169,8 +169,8 @@ func TestPoolSelector_SessionRebindsOnDomainCooldown(t *testing.T) {
 	defer cd.Stop()
 	ps := newDomainSelector("session", sm, cd, 1, 2, 3)
 
-	ctxFoo := context.WithValue(ctxWithHost("foo.com"), SessionTokenContextKey, "sess")
-	ctxBar := context.WithValue(ctxWithHost("bar.com"), SessionTokenContextKey, "sess")
+	ctxFoo := context.WithValue(context.WithValue(ctxWithHost("foo.com"), SessionScopeContextKey, "shared"), SessionTokenContextKey, "sess")
+	ctxBar := context.WithValue(context.WithValue(ctxWithHost("bar.com"), SessionScopeContextKey, "shared"), SessionTokenContextKey, "sess")
 
 	first, err := ps.Select(ctxFoo)
 	if err != nil {

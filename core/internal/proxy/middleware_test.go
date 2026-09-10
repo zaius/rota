@@ -55,8 +55,8 @@ func TestRateLimitMiddleware_BlocksOverLimit(t *testing.T) {
 
 	// Next request should be blocked
 	_, resp := m.HandleRequest(req)
-	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %v", resp)
+	if resp == nil || resp.StatusCode != StatusProxyRateLimited {
+		t.Fatalf("expected 594, got %v", resp)
 	}
 }
 
@@ -73,7 +73,7 @@ func TestRateLimitMiddleware_PerIP(t *testing.T) {
 	m.HandleRequest(req1)
 	m.HandleRequest(req1)
 	_, resp1 := m.HandleRequest(req1)
-	if resp1 == nil || resp1.StatusCode != http.StatusTooManyRequests {
+	if resp1 == nil || resp1.StatusCode != StatusProxyRateLimited {
 		t.Fatal("IP1 should be rate-limited")
 	}
 
@@ -151,7 +151,7 @@ func TestRateLimit_SpoofedForwardedForCannotBypassLimit(t *testing.T) {
 		_, lastResp = m.HandleRequest(req)
 	}
 
-	if lastResp == nil || lastResp.StatusCode != http.StatusTooManyRequests {
+	if lastResp == nil || lastResp.StatusCode != StatusProxyRateLimited {
 		t.Fatal("expected the limiter to reject once the burst is exhausted despite rotating X-Forwarded-For")
 	}
 }
@@ -160,5 +160,17 @@ func TestRateLimit_MisconfiguredLimiterAllows(t *testing.T) {
 	m := NewRateLimitMiddleware(models.RateLimitSettings{Enabled: true, Interval: 0, MaxRequests: 0})
 	if !m.allow("203.0.113.7") {
 		t.Fatal("expected a misconfigured limiter to allow the request rather than deny everything")
+	}
+}
+
+func TestRateLimitMiddleware_CustomStatusAndRetryAfter(t *testing.T) {
+	m := NewRateLimitMiddleware(models.RateLimitSettings{Enabled: true, Interval: 3, MaxRequests: 2})
+	req, _ := http.NewRequest(http.MethodGet, "http://example.com", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	m.HandleRequest(req)
+	m.HandleRequest(req)
+	_, resp := m.HandleRequest(req)
+	if resp == nil || resp.StatusCode != 594 || resp.Header.Get(ProxyErrorHeader) != "proxy_rate_limited" || resp.Header.Get("Retry-After") != "2" {
+		t.Fatalf("incorrect Rota rate-limit response: %v", resp)
 	}
 }

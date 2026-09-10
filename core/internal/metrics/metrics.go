@@ -78,7 +78,7 @@ func init() {
 	authRejections, _ = meter.Int64Counter("rota.proxy.auth.rejections",
 		metric.WithDescription("Proxy requests rejected with 407, by reason"))
 	rateLimitRejections, _ = meter.Int64Counter("rota.proxy.ratelimit.rejections",
-		metric.WithDescription("Proxy requests rejected with 429 by the per-IP rate limiter"))
+		metric.WithDescription("Proxy requests rejected with 594 by the per-IP rate limiter"))
 	healthChecks, _ = meter.Int64Counter("rota.healthcheck.checks",
 		metric.WithDescription("Proxy health checks performed, by outcome"))
 	healthCheckDuration, _ = meter.Float64Histogram("rota.healthcheck.duration",
@@ -201,7 +201,7 @@ func RecordAuthRejection(ctx context.Context, reason string) {
 	authRejections.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
 }
 
-// RecordRateLimitRejection records a proxy request rejected with 429. The
+// RecordRateLimitRejection records a proxy request rejected with 594. The
 // client IP is deliberately not a label (unbounded).
 func RecordRateLimitRejection(ctx context.Context) {
 	rateLimitRejections.Add(ctx, 1)

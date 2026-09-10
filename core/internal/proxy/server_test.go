@@ -72,8 +72,8 @@ func TestProxyRouter_RateLimitReject(t *testing.T) {
 	req2, _ := http.NewRequest("GET", "http://example.com/", nil)
 	req2.RemoteAddr = "5.5.5.5:5555"
 	_, rlResp2 := rlMw.HandleRequest(req2)
-	if rlResp2 == nil || rlResp2.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %v", rlResp2)
+	if rlResp2 == nil || rlResp2.StatusCode != StatusProxyRateLimited {
+		t.Fatalf("expected 594, got %v", rlResp2)
 	}
 }
 

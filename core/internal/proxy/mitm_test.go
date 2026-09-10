@@ -189,6 +189,7 @@ func TestTLSInspector_ForwardsRequestBodiesAndStatusCodes(t *testing.T) {
 		// A blocked scrape looks exactly like this, and the status code is the
 		// signal an opaque tunnel throws away.
 		if strings.Contains(string(body), "bot") {
+			w.Header().Set(ProxyErrorHeader, "spoofed")
 			w.WriteHeader(http.StatusTooManyRequests)
 			fmt.Fprint(w, "rate limited")
 			return
@@ -232,6 +233,9 @@ func TestTLSInspector_ForwardsRequestBodiesAndStatusCodes(t *testing.T) {
 	resp = send("i am a bot")
 	io.Copy(io.Discard, resp.Body) //nolint:errcheck
 	resp.Body.Close()
+	if resp.Header.Get(ProxyErrorHeader) != "" {
+		t.Error("target spoofed a Rota error inside the tunnel")
+	}
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
 	}

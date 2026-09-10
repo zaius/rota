@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -104,8 +105,8 @@ func JWTMiddleware(secret string) func(next http.Handler) http.Handler {
 // caller may touch to its own pools. Admin requests carry no proxy user.
 //
 // A present-but-invalid credential of either kind is rejected outright rather
-// than falling through to the other scheme, and failures return 401 so the
-// surrounding brute-force limiter counts them.
+// than falling through to the other scheme. Rejected credentials return 401;
+// authentication infrastructure errors return 500 and are not counted as bad logins.
 func JWTOrProxyUserMiddleware(secret string, userRepo *repository.UserRepository, log *logger.Logger) func(next http.Handler) http.Handler {
 	key := []byte(secret)
 	return func(next http.Handler) http.Handler {
@@ -130,6 +131,12 @@ func JWTOrProxyUserMiddleware(secret string, userRepo *repository.UserRepository
 			// 2. Proxy-user Basic credentials
 			if username, password, ok := r.BasicAuth(); ok {
 				user, err := userRepo.Authenticate(r.Context(), username, password)
+				if err != nil && !errors.Is(err, repository.ErrProxyAuthentication) {
+					log.Error("proxy-user API auth unavailable", "error", err)
+					w.Header().Set("Content-Type", "application/json")
+					http.Error(w, `{"error":"authentication unavailable"}`, http.StatusInternalServerError)
+					return
+				}
 				if err != nil || user == nil {
 					log.Warn("proxy-user API auth failed", "username", username)
 					w.Header().Set("Content-Type", "application/json")

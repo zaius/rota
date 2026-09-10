@@ -1,8 +1,10 @@
 package api
 
 import (
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -87,14 +89,14 @@ func (rl *authRateLimiter) Middleware() func(http.Handler) http.Handler {
 
 			// ── 1. Global lockout check ──────────────────────────────────────
 			if now.Before(rl.globalLockUntil) {
-				remaining := rl.globalLockUntil.Sub(now).Truncate(time.Second)
+				remaining := rl.globalLockUntil.Sub(now)
 				rl.mu.Unlock()
 				rl.log.Warn("auth global lockout active",
 					"ip", ip,
 					"remaining", remaining.String(),
 				)
 				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", remaining.String())
+				w.Header().Set("Retry-After", retryAfterSeconds(remaining))
 				w.WriteHeader(http.StatusTooManyRequests)
 				w.Write([]byte(`{"error":"Login temporarily disabled due to too many requests. Try again later."}`))
 				return
@@ -102,14 +104,14 @@ func (rl *authRateLimiter) Middleware() func(http.Handler) http.Handler {
 
 			// ── 2. Per-IP block check ────────────────────────────────────────
 			if unblockAt, blocked := rl.ipBlocked[ip]; blocked && now.Before(unblockAt) {
-				remaining := unblockAt.Sub(now).Truncate(time.Second)
+				remaining := unblockAt.Sub(now)
 				rl.mu.Unlock()
 				rl.log.Warn("auth per-IP block active",
 					"ip", ip,
 					"remaining", remaining.String(),
 				)
 				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", remaining.String())
+				w.Header().Set("Retry-After", retryAfterSeconds(remaining))
 				w.WriteHeader(http.StatusTooManyRequests)
 				w.Write([]byte(`{"error":"Too many failed login attempts from your IP. Try again later."}`))
 				return
@@ -129,7 +131,7 @@ func (rl *authRateLimiter) Middleware() func(http.Handler) http.Handler {
 				)
 				rl.mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", rl.globalLockout.String())
+				w.Header().Set("Retry-After", retryAfterSeconds(rl.globalLockout))
 				w.WriteHeader(http.StatusTooManyRequests)
 				w.Write([]byte(`{"error":"Login temporarily disabled due to too many requests. Try again later."}`))
 				return
@@ -242,4 +244,9 @@ type statusWriter struct {
 func (sw *statusWriter) WriteHeader(code int) {
 	sw.status = code
 	sw.ResponseWriter.WriteHeader(code)
+}
+
+// Retry-After uses whole seconds, not Go durations such as "5m0s".
+func retryAfterSeconds(remaining time.Duration) string {
+	return strconv.Itoa(max(1, int(math.Ceil(remaining.Seconds()))))
 }

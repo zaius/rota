@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -169,22 +170,20 @@ func (c *PoolChain) Refresh(ctx context.Context) {
 // pickProxy iterates through pool selectors until it finds an active proxy
 // that hasn't been tried yet. Returns (proxy, selectorIndex).
 func (c *PoolChain) pickProxy(ctx context.Context, tried map[int]bool) (*models.Proxy, int, error) {
+	// Carry ownership even for direct callers outside the HTTP router. A session
+	// on the main pool remains a session when using differently configured fallbacks.
+	ctx = context.WithValue(ctx, UserChainContextKey, c)
+	forceSession := len(c.selectors) > 0 && c.selectors[0].method == "session"
 	for i, sel := range c.selectors {
-		if !sel.HasActive() {
-			continue
+		p, err := sel.selectExcluding(ctx, tried, forceSession)
+		if err == nil {
+			return p, i, nil
 		}
-		// Try up to len(proxies) times to find an untried one in this pool
-		for attempt := 0; attempt < 10; attempt++ {
-			p, err := sel.Select(ctx)
-			if err != nil {
-				break
-			}
-			if !tried[p.ID] {
-				return p, i, nil
-			}
+		if !errors.Is(err, ErrNoProxyAvailable) {
+			return nil, -1, err
 		}
 	}
-	return nil, -1, fmt.Errorf("no untried proxies available across all pools")
+	return nil, -1, ErrNoProxyAvailable
 }
 
 // markFailed records a failure for the proxy, removing it from its pool's
@@ -244,7 +243,10 @@ func (c *PoolChain) SendWithRetry(
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		selectedProxy, selIdx, err := c.pickProxy(ctx, tried)
 		if err != nil {
-			return nil, 0, fmt.Errorf("no proxy available: %w", lastErr)
+			if lastErr != nil {
+				return nil, 0, fmt.Errorf("proxy attempts failed: %w", lastErr)
+			}
+			return nil, 0, err
 		}
 		tried[selectedProxy.ID] = true
 		attemptStart := time.Now()
@@ -264,7 +266,7 @@ func (c *PoolChain) SendWithRetry(
 			// Building a transport fails on local configuration problems (an
 			// unsupported protocol, a malformed address), not because the upstream
 			// proxy misbehaved — so don't count it toward eviction.
-			lastErr = err
+			lastErr = forwardingFailure("proxy_configuration_error", err)
 			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
 			continue
 		}
@@ -302,6 +304,14 @@ func (c *PoolChain) SendWithRetry(
 			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
 			lastErr = fmt.Errorf("proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)
 			log.Warn("pool chain: proxy failed", "proxy", selectedProxy.Address, "err", err)
+			c.markFailed(selIdx, selectedProxy.ID)
+			continue
+		}
+
+		if resp.StatusCode == http.StatusProxyAuthRequired {
+			resp.Body.Close()
+			lastErr = forwardingFailure("upstream_proxy_auth_failed", fmt.Errorf("upstream proxy %s rejected authentication", selectedProxy.Address))
+			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, lastErr)
 			c.markFailed(selIdx, selectedProxy.ID)
 			continue
 		}
@@ -408,7 +418,10 @@ func (c *PoolChain) ConnectWithRetry(
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		selectedProxy, selIdx, err := c.pickProxy(ctx, tried)
 		if err != nil {
-			return nil, nil, fmt.Errorf("no proxy available: %w", lastErr)
+			if lastErr != nil {
+				return nil, nil, fmt.Errorf("CONNECT attempts failed: %w", lastErr)
+			}
+			return nil, nil, err
 		}
 		tried[selectedProxy.ID] = true
 		attemptStart := time.Now()
@@ -463,6 +476,6 @@ func connectViaProxyStandalone(p *models.Proxy, host string, settings *models.Ro
 	case "http", "https":
 		return connectViaHTTPStandalone(p, host, timeout)
 	default:
-		return nil, fmt.Errorf("unsupported protocol for CONNECT: %s", p.Protocol)
+		return nil, forwardingFailure("proxy_configuration_error", fmt.Errorf("unsupported protocol for CONNECT: %s", p.Protocol))
 	}
 }

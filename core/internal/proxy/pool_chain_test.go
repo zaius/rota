@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -95,4 +96,45 @@ func TestPoolChain_MarkFailedWithNilCounts(t *testing.T) {
 	c := &PoolChain{}
 	c.markFailed(-1, 7)
 	c.markSucceeded(7)
+}
+
+func TestPoolChain_SessionsReserveFallbacks(t *testing.T) {
+	sm := NewSessionManager()
+	defer sm.Stop()
+	primary := newSessionSelector(sm, 1)
+	fallback := newSessionSelector(sm, 1, 2)
+	fallback.poolID = 2
+	fallback.method = "roundrobin"
+	c := &PoolChain{username: "alice", selectors: []*PoolSelector{primary, fallback}}
+	if _, idx, err := c.pickProxy(ctxWithToken("a"), nil); err != nil || idx != 0 {
+		t.Fatalf("primary: %d %v", idx, err)
+	}
+	if p, idx, err := c.pickProxy(ctxWithToken("b"), nil); err != nil || idx != 1 || p.ID != 2 {
+		t.Fatalf("fallback reused reserved proxy: %v %d %v", p, idx, err)
+	}
+	if _, _, err := c.pickProxy(ctxWithToken("c"), nil); !errors.Is(err, ErrNoProxyAvailable) {
+		t.Fatalf("exhaustion: %v", err)
+	}
+	// Even the same token belongs to a different session when used by another user.
+	other := &PoolChain{username: "bob", selectors: []*PoolSelector{primary, fallback}}
+	if _, _, err := other.pickProxy(ctxWithToken("a"), nil); !errors.Is(err, ErrNoProxyAvailable) {
+		t.Fatalf("user collision: %v", err)
+	}
+}
+
+func TestPoolChain_SessionRetrySkipsTriedProxy(t *testing.T) {
+	sm := NewSessionManager()
+	defer sm.Stop()
+	c := &PoolChain{selectors: []*PoolSelector{newSessionSelector(sm, 1, 2)}}
+	first, _, err := c.pickProxy(ctxWithToken("a"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, _, err := c.pickProxy(ctxWithToken("a"), map[int]bool{first.ID: true})
+	if err != nil || first.ID == next.ID {
+		t.Fatalf("retry did not advance: %v %v", next, err)
+	}
+	if bindings := sm.List(); len(bindings) != 1 || bindings[0].ProxyID != next.ID {
+		t.Fatalf("wrong binding: %v", bindings)
+	}
 }

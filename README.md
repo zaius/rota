@@ -14,102 +14,21 @@
 <a href="https://github.com/zaius/rota/actions"><img src="https://img.shields.io/github/actions/workflow/status/zaius/rota/release.yaml"></a>
 </p>
 
-
-![Khipu Screenshot](static/dashboard.png)
-
+![Rota Dashboard](static/dashboard.png)
 
 ## 🎯 Overview
 
-**Rota** is a modern, full-stack proxy rotation platform that combines enterprise-grade proxy management with a beautiful, real-time web dashboard. Built with performance and scalability in mind, Rota handles thousands of requests per second while providing comprehensive monitoring, analytics, and control through an intuitive interface.
-
-Whether you're conducting web scraping operations, performing security research, load testing, or need reliable proxy management at scale, Rota delivers a complete solution with:
-
-- **High-Performance Core**: Lightning-fast Go-based proxy server with intelligent rotation strategies
-- **Real-Time Dashboard**: Modern React web interface with live metrics and monitoring, served by the core itself
-- **Time-Series Analytics**: TimescaleDB-powered storage for historical analysis and insights
-- **Production-Ready**: Docker-based deployment with health checks, graceful shutdown, and monitoring
-
----
+**Rota** manages rotating proxies through a Go server and React dashboard, with per-user routing, sticky sessions, health checks, and traffic analytics.
 
 ## ✨ Key Features
 
-### Core Proxy Server
-- 🚀 **High Performance**: Handle thousands of concurrent requests with minimal latency
-- 🔄 **Smart Rotation**: Per-pool rotation strategies — round-robin, random, sticky, and session-based
-- 🤖 **Automatic Management**: Real-time proxy pool monitoring with automatic unhealthy proxy removal
-- 🌍 **Multi-Protocol**: Full support for HTTP, HTTPS, SOCKS4, SOCKS4A, and SOCKS5
-- ✅ **Health Checking**: Built-in proxy validation to maintain a healthy pool
-- 🔒 **Authentication**: Per-user proxy credentials (bcrypt) with pool-based routing — requests that don't resolve to a proxy user are rejected, so the proxy is never open
-- ⚡ **Rate Limiting**: Configurable rate limiting to prevent abuse
-- 🔗 **Proxy Chaining**: Compatible with upstream proxies (Burp Suite, OWASP ZAP, etc.)
-- ⏱️ **Configurable Timeouts**: Fine-grained control over request timeouts and retries
-- 🔁 **Redirect Support**: Optional HTTP redirect following
-
-### Proxy Sources & Auto-Import
-- 📥 **Remote TXT Lists**: Add URLs pointing to `ip:port` proxy lists — fetched automatically on schedule
-- 🕐 **Per-Source Interval**: Each source has its own refresh interval (in minutes)
-- 🔁 **Background Scheduler**: Overdue sources are fetched automatically every minute
-- 🌍 **Protocol per Source**: Assign HTTP, HTTPS, SOCKS4, SOCKS4a, or SOCKS5 to each list
-
-### GeoIP & Geo Distribution
-- 🗺️ **Automatic GeoIP**: Proxies are geolocated via [ip-api.com](http://ip-api.com) (free, no API key required)
-- 🏙️ **City-Level Data**: Country, region, city, ISP, latitude, longitude per proxy
-- 🔍 **Geo Explorer**: Expandable country tree with city drill-down in the dashboard
-- ♻️ **Auto-Enrich**: Geo data updated automatically after every source fetch
-
-### Proxy Pools
-- 🗂️ **Named Pools**: Group proxies by any combination of countries, cities, ISPs, or custom tags
-- ☑️ **Multi-Filter Builder**: Pick geo locations, ISP substrings, or proxy tags — mix freely in one pool
-- 🌐 **All Countries**: Use the `*` country filter to take every proxy and follow them wherever their IPs move, instead of maintaining a country list
-- 🔄 **Auto / Manual Sync**: `sync_mode: auto` rebuilds membership on every import; `manual` keeps it frozen until you trigger sync explicitly
-- 🔁 **Rotation Strategies**: Per-pool `roundrobin`, `random`, `sticky` (hold N requests per IP), or `session` (hold one proxy per client session until released or idle)
-- 📌 **Session Stickiness**: Pin a proxy to a client-chosen session via the proxy username (`user-session-<id>`); released explicitly, on idle TTL, or when the proxy is invalidated
-- 🚫 **Manual Invalidation**: Pull a single proxy out of rotation on demand (e.g. when you detect it's rate-limited) with a cooldown, then auto-recover or reactivate it — by proxy ID or by session token, with admin or proxy-user credentials
-- 🏷️ **Proxy Attribution**: Every proxied response carries an `X-Rota-Proxy-Id` header naming the upstream proxy that served it
-- ⚡ **Async Health Checks**: Run health checks against any URL; progress shown in real time
-- ⏱️ **Scheduled Checks**: Cron-style schedule per pool (`*/30 * * * *`)
-- 📤 **Export**: Download pool proxy list as `.txt` or `.csv` (`GET /api/v1/pools/{id}/export?format=txt|csv`)
-- 🔔 **Webhook Alerts**: Per-pool alert rules — fire a POST/GET webhook when active proxy count drops below threshold, with configurable cooldown
-
-### Per-User Pool Authentication
-- 👤 **Proxy Users**: Create users with bcrypt passwords, each assigned a main pool + ordered fallbacks
-- 🔗 **Usage**: `http://user:pass@host:8000` — the proxy routes through the user's pool chain
-- 🔄 **Automatic Failover**: If a pool has no live IPs, requests cascade to fallback pools
-- 🔁 **Retry Logic**: Each retry picks a fresh proxy; failed IPs are excluded for that request
-- 📊 **Full Tracking**: All requests, success rates, and response times tracked per proxy
-- ⚡ **Per-User Rate Limit**: Optional `requests_per_minute` cap per user (0 = unlimited)
-
-### Security
-- 🔐 **JWT Authentication**: All API endpoints require a valid JWT token; the browser auto-redirects to login on expiry with "Session expired" message
-- 🔑 **Bcrypt Admin Credentials**: Dashboard password stored as bcrypt hash in database
-- 🔄 **Change Password**: Update username/password via the Settings UI (requires current password)
-- 🌐 **Public endpoints only**: `GET /health` and `POST /auth/login`
-- 🛡️ **Auth Brute-Force Protection**: Per-IP block after N failed attempts + global lockout when request rate exceeds threshold (all configurable via `.env`)
-- 🏷️ **Proxy Tags**: Label proxies with custom tags for fine-grained pool filtering
-- 🧹 **Dead Proxy Cleanup**: Configurable automatic removal of long-failed or low-quality proxies
-
-### Web Dashboard
-- 📊 **Real-Time Metrics**: Live statistics, charts, and traffic monitoring
-- 🔄 **Proxy Management**: Add, edit, delete, and test proxies through the UI
-- 📝 **Live Logs**: WebSocket-based real-time log streaming
-- ⚙️ **Configuration**: Manage settings through the web interface
-- 🎨 **Modern UI**: Beautiful, responsive design with dark mode support
-- 📱 **Mobile-Friendly**: Fully responsive across all devices
-
-### Data & Analytics
-- 📈 **Time-Series Storage**: TimescaleDB for efficient historical data storage
-- 🔍 **Request History**: Track all proxy requests with detailed metadata
-- 🔒 **Tunnel Accounting**: Bytes, lifetime and concurrency for every HTTPS CONNECT tunnel
-- 🕵️ **Optional HTTPS Inspection**: Per-user opt-in to record individual requests inside TLS tunnels
-- 📉 **Performance Analytics**: Analyze proxy performance over time
-- 🎯 **Usage Insights**: Understand traffic patterns and proxy utilization
-
-### DevOps & Deployment
-- 🐳 **Docker-Native**: Production-ready containerized deployment
-- 🔧 **Easy Configuration**: All config via `.env` — see `.env.example` for all options
-- 🏥 **Health Checks**: Built-in health endpoints for monitoring
-- 🛑 **Graceful Shutdown**: Clean shutdown with connection draining
-- 📊 **Observability**: Structured JSON logging, a Prometheus `/metrics` endpoint, and optional OTLP push to any OpenTelemetry backend (SigNoz, Grafana, Datadog, ...)
+- **Proxy routing:** HTTP and SOCKS proxies, per-pool rotation, ordered fallback pools, retries, and per-IP rate limits.
+- **Pools and sources:** Scheduled imports, GeoIP enrichment, geo/ISP/tag filters, automatic or manual membership, and exports.
+- **Sessions:** Exclusive reservations per target or custom scope, idle expiry, and explicit release/invalidation.
+- **Monitoring:** Scheduled health checks, webhook alerts, live logs, and request/tunnel history.
+- **HTTPS inspection:** Optional per-user TLS interception and configurable TLS/HTTP fingerprint profiles.
+- **Security:** Authenticated proxy users, admin JWTs, bcrypt credentials, and login brute-force protection.
+- **Deployment:** Docker Compose, PostgreSQL/TimescaleDB, optional ClickHouse event storage, and Prometheus/OTLP metrics.
 
 ---
 
@@ -136,10 +55,12 @@ docker compose ps
 ```
 
 **Access the services:**
+
 - 🌐 **Dashboard + API**: http://localhost:8001
 - 🔄 **Proxy**: http://localhost:8000
 
 **Default credentials for dashboard:**
+
 - Username: `admin`
 - Password: `admin`
 
@@ -178,11 +99,7 @@ ROTA_ADMIN_PASSWORD=a-strong-password
 JWT_SECRET=a-stable-random-secret  # so dashboard sessions survive restarts
 ```
 
-Then start the stack:
-
-```bash
-docker compose up -d
-```
+Start with `docker compose up -d`; the Compose file already sets `restart: unless-stopped`.
 
 ### Using Docker
 
@@ -250,57 +167,11 @@ curl https://api.ipify.org?format=json
 
 ## 📚 API Documentation
 
-### Interactive API Documentation (Swagger)
-
-Rota provides interactive API documentation through Swagger UI. Once the core service is running, you can access it at:
-
-```
-http://localhost:8001/docs
-```
-
-The Swagger interface allows you to:
-- 📖 Browse all available API endpoints
-- 🧪 Test API requests directly from your browser
-- 📝 View request/response schemas
-- 🔍 Explore authentication requirements
-
-**Quick Access:**
-- **Swagger UI**: http://localhost:8001/docs
-- **OpenAPI Spec**: http://localhost:8001/docs/swagger.json
-
----
+The API is served at `http://localhost:8001/api/v1`. See [API Authentication](#-api-authentication) for credentials and [route definitions](core/internal/api/server.go) for available endpoints.
 
 ## 🏗️ Architecture
 
-Rota is built as a modern monorepo with three main components:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Rota Platform                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   │
-│  │   Dashboard  │───▶│  Core (API)  │───▶│ TimescaleDB  │   │
-│  │  React SPA   │    │     Go       │    │  PostgreSQL  │   │
-│  │   on :8001   │    │  Port 8001   │    │  Port 5432   │   │
-│  └──────────────┘    └──────────────┘    └──────────────┘   │
-│         │                    │                              │
-│         │                    ▼                              │
-│         │            ┌──────────────┐                       │
-│         └───────────▶│ Proxy Server │                       │
-│                      │      Go      │                       │
-│                      │  Port 8000   │                       │
-│                      └──────────────┘                       │
-│                              │                              │
-└──────────────────────────────┼──────────────────────────────┘
-                               ▼
-                     ┌──────────────────┐
-                     │   Proxy Pool     │
-                     │  (External IPs)  │
-                     └──────────────────┘
-```
-
----
+The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request history and logs use PostgreSQL or optional ClickHouse. Proxy requests follow each user's main and fallback pools.
 
 ### Rotation Strategies
 
@@ -308,24 +179,8 @@ Rotation is configured per pool via `rotation_method`:
 
 - **`roundrobin`**: Cycle through the pool's proxies in order
 - **`random`**: Pick a random proxy from the pool each request
-- **`sticky`**: Hold one proxy for `stick_count` requests, then advance
+- **`stick`**: Hold one proxy for `stick_count` requests, then advance
 - **`session`**: Hold one proxy per **client session** until released, idle past `session_ttl_minutes`, or invalidated — see [Session Stickiness](#-session-stickiness--proxy-invalidation)
-
----
-
-## 🐳 Deployment
-
-### Production Deployment
-
-#### Using Docker Compose
-
-```bash
-# Production configuration
-docker compose -f docker-compose.yml up -d
-
-# Enable auto-restart
-docker compose up -d --restart=unless-stopped
-```
 
 ---
 
@@ -338,11 +193,7 @@ docker compose up -d --restart=unless-stopped
 3. Choose the protocol and refresh interval
 4. Click **Fetch Now** or wait for the scheduler
 
-The system will:
-- Download and parse the list
-- Upsert proxies into the database (duplicates ignored)
-- Automatically look up GeoIP data for every new proxy
-- Re-sync all pools that have `Auto-sync` enabled
+Each import upserts proxies, enriches new entries with GeoIP data, and re-syncs automatic pools.
 
 ### Geo Distribution & Pools
 
@@ -407,7 +258,7 @@ Payload sent to the webhook:
 1. Create pools for each location/use-case
 2. Go to **Proxy Users**, click **Add User**
 3. Set a main pool and optional fallback pools (in priority order)
-4. Configure max retries across the chain and an optional `requests_per_minute` cap
+4. Configure max retries across the chain
 
 Users connect as:
 ```
@@ -418,57 +269,73 @@ If the main pool has no live IPs the request automatically cascades to the next 
 
 ---
 
+## Custom HTTP Status Codes
+
+Rota uses these custom codes on the **proxy listener**. Match the number and `X-Rota-Error`; reason phrases may vary.
+
+| Code | Meaning | Action |
+| --- | --- | --- |
+| **592** | Forwarding/tunnel failure; reason in `X-Rota-Error` below. | Inspect the reason. The target may have received the request; retry only if safe to repeat. |
+| **593** | `no_proxy_available`: eligible proxies are empty, reserved, or on cooldown. | Wait `Retry-After` seconds (currently 5), then retry with the same session/scope. |
+| **594** | `proxy_rate_limited`: Rota's per-IP limiter rejected the request. | Reduce the rate and wait `Retry-After` seconds. |
+
+`593` and `594` are returned before forwarding. `Retry-After` is a polling delay, not a guarantee of availability.
+
+| `592` reason | Meaning |
+| --- | --- |
+| `proxy_connect_failed` | Proxy DNS/TCP connection failed. |
+| `proxy_handshake_failed` | Sending CONNECT or reading/parsing its reply failed. |
+| `proxy_connect_rejected` | Upstream proxy rejected CONNECT; may be proxy policy or a target failure. |
+| `upstream_proxy_auth_failed` | Upstream HTTP proxy returned `407`; check its stored credentials. |
+| `upstream_timeout` | Connection, tunnel, or request timed out. |
+| `proxy_configuration_error` | Invalid proxy URL or unsupported transport/protocol. |
+| `upstream_request_failed` | Other forwarding failures, including unclassified SOCKS errors. |
+
+Rota cannot always identify whether the proxy or target caused a failure. Ordinary upstream statuses and bodies pass through, including `429`, `502`, and `503`; upstream HTTP proxy `407` is mapped to `592`. Upstream `X-Rota-Error` headers are removed from forwarded/inspected responses to prevent false attribution.
+
+**Standard codes:** Client proxy authentication retains `407` with `Proxy-Authenticate` and reason `proxy_auth_required` or `invalid_tls_profile`. Internal proxy/authentication failures use `500` with `rota_internal_error`. The directly addressed control API uses standard codes:
+
+| API case | Result |
+| --- | --- |
+| Malformed session request or missing `token` | `400` |
+| Invalidate an unknown, expired, or inaccessible session | `404` |
+| Release an unknown/already-released session | `200`, `count: 0` |
+| Explicit release from an unassigned pool | `403` |
+| Invalid credentials / auth rate limit | `401` / `429` (with `Retry-After`) |
+| Internal failure / source-fetch failure / unavailable service | `500` / `502` / `503` |
+
+Known API exceptions: some [pool](core/internal/api/handlers/pool_handler.go), [user](core/internal/api/handlers/user_handler.go), and [source](core/internal/api/handlers/source_handler.go) operations mask database errors as `404`; [admin login](core/internal/api/handlers/auth_handler.go) masks them as `401`. These should become `500`, not custom codes.
+
+**HTTPS:** Errors before tunnel establishment appear on the CONNECT response. After CONNECT succeeds, opaque-tunnel/TLS failures close the connection; Rota cannot inject HTTP into encrypted traffic. TLS inspection can return `592` for failed HTTP forwarding. Errors after response headers are sent cannot change the status.
+
 ## 📌 Session Stickiness & Proxy Invalidation
 
 ### Session-based rotation
 
-Set a pool's `rotation_method` to `session` to keep the **same proxy** for a whole client session instead of rotating per request. A session is identified by a token you embed in the proxy **username**, using the common `user-session-<token>` convention:
+Set the pool's `rotation_method` to `session`, then include a token in the proxy username:
 
 ```bash
-# Every request with this username reuses the same upstream proxy
-curl -x "http://alice-session-job42:password@your-proxy-host:8000" https://example.com
-curl -x "http://alice-session-job42:password@your-proxy-host:8000" https://example.com/next
+# Reuse job42's proxy for this target
+curl -x "http://alice-session-job42:password@localhost:8000" https://example.com
 
-# A different token gets an exclusive proxy for the same target hostname
-curl -x "http://alice-session-other:password@your-proxy-host:8000" https://example.com
+# Use a shared scope to prevent overlap across different hostnames
+curl -x "http://alice-session-job42-scope-shopping:password@localhost:8000" https://www.example.com
+curl -x "http://alice-session-job43-scope-shopping:password@localhost:8000" https://api.example.com
 ```
 
-Reservations are exclusive within a **scope**, across users and pools in the same Rota process. By default the scope is the target hostname, normalized to lowercase without a port or trailing dot. Different hostnames may reuse a proxy; subdomains are separate scopes. A session token is owned by its authenticated proxy user, so two users choosing the same token still have separate sessions. Each `(user, pool, token, scope)` has its own sticky binding.
+Each `(user, pool, token, scope)` has a sticky binding. Proxies are exclusive within a scope across users and pools in one Rota process. The default scope is the lowercase target hostname without a port or trailing dot; subdomains are separate scopes. Custom scopes use the same normalization. Sessions sharing `shopping` above receive different proxies; different scopes may reuse them.
 
-To group several hostnames (such as a site's subdomains), append a shared scope identifier to the username:
+- **No/empty session token:** round-robin among unreserved proxies; no sticky reservation.
+- **No/empty scope:** use the target hostname.
+- **TLS profile override:** put it last: `alice-session-job42-scope-shopping-profile-ios`.
+- **Lifetime:** release explicitly, expire after `session_ttl_minutes` idle (default 10), or rebind when the proxy becomes unavailable. Bindings reset on restart and do not coordinate across Rota processes.
+- **Fallbacks:** a session main pool preserves reservations in fallback pools. Exhaustion returns [593 with Retry-After](#custom-http-status-codes).
 
-```bash
-curl -x "http://alice-session-job42-scope-shopping:password@your-proxy-host:8000" https://www.example.com
-curl -x "http://alice-session-job43-scope-shopping:password@your-proxy-host:8000" https://api.example.com
-```
-
-These sessions must use different proxies because both use `shopping`. Scope identifiers use the same normalization as hostnames. Use the same scope for every session that must avoid overlap. An optional TLS profile goes last: `alice-session-job42-scope-shopping-profile-ios`. Omitting `-scope-` (or supplying an empty scope) uses the target hostname.
-
-When every eligible proxy in the main and fallback pools is reserved, on cooldown, or unavailable, Rota returns its custom **593 (No Proxy Available)** status for both HTTP and HTTPS CONNECT, before forwarding anything upstream. A target service's `503` is forwarded unchanged:
-
-```http
-HTTP/1.1 593 status code 593
-Retry-After: 5
-X-Rota-Error: no_proxy_available
-
-no proxy available; wait and retry
-```
-
-Wait at least five seconds and retry with the same username. `Retry-After` is a polling interval; an active session can extend its idle TTL, so availability is not guaranteed at that time. Existing sessions can continue using their reserved proxy. Session reservations also apply to fallback pools when the main pool uses session rotation. Upstream connection/request failures continue to return `502 Bad Gateway`.
-
-A session binding is held until one of:
-
-- **You release it** — `POST /api/v1/sessions/release` with `{"token":"job42"}` (add `"pool_id":<id>` to restrict to one pool and/or `"scope":"shopping"` for one reservation scope)
-- **It goes idle** — no requests for `session_ttl_minutes` (default 10, configurable per pool)
-- **Its proxy is invalidated or fails** — the session automatically rebinds to a fresh proxy on the next request
-
-Inspect live bindings, including `username` and `scope`, with `GET /api/v1/sessions`. Both session release and session invalidation accept optional `scope` and `pool_id` filters. Admin callers can also filter by `username`; proxy-user callers can only control their own sessions in their assigned pools. Omitted filters apply across the caller's matching bindings. Reservations are held in memory and reset when Rota restarts; separate Rota processes do not coordinate reservations.
-
-> Requests with no `-session-` token in the username fall back to round-robin, skipping proxies reserved for that target hostname. Other rotation methods also respect existing reservations.
+Inspect bindings with `GET /api/v1/sessions`. Release with `POST /api/v1/sessions/release` and `{"token":"job42"}`. Release and invalidation accept optional `pool_id` and `scope` filters; admins may also filter by `username`. Proxy users can only control their own bindings in assigned pools.
 
 ### Knowing which proxy served a request
 
-Every proxied response carries an `X-Rota-Proxy-Id` header with the internal ID of the upstream proxy that served it (on HTTPS requests it is on the `200 Connection Established` response to CONNECT, visible with `curl -v`). Track it client-side so you know exactly which proxy to invalidate when a target starts rejecting you.
+`X-Rota-Proxy-Id` identifies the serving proxy. For HTTPS, read it from the CONNECT response with `curl -v`; use the ID to invalidate that proxy.
 
 ### Invalidating a proxy mid-session
 
@@ -486,7 +353,7 @@ curl -X POST "http://localhost:8001/api/v1/proxies/123/reactivate" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Invalidation sets a database cooldown **and** evicts the proxy from every active user's live rotation right away (no wait for the refresh cycle), rebinding any sessions that were using it. The proxy automatically returns to rotation when its cooldown expires. You can also do this from the dashboard via the **Invalidate / Reactivate** actions in the Proxies table row menu.
+Invalidation immediately removes the proxy from rotation and drops its bindings. It returns when the cooldown expires. The dashboard also provides **Invalidate / Reactivate** actions.
 
 ### Invalidating by session token
 
@@ -525,11 +392,7 @@ Proxy-user calls are scoped to the user's own pools: only proxies that belong to
 
 ### Why HTTPS request counts look low
 
-An HTTPS request through a proxy is a `CONNECT` tunnel. Rota records **one event** when the tunnel opens, and after that the payload is encrypted bytes it cannot read. A client using HTTP keep-alive — or HTTP/2, which multiplexes hundreds of concurrent streams over one connection — sends every subsequent request through that same tunnel.
-
-So for HTTPS targets, **request counts are really tunnel counts**. A scraper with a connection pool can send thousands of requests and produce a few dozen events. Two orders of magnitude is normal.
-
-Plain HTTP is unaffected: those requests are forwarded individually and counted individually.
+Without inspection, Rota counts HTTPS CONNECT tunnels, which can each carry many requests through keep-alive or HTTP/2. Plain HTTP requests are counted individually.
 
 ### What is always recorded
 
@@ -565,9 +428,7 @@ TLS_INSPECT_CA_KEY=/etc/rota/ca.key
 TLS_INSPECT_BYPASS_DOMAINS=accounts.google.com,api.pinned-service.com
 ```
 
-**2. Enable it per proxy user** — the **Inspect HTTPS** toggle on the user, or `inspect_tls` via the API. Users left off keep the untouched tunnel they get today, so clients that want to own their own TLS simply stay opted out.
-
-With no CA configured, no user can be intercepted regardless of their flag.
+**2. Enable it per proxy user** with **Inspect HTTPS** or `inspect_tls` via the API. Both the CA and user opt-in are required.
 
 Once on, each request inside the tunnel produces a normal request event with its method, URL, latency and **status code** — which is what makes blocks visible. A `429` or a `403` block page is an answer, not a transport failure, so it still counts as a successful attempt (matching the plain-HTTP path); query `proxy_requests.status_code` to see blocking, rather than the success rate.
 
@@ -579,12 +440,7 @@ Once on, each request inside the tunnel produces a normal request event with its
 
 ### TLS fingerprint profiles
 
-Because interception replaces the client's TLS session, the target no longer sees the client's fingerprint — it sees Rota's. A **profile** decides what that is: instead of Go's stdlib handshake, Rota can present the fingerprint of a real device.
-
-A profile covers both layers Rota controls:
-
-- **TLS** — the ClientHello, which is what JA3 and JA4 are computed from: cipher list and order, extensions and their order, curves, signature algorithms, ALPN, GREASE.
-- **HTTP/2** — the SETTINGS frame values and their order, the connection window update, pseudo-header order, and priority frames. This is the "Akamai fingerprint", and it differs per client stack as much as the ClientHello does.
+With HTTPS inspection enabled, profiles control Rota's TLS ClientHello and HTTP/2 settings, header order, and priority frames.
 
 | Profile | Presents |
 |---------|----------|
@@ -611,12 +467,9 @@ curl -x http://alice-profile-ios:pass@localhost:8000 https://example.com
 curl -x http://alice-session-abc123-profile-android:pass@localhost:8000 https://example.com
 ```
 
-An unrecognized profile name is rejected with a `407` rather than quietly falling back, because a client that asked to look like an iPhone and silently got something else would only find out through unexplained blocking.
+Unknown profile names return `407` with `X-Rota-Error: invalid_tls_profile`.
 
-> **What a profile does not do:**
-> - **It does not change your headers.** Rota forwards the client's headers as it received them, only reordering them to match the profile — it never rewrites `User-Agent`. An iOS handshake carrying a `python-requests` User-Agent is a sharper signal than either would be alone, so configure the client to match. Each profile publishes the User-Agent its real counterpart sends.
-> - **It cannot change the TCP/IP layer.** JA4T and p0f-style signals — window size, TTL, options ordering — come from whichever host actually terminates TCP with the target, which is your upstream proxy, not Rota. A datacenter exit reads as a datacenter Linux box no matter which phone is being imitated. Mobile and residential exits are unaffected by this; fixing it for datacenter exits would mean changing the exit, not the profile.
-> - **It is only as current as its capture.** These are transcribed from platform-labelled captures and go stale as the real clients update.
+Profiles reorder headers but do not change their values, including `User-Agent`; configure the client to match. TCP/IP fingerprints come from the upstream proxy, and captured TLS/HTTP profiles can become outdated.
 
 ---
 
@@ -639,7 +492,7 @@ Rota instruments itself once with OpenTelemetry and exports through two paths �
 | `rota_proxy_sessions_active` | gauge | live sticky-session bindings |
 | `rota_proxy_domain_cooldowns_active` | gauge | active domain-scoped cooldowns |
 | `rota_proxy_auth_rejections_total` | counter | 407s by `reason` |
-| `rota_proxy_ratelimit_rejections_total` | counter | 429s from the per-IP limiter |
+| `rota_proxy_ratelimit_rejections_total` | counter | 594s from the proxy's per-IP limiter |
 | `rota_proxies` | gauge | fleet size by `status` |
 | `rota_pool_proxies` | gauge | per-pool proxy counts by `pool`, `status` |
 | `rota_proxy_users` | gauge | configured proxy users by `enabled` |
@@ -681,7 +534,7 @@ All standard OpenTelemetry variables are honored (`OTEL_EXPORTER_OTLP_PROTOCOL` 
 
 ## 🔐 API Authentication
 
-All API endpoints require a JWT bearer token obtained from `POST /api/v1/auth/login`. The only exceptions are the three client-control endpoints (`/proxies/{id}/invalidate`, `/sessions/invalidate`, `/sessions/release`), which alternatively accept proxy-user Basic credentials scoped to the user's own pools — see [Invalidating with proxy-user credentials](#invalidating-with-proxy-user-credentials).
+Management endpoints require an admin JWT. The three [client-control endpoints](#invalidating-with-proxy-user-credentials) also accept proxy-user Basic credentials.
 
 ```bash
 # Login
@@ -693,9 +546,7 @@ TOKEN=$(curl -s -X POST http://localhost:8001/api/v1/auth/login \
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8001/api/v1/proxies
 ```
 
-Public endpoints (no token required):
-- `GET /health`
-- `POST /api/v1/auth/login`
+Public endpoints: `GET /health`, `HEAD /health`, and `POST /api/v1/auth/login`. `/metrics` is available when enabled and uses the optional `METRICS_BEARER_TOKEN`.
 
 ### Brute-Force Protection
 
@@ -714,46 +565,13 @@ The dashboard automatically redirects to the login page with a *"Session expired
 
 ## 🤝 Contributing
 
-Contributions are welcome! We appreciate meaningful contributions that add value to the project.
-
-### How to Contribute
-
-1. **Fork the repository**
-2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3. **Make your changes**
-4. **Commit your changes**: `git commit -m 'Add amazing feature'`
-5. **Push to the branch**: `git push origin feature/amazing-feature`
-6. **Open a Pull Request**
-
-### Contribution Guidelines
-
-- Write clear, descriptive commit messages
-- Add tests for new features
-- Update documentation as needed
-- Follow existing code style and conventions
-- Ensure all tests pass before submitting PR
-- One feature/fix per pull request
-
-**Note**: Pull requests that do not contribute significant improvements or fixes will not be accepted.
-
-### Development Workflow
+Open a focused pull request with tests and documentation for the change. Follow the existing code style and run:
 
 ```bash
-# 1. Create feature branch
-git checkout -b feature/my-feature
-
-# 2. Make changes and test
-make test
-
-# 3. Commit changes
-git add .
-git commit -m "feat: add my feature"
-
-# 4. Push and create PR
-git push origin feature/my-feature
+# From the repository root
+(cd core && go test ./...)
+(cd dashboard && pnpm install && pnpm build)
 ```
-
----
 
 ## 📝 License
 

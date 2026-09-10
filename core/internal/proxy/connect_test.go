@@ -319,3 +319,42 @@ func TestReadCONNECTResponse_HandlesSplitWrites(t *testing.T) {
 		t.Fatalf("unexpected status line %q", line)
 	}
 }
+
+func TestConnectResponseStatus(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want int
+	}{
+		{"HTTP/1.1 200 Connection established", 200},
+		{"HTTP/1.1 204 No Content", 204},
+		{"HTTP/1.1 403 Blocked by policy 200", 403},
+		{"HTTP/1.1 407 Proxy Authentication Required", 407},
+		{"200", 0},
+		{"HTTP/1.1 2000 Invalid", 0},
+		{"garbage 200 OK", 0},
+		{"HTTP/1.1 999 Invalid", 0},
+	} {
+		status, err := connectResponseStatus(tc.line)
+		if tc.want == 0 {
+			if err == nil {
+				t.Fatalf("accepted %q", tc.line)
+			}
+			continue
+		}
+		if err != nil || status != tc.want {
+			t.Fatalf("%q: %d %v", tc.line, status, err)
+		}
+	}
+}
+
+func TestReadCONNECTResponse_RejectsTruncatedHeaders(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	go func() {
+		defer server.Close()
+		server.Write([]byte("HTTP/1.1 200 OK\r\n"))
+	}()
+	if _, err := readCONNECTResponse(client); err == nil {
+		t.Fatal("accepted incomplete CONNECT reply")
+	}
+}

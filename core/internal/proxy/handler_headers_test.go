@@ -8,6 +8,22 @@ import (
 	"testing"
 )
 
+func TestCopyResponse_Upstream503PassesThrough(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusServiceUnavailable,
+		Header:     http.Header{"Retry-After": {"20"}},
+		Body:       io.NopCloser(strings.NewReader("service unavailable")),
+	}
+	w := httptest.NewRecorder()
+	copyResponse(w, resp)
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != "20" || w.Body.String() != "service unavailable" {
+		t.Fatalf("upstream response changed: %d %v %s", w.Code, w.Header(), w.Body.String())
+	}
+	if w.Header().Get("X-Rota-Error") != "" {
+		t.Fatal("upstream 503 must not be labeled as proxy capacity exhaustion")
+	}
+}
+
 func TestCopyResponse_StripsHopByHopHeaders(t *testing.T) {
 	resp := &http.Response{
 		StatusCode: http.StatusOK,

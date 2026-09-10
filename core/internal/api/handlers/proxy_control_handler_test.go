@@ -17,9 +17,7 @@ import (
 type fakeProxyServer struct {
 	sessions []proxy.SessionInfo
 
-	releasedPool   []int    // pool IDs passed to ReleaseSession
-	releasedTokens []string // tokens passed to ReleaseSessionToken
-	releasedScoped [][]int  // pool scopes passed to ReleaseSessionTokenInPools
+	released []proxy.SessionFilter
 }
 
 func (f *fakeProxyServer) ReloadSettings(ctx context.Context) error { return nil }
@@ -35,16 +33,8 @@ func (f *fakeProxyServer) SessionsForToken(token string) []proxy.SessionInfo {
 	}
 	return out
 }
-func (f *fakeProxyServer) ReleaseSession(poolID int, token string) bool {
-	f.releasedPool = append(f.releasedPool, poolID)
-	return true
-}
-func (f *fakeProxyServer) ReleaseSessionToken(token string) int {
-	f.releasedTokens = append(f.releasedTokens, token)
-	return 1
-}
-func (f *fakeProxyServer) ReleaseSessionTokenInPools(token string, poolIDs []int) int {
-	f.releasedScoped = append(f.releasedScoped, poolIDs)
+func (f *fakeProxyServer) ReleaseSessions(filter proxy.SessionFilter) int {
+	f.released = append(f.released, filter)
 	return 1
 }
 func (f *fakeProxyServer) SetDomainCooldown(proxyID int, domain string, until time.Time, reason string) {
@@ -119,7 +109,7 @@ func TestReleaseSession_ProxyUserForeignPoolForbidden(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 releasing in a foreign pool, got %d", w.Code)
 	}
-	if len(ps.releasedPool) != 0 {
+	if len(ps.released) != 0 {
 		t.Fatal("nothing must be released on a forbidden request")
 	}
 }
@@ -136,8 +126,8 @@ func TestReleaseSession_ProxyUserOwnPoolAllowed(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 releasing in an own pool, got %d", w.Code)
 	}
-	if len(ps.releasedPool) != 1 || ps.releasedPool[0] != 2 {
-		t.Fatalf("expected release in pool 2, got %v", ps.releasedPool)
+	if len(ps.released) != 1 || len(ps.released[0].PoolIDs) != 1 || ps.released[0].PoolIDs[0] != 2 || ps.released[0].Username != "alice" {
+		t.Fatalf("expected release in pool 2, got %v", ps.released)
 	}
 }
 
@@ -155,11 +145,8 @@ func TestReleaseSession_ProxyUserWithoutPoolScopedToOwnPools(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if len(ps.releasedTokens) != 0 {
-		t.Fatal("a proxy user must not trigger a global release")
-	}
-	if len(ps.releasedScoped) != 1 || len(ps.releasedScoped[0]) != 2 {
-		t.Fatalf("expected a release scoped to the user's two pools, got %v", ps.releasedScoped)
+	if len(ps.released) != 1 || ps.released[0].Username != "alice" || len(ps.released[0].PoolIDs) != 2 {
+		t.Fatalf("expected a release scoped to the user's two pools, got %v", ps.released)
 	}
 }
 
@@ -175,7 +162,55 @@ func TestReleaseSession_AdminReleasesGlobally(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if len(ps.releasedTokens) != 1 || ps.releasedTokens[0] != "job42" {
-		t.Fatalf("expected a global release of the token, got %v", ps.releasedTokens)
+	if len(ps.released) != 1 || ps.released[0].Token != "job42" || ps.released[0].Username != "" || ps.released[0].PoolIDs != nil {
+		t.Fatalf("expected a global release of the token, got %v", ps.released)
+	}
+}
+
+func TestReleaseSession_ScopeAndOwner(t *testing.T) {
+	ps := &fakeProxyServer{}
+	h := newTestControlHandler(ps)
+	req := httptest.NewRequest("POST", "/sessions/release", strings.NewReader(`{"token":"job42","scope":"Example.COM.","username":"bob"}`))
+	req = asProxyUser(req, 1, 2)
+	w := httptest.NewRecorder()
+	h.ReleaseSession(w, req)
+	if w.Code != http.StatusOK || len(ps.released) != 1 {
+		t.Fatalf("release failed: %d", w.Code)
+	}
+	f := ps.released[0]
+	if f.Username != "alice" || f.Scope != "example.com" || f.Token != "job42" || len(f.PoolIDs) != 2 {
+		t.Fatalf("incorrect filter: %+v", f)
+	}
+}
+
+func TestInvalidateSession_RestrictsScopeAndOwner(t *testing.T) {
+	for _, body := range []string{
+		`{"token":"job42"}`,
+		`{"token":"job42","username":"bob"}`,
+		`{"token":"job42","scope":"other.com"}`,
+	} {
+		ps := &fakeProxyServer{sessions: []proxy.SessionInfo{
+			{PoolID: 1, Username: "bob", Token: "job42", Scope: "example.com", ProxyID: 42},
+		}}
+		h := newTestControlHandler(ps)
+		req := asProxyUser(httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(body)), 1)
+		w := httptest.NewRecorder()
+		h.InvalidateSession(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("foreign session visible: %d", w.Code)
+		}
+	}
+}
+
+func TestInvalidateSession_UnknownScopeNotFound(t *testing.T) {
+	ps := &fakeProxyServer{sessions: []proxy.SessionInfo{
+		{PoolID: 1, Username: "alice", Token: "job42", Scope: "example.com", ProxyID: 42},
+	}}
+	h := newTestControlHandler(ps)
+	req := asProxyUser(httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(`{"token":"job42","scope":"other.com"}`)), 1)
+	w := httptest.NewRecorder()
+	h.InvalidateSession(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unrelated scope matched: %d", w.Code)
 	}
 }

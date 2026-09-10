@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 
 	"github.com/alpkeskin/rota/core/internal/metrics"
@@ -106,13 +108,22 @@ func (m *RateLimitMiddleware) getClientIP(req *http.Request) string {
 	return host
 }
 
-// tooManyRequests returns a 429 Too Many Requests response
+// tooManyRequests distinguishes Rota's limiter from a target's 429 response.
 func (m *RateLimitMiddleware) tooManyRequests() *http.Response {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	retryAfter := 1
+	if m.interval > 0 && m.maxRequests > 0 {
+		retryAfter = int(math.Ceil(float64(m.interval) / float64(m.maxRequests)))
+	}
 	return &http.Response{
-		StatusCode: http.StatusTooManyRequests,
+		StatusCode: StatusProxyRateLimited,
 		ProtoMajor: 1,
 		ProtoMinor: 1,
-		Header:     make(http.Header),
+		Header: http.Header{
+			ProxyErrorHeader: {"proxy_rate_limited"},
+			"Retry-After":    {strconv.Itoa(retryAfter)},
+		},
 	}
 }
 
