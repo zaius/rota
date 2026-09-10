@@ -914,7 +914,8 @@ export default function PoolsPage() {
                 )}
               </div>
 
-              <div className="flex flex-col gap-1.5 min-w-0">
+              {/* Full-width: the session label is too long for half the dialog */}
+              <div className="col-span-2 flex flex-col gap-1.5 min-w-0">
                 <Label>Rotation strategy</Label>
                 <Select
                   value={form.rotation_method}
@@ -931,7 +932,7 @@ export default function PoolsPage() {
               </div>
 
               {form.rotation_method === "stick" && (
-                <div className="flex flex-col gap-1.5">
+                <div className="col-span-2 flex flex-col gap-1.5">
                   <Label>Stick requests count</Label>
                   <Input
                     type="number"
@@ -943,7 +944,7 @@ export default function PoolsPage() {
               )}
 
               {form.rotation_method === "session" && (
-                <div className="flex flex-col gap-1.5">
+                <div className="col-span-2 flex flex-col gap-1.5">
                   <Label>Session idle TTL (minutes)</Label>
                   <Input
                     type="number"
