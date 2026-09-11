@@ -9,7 +9,6 @@ import ProxiesPage from "@/app/dashboard/proxies/page"
 import PoolsPage from "@/app/dashboard/pools/page"
 import SourcesPage from "@/app/dashboard/sources/page"
 import UsersPage from "@/app/dashboard/users/page"
-import LogsPage from "@/app/dashboard/logs/page"
 import SettingsPage from "@/app/dashboard/settings/page"
 
 export const router = createBrowserRouter([
@@ -26,7 +25,6 @@ export const router = createBrowserRouter([
           { path: "dashboard/pools", element: <PoolsPage /> },
           { path: "dashboard/sources", element: <SourcesPage /> },
           { path: "dashboard/users", element: <UsersPage /> },
-          { path: "dashboard/logs", element: <LogsPage /> },
           { path: "dashboard/settings", element: <SettingsPage /> },
         ],
       },

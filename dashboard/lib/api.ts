@@ -4,7 +4,6 @@ import {
   DashboardStats,
   ChartResponse,
   TrafficChartResponse,
-  LogsResponse,
   Settings,
   AuthResponse,
   AddProxyRequest,
@@ -298,57 +297,6 @@ class ApiClient {
     })
   }
 
-  // Logs
-  async getLogs(params?: {
-    page?: number
-    limit?: number
-    level?: string
-    search?: string
-    source?: string
-    start_time?: string
-    end_time?: string
-  }): Promise<LogsResponse> {
-    const searchParams = new URLSearchParams()
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined) {
-          searchParams.append(key, value.toString())
-        }
-      })
-    }
-    const query = searchParams.toString()
-    return this.request<LogsResponse>(`/api/v1/logs${query ? `?${query}` : ""}`)
-  }
-
-  async exportLogs(format: "txt" | "json" = "txt", params?: {
-    level?: string
-    source?: string
-    start_time?: string
-    end_time?: string
-  }): Promise<Blob> {
-    const searchParams = new URLSearchParams({ format })
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined) {
-          searchParams.append(key, value.toString())
-        }
-      })
-    }
-
-    const response = await fetch(
-      `${this.baseUrl}/api/v1/logs/export?${searchParams.toString()}`,
-      {
-        headers: this.getHeaders(),
-      }
-    )
-
-    if (!response.ok) {
-      throw new Error("Export failed")
-    }
-
-    return response.blob()
-  }
-
   // Settings
   async getSettings(): Promise<Settings> {
     return this.request<Settings>("/api/v1/settings")
@@ -581,33 +529,6 @@ class ApiClient {
         ws?.close()
       },
     }
-  }
-
-  createLogsWebSocket(
-    onMessage: (log: any) => void,
-    levels?: string[],
-    source?: string
-  ): WebSocket {
-    const ws = new WebSocket(this.wsUrl("/ws/logs"))
-
-    ws.onopen = () => {
-      if (levels && levels.length > 0 || source) {
-        ws.send(JSON.stringify({
-          action: "filter",
-          levels: levels || [],
-          source: source || ""
-        }))
-      }
-    }
-
-    ws.onmessage = (event) => {
-      const log = parseSocketMessage(event.data)
-      if (log !== null) {
-        onMessage(log)
-      }
-    }
-
-    return ws
   }
 }
 

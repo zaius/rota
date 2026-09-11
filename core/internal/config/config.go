@@ -16,9 +16,9 @@ type Config struct {
 	AdminUser string
 	AdminPass string
 
-	// EventStore selects the backend for time-series event data (system logs
-	// and per-request proxy history): "postgres" (default — events live in
-	// the primary database) or "clickhouse" (EVENT_STORE).
+	// EventStore selects the backend for request and tunnel history:
+	// "postgres" (default — events live in the primary database) or
+	// "clickhouse" (EVENT_STORE).
 	EventStore string
 
 	// ClickHouse is the event-store connection when EVENT_STORE=clickhouse.

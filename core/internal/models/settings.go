@@ -9,7 +9,6 @@ type Settings struct {
 	Rotation     RotationSettings     `json:"rotation"`
 	RateLimit    RateLimitSettings    `json:"rate_limit"`
 	HealthCheck  HealthCheckSettings  `json:"healthcheck"`
-	LogRetention LogRetentionSettings `json:"log_retention"`
 	ProxyCleanup ProxyCleanupSettings `json:"proxy_cleanup"`
 }
 
@@ -36,14 +35,6 @@ type HealthCheckSettings struct {
 	URL     string   `json:"url"`
 	Status  int      `json:"status"`
 	Headers []string `json:"headers"`
-}
-
-// LogRetentionSettings represents log retention and cleanup configuration
-type LogRetentionSettings struct {
-	Enabled              bool `json:"enabled"`                // Enable automatic log cleanup
-	RetentionDays        int  `json:"retention_days"`         // Days to keep logs (7, 15, 30, 60, 90)
-	CompressionAfterDays int  `json:"compression_after_days"` // Compress logs older than X days (1, 3, 7, 14)
-	CleanupIntervalHours int  `json:"cleanup_interval_hours"` // How often to run cleanup (1, 6, 12, 24)
 }
 
 // ProxyCleanupSettings represents dead proxy auto-removal configuration

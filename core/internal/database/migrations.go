@@ -105,53 +105,11 @@ var migrations = []Migration{
 		`,
 	},
 	{
+		// Keep retired versions reserved for databases that already applied them.
 		Version:     5,
-		Description: "Create logs table (hypertable when TimescaleDB is available)",
-		Up: `
-			CREATE TABLE IF NOT EXISTS logs (
-				id BIGSERIAL,
-				timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
-				level VARCHAR(20) NOT NULL,
-				message TEXT NOT NULL,
-				details TEXT,
-				metadata JSONB
-			);
-
-			-- Convert to hypertable where TimescaleDB exists; a plain table
-			-- (with the timestamp indexes below) works fine on stock Postgres.
-			DO $ts$
-			BEGIN
-				IF EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb') THEN
-					PERFORM create_hypertable('logs', 'timestamp', if_not_exists => TRUE);
-				END IF;
-			END
-			$ts$;
-
-			-- Create indexes
-			CREATE INDEX idx_logs_level ON logs(level, timestamp DESC);
-			CREATE INDEX idx_logs_timestamp ON logs(timestamp DESC);
-
-			-- Retention/compression policies are TSL-licensed and unavailable on
-			-- Apache-only builds (e.g. Azure Flexible Server) — skip them there.
-			DO $ts$
-			BEGIN
-				IF current_setting('timescaledb.license', true) = 'timescale' THEN
-					-- Add retention policy (keep logs for 30 days)
-					PERFORM add_retention_policy('logs', INTERVAL '30 days', if_not_exists => TRUE);
-
-					-- Add compression policy (compress data older than 7 days)
-					ALTER TABLE logs SET (
-						timescaledb.compress,
-						timescaledb.compress_segmentby = 'level'
-					);
-					PERFORM add_compression_policy('logs', INTERVAL '7 days', if_not_exists => TRUE);
-				END IF;
-			END
-			$ts$;
-		`,
-		Down: `
-			DROP TABLE IF EXISTS logs;
-		`,
+		Description: "Reserved (dashboard log feature removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     6,
@@ -209,24 +167,15 @@ var migrations = []Migration{
 	},
 	{
 		Version:     7,
-		Description: "Add log retention settings (now seeded by the app)",
-		Up: `
-			-- log_retention defaults are seeded by SettingsRepository.SeedDefaults.
-			SELECT 1;
-		`,
-		Down: `
-			SELECT 1;
-		`,
+		Description: "Reserved (dashboard log feature removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     8,
-		Description: "Add metadata source index for proxy logs filtering",
-		Up: `
-			CREATE INDEX IF NOT EXISTS idx_logs_metadata_source ON logs((metadata->>'source'));
-		`,
-		Down: `
-			DROP INDEX IF EXISTS idx_logs_metadata_source;
-		`,
+		Description: "Reserved (dashboard log feature removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     9,

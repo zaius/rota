@@ -12,7 +12,6 @@ import {
 import {
   LayoutDashboard,
   Network,
-  FileText,
   Settings,
   LogOut,
 } from "lucide-react"
@@ -56,12 +55,6 @@ export function CommandPalette() {
           >
             <Network className="mr-2 h-4 w-4" />
             <span>Proxy Management</span>
-          </CommandItem>
-          <CommandItem
-            onSelect={() => runCommand(() => navigate("/dashboard/logs"))}
-          >
-            <FileText className="mr-2 h-4 w-4" />
-            <span>Proxy Logs</span>
           </CommandItem>
           <CommandItem
             onSelect={() => runCommand(() => navigate("/dashboard/settings"))}

@@ -2,7 +2,6 @@ package events
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -24,8 +23,8 @@ import (
 //   - inserts run with async_insert so the server batches the one-row-per-
 //     request write pattern into sane parts. wait_for_async_insert=1 keeps
 //     read-your-writes semantics (an insert returns once its batch is
-//     committed, up to ~200ms); flip it to 0 for maximum throughput if log
-//     tailing may lag a beat.
+//     committed, up to ~200ms); flip it to 0 for maximum throughput if
+//     dashboard statistics may lag a beat.
 type ClickHouseStore struct {
 	conn   driver.Conn
 	logger *logger.Logger
@@ -34,21 +33,8 @@ type ClickHouseStore struct {
 var _ Store = (*ClickHouseStore)(nil)
 
 // chSchema is the idempotent bootstrap DDL. TTLs here are the initial
-// defaults; ApplyRetention keeps them in sync with settings afterwards.
+// defaults; ApplyRetention keeps them in sync with the retention config.
 var chSchema = []string{
-	`CREATE TABLE IF NOT EXISTS logs (
-		id        Int64,
-		timestamp DateTime64(3),
-		level     LowCardinality(String),
-		message   String,
-		details   Nullable(String),
-		source    LowCardinality(String),
-		metadata  String
-	) ENGINE = MergeTree
-	PARTITION BY toYYYYMMDD(timestamp)
-	ORDER BY (timestamp, id)
-	TTL toDateTime(timestamp) + toIntervalDay(30)`,
-
 	`CREATE TABLE IF NOT EXISTS proxy_requests (
 		timestamp     DateTime64(3),
 		proxy_id      Int32,
@@ -123,164 +109,6 @@ func NewClickHouseStore(ctx context.Context, cfg *config.ClickHouseConfig, log *
 
 // Close closes the connection.
 func (s *ClickHouseStore) Close() error { return s.conn.Close() }
-
-// InsertLog records a system log event.
-func (s *ClickHouseStore) InsertLog(ctx context.Context, entry LogEntry) error {
-	ts := entry.Timestamp
-	if ts.IsZero() {
-		ts = time.Now()
-	}
-
-	// Source is stored both as its own column (for filtering) and folded
-	// into the metadata document, which is what callers render — matching
-	// what the Postgres backend returns.
-	metadata := entry.Metadata
-	if entry.Source != "" {
-		metadata = make(map[string]any, len(entry.Metadata)+1)
-		for k, v := range entry.Metadata {
-			metadata[k] = v
-		}
-		metadata["source"] = entry.Source
-	}
-	metadataJSON := ""
-	if metadata != nil {
-		b, err := json.Marshal(metadata)
-		if err != nil {
-			return fmt.Errorf("failed to marshal metadata: %w", err)
-		}
-		metadataJSON = string(b)
-	}
-
-	details := ""
-	hasDetails := entry.Details != nil
-	if hasDetails {
-		details = *entry.Details
-	}
-	var detailsArg *string
-	if hasDetails {
-		detailsArg = &details
-	}
-
-	err := s.conn.Exec(ctx, `
-		INSERT INTO logs (id, timestamp, level, message, details, source, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, nextLogID(), ts, entry.Level, entry.Message, detailsArg, entry.Source, metadataJSON)
-	if err != nil {
-		return fmt.Errorf("failed to create log: %w", err)
-	}
-	return nil
-}
-
-// logFilterWhere builds the WHERE clause for a log filter.
-func logFilterWhere(filter LogFilter) (string, []any) {
-	clauses := []string{}
-	args := []any{}
-
-	if filter.Level != "" {
-		clauses = append(clauses, "level = ?")
-		args = append(args, filter.Level)
-	}
-	if filter.Search != "" {
-		clauses = append(clauses, "message ILIKE ?")
-		args = append(args, "%"+filter.Search+"%")
-	}
-	if filter.Source != "" {
-		clauses = append(clauses, "source = ?")
-		args = append(args, filter.Source)
-	}
-	if filter.StartTime != nil {
-		clauses = append(clauses, "timestamp >= ?")
-		args = append(args, *filter.StartTime)
-	}
-	if filter.EndTime != nil {
-		clauses = append(clauses, "timestamp <= ?")
-		args = append(args, *filter.EndTime)
-	}
-
-	if len(clauses) == 0 {
-		return "", nil
-	}
-	return "WHERE " + strings.Join(clauses, " AND "), args
-}
-
-// ListLogs returns one page of logs matching the filter, newest first, with
-// the total match count.
-func (s *ClickHouseStore) ListLogs(ctx context.Context, filter LogFilter, page, limit int) ([]models.Log, int, error) {
-	where, args := logFilterWhere(filter)
-
-	var total uint64
-	if err := s.conn.QueryRow(ctx, "SELECT count() FROM logs "+where, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count logs: %w", err)
-	}
-
-	offset := (page - 1) * limit
-	query := fmt.Sprintf(`
-		SELECT id, timestamp, level, message, details, metadata
-		FROM logs
-		%s
-		ORDER BY timestamp DESC, id DESC
-		LIMIT %d OFFSET %d
-	`, where, limit, offset)
-
-	rows, err := s.conn.Query(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list logs: %w", err)
-	}
-	defer rows.Close()
-
-	logs, err := scanCHLogs(rows)
-	if err != nil {
-		return nil, 0, err
-	}
-	return logs, int(total), nil
-}
-
-// LogsSince returns up to limit logs with ID greater than lastID in ascending
-// ID order, optionally filtered by source.
-func (s *ClickHouseStore) LogsSince(ctx context.Context, lastID int64, limit int, source string) ([]models.Log, error) {
-	where := "WHERE id > ?"
-	args := []any{lastID}
-	if source != "" {
-		where += " AND source = ?"
-		args = append(args, source)
-	}
-
-	query := fmt.Sprintf(`
-		SELECT id, timestamp, level, message, details, metadata
-		FROM logs
-		%s
-		ORDER BY id ASC
-		LIMIT %d
-	`, where, limit)
-
-	rows, err := s.conn.Query(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list logs: %w", err)
-	}
-	defer rows.Close()
-
-	return scanCHLogs(rows)
-}
-
-// DeleteLogsOlderThan removes logs older than the given age via a lightweight
-// delete. The count is taken just before deletion, so it is approximate under
-// concurrent inserts of backdated rows — acceptable for a maintenance
-// operation.
-func (s *ClickHouseStore) DeleteLogsOlderThan(ctx context.Context, age time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-age)
-
-	var n uint64
-	if err := s.conn.QueryRow(ctx, `SELECT count() FROM logs WHERE timestamp < ?`, cutoff).Scan(&n); err != nil {
-		return 0, fmt.Errorf("failed to count old logs: %w", err)
-	}
-	if n == 0 {
-		return 0, nil
-	}
-	if err := s.conn.Exec(ctx, `DELETE FROM logs WHERE timestamp < ?`, cutoff); err != nil {
-		return 0, fmt.Errorf("failed to delete old logs: %w", err)
-	}
-	return int64(n), nil
-}
 
 // InsertRequest records one proxied request outcome.
 func (s *ClickHouseStore) InsertRequest(ctx context.Context, event RequestEvent) error {
@@ -616,8 +444,6 @@ func (s *ClickHouseStore) LowSuccessProxies(ctx context.Context, window time.Dur
 // ApplyRetention keeps the table TTLs in sync with the configuration.
 // ClickHouse expires rows in background merges, so this only (re)declares the
 // TTL expressions; tables already at the configured periods are left alone.
-// Compression is native to MergeTree — CompressionAfterDays is ignored as
-// documented.
 func (s *ClickHouseStore) ApplyRetention(ctx context.Context, cfg RetentionConfig) error {
 	apply := func(table string, days int) error {
 		if days <= 0 {
@@ -645,31 +471,8 @@ func (s *ClickHouseStore) ApplyRetention(ctx context.Context, cfg RetentionConfi
 		return nil
 	}
 
-	if err := apply("logs", cfg.RetentionDays); err != nil {
-		return err
-	}
 	if err := apply("proxy_requests", cfg.RequestRetentionDays); err != nil {
 		return err
 	}
 	return apply("proxy_tunnels", cfg.RequestRetentionDays)
-}
-
-// scanCHLogs reads (id, timestamp, level, message, details, metadata) rows.
-func scanCHLogs(rows driver.Rows) ([]models.Log, error) {
-	logs := []models.Log{}
-	for rows.Next() {
-		var l models.Log
-		var metadataJSON string
-
-		if err := rows.Scan(&l.ID, &l.Timestamp, &l.Level, &l.Message, &l.Details, &metadataJSON); err != nil {
-			return nil, fmt.Errorf("failed to scan log: %w", err)
-		}
-		if metadataJSON != "" {
-			if err := json.Unmarshal([]byte(metadataJSON), &l.Metadata); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
-			}
-		}
-		logs = append(logs, l)
-	}
-	return logs, rows.Err()
 }

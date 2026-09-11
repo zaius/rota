@@ -85,25 +85,6 @@ export interface TrafficChartResponse {
   data: TrafficPoint[]
 }
 
-export interface LogEntry {
-  id: string
-  timestamp: string
-  level: "info" | "warning" | "error" | "success"
-  message: string
-  details?: string
-  metadata?: Record<string, any>
-}
-
-export interface LogsResponse {
-  logs: LogEntry[]
-  pagination: {
-    page: number
-    limit: number
-    total: number
-    total_pages: number
-  }
-}
-
 export interface Settings {
   rotation: {
     follow_redirect: boolean
@@ -120,12 +101,6 @@ export interface Settings {
     url: string
     status: number
     headers: string[]
-  }
-  log_retention: {
-    enabled: boolean
-    retention_days: number
-    compression_after_days: number
-    cleanup_interval_hours: number
   }
 }
 

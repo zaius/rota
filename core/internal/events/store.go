@@ -1,6 +1,5 @@
 // Package events defines the event store: the single boundary through which
-// the application reads and writes time-series event data (system logs and
-// per-request proxy history).
+// the application reads and writes request and tunnel history.
 //
 // Everything behind this interface is an implementation detail of one storage
 // backend. Two rules keep backends swappable (Postgres today, ClickHouse
@@ -19,30 +18,6 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/models"
 )
-
-// LogEntry is a system log event to be recorded.
-//
-// Source identifies the subsystem that produced the log (e.g. "proxy") and is
-// a first-class field so backends can index or column-ize it; how it is stored
-// is the backend's business. Metadata carries free-form attributes for display.
-// A zero Timestamp means "now".
-type LogEntry struct {
-	Level     string
-	Message   string
-	Details   *string
-	Source    string
-	Metadata  map[string]any
-	Timestamp time.Time
-}
-
-// LogFilter narrows log listings. Zero values mean "no filter".
-type LogFilter struct {
-	Level     string
-	Search    string // substring match on message, case-insensitive
-	Source    string
-	StartTime *time.Time
-	EndTime   *time.Time
-}
 
 // RequestEvent is one proxied request outcome.
 //
@@ -127,15 +102,12 @@ func (s *TunnelSummary) MeanConcurrency(window time.Duration) float64 {
 }
 
 // RetentionConfig controls how long event data is kept. Non-positive periods
-// disable that part of retention. CompressionAfterDays is advisory: backends
-// without a compression concept ignore it.
+// disable retention.
 //
 // RequestRetentionDays governs both request and tunnel history: they are the
 // same class of per-connection record and there is no reason to age them out
 // on different schedules.
 type RetentionConfig struct {
-	RetentionDays        int // system logs
-	CompressionAfterDays int // system logs, advisory
 	RequestRetentionDays int // proxy request and tunnel history
 }
 
@@ -152,23 +124,6 @@ type ProxyRequestStats struct {
 
 // Store is the event store. Implementations must be safe for concurrent use.
 type Store interface {
-	// InsertLog records a system log event.
-	InsertLog(ctx context.Context, entry LogEntry) error
-
-	// ListLogs returns one page of logs matching the filter, newest first,
-	// along with the total match count.
-	ListLogs(ctx context.Context, filter LogFilter, page, limit int) ([]models.Log, int, error)
-
-	// LogsSince returns up to limit logs with ID greater than lastID in
-	// ascending ID order, optionally filtered by source. It backs live log
-	// streaming; IDs are monotonic per backend.
-	LogsSince(ctx context.Context, lastID int64, limit int, source string) ([]models.Log, error)
-
-	// DeleteLogsOlderThan removes logs older than the given age and reports
-	// how many were deleted. Backends with native retention may prefer
-	// ApplyRetention; this is the portable fallback.
-	DeleteLogsOlderThan(ctx context.Context, age time.Duration) (int64, error)
-
 	// InsertRequest records one proxied request outcome.
 	InsertRequest(ctx context.Context, event RequestEvent) error
 

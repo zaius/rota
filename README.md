@@ -25,7 +25,7 @@
 - **Proxy routing:** HTTP and SOCKS proxies, per-pool rotation, ordered fallback pools, retries, and per-IP rate limits.
 - **Pools and sources:** Scheduled imports, GeoIP enrichment, geo/ISP/tag filters, automatic or manual membership, and exports.
 - **Sessions:** Exclusive reservations per target or custom scope, idle expiry, and explicit release/invalidation.
-- **Monitoring:** Scheduled health checks, webhook alerts, live logs, and request/tunnel history.
+- **Monitoring:** Scheduled health checks, webhook alerts, and request/tunnel history.
 - **HTTPS inspection:** Optional per-user TLS interception and configurable TLS/HTTP fingerprint profiles.
 - **Security:** Authenticated proxy users, admin JWTs, bcrypt credentials, and login brute-force protection.
 - **Deployment:** Docker Compose, PostgreSQL/TimescaleDB, optional ClickHouse event storage, and Prometheus/OTLP metrics.
@@ -75,7 +75,7 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `ROTA_ADMIN_USER` | `admin` | Initial dashboard username (seeded once) |
 | `ROTA_ADMIN_PASSWORD` | `admin` | Initial dashboard password (seeded once, min 6 chars) |
 | `DB_PASSWORD` | `rota_password` | Database password |
-| `EVENT_STORE` | `postgres` | Backend for logs + request history: `postgres` or `clickhouse` |
+| `EVENT_STORE` | `postgres` | Backend for request and tunnel history: `postgres` or `clickhouse` |
 | `CLICKHOUSE_PASSWORD` | `rota_password` | ClickHouse password (when `EVENT_STORE=clickhouse`) |
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `METRICS_ENABLED` | `true` | Prometheus `/metrics` endpoint + optional OTLP push — see [Metrics & Observability](#-metrics--observability) |
@@ -171,7 +171,7 @@ The API is served at `http://localhost:8001/api/v1`. See [API Authentication](#-
 
 ## 🏗️ Architecture
 
-The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request history and logs use PostgreSQL or optional ClickHouse. Proxy requests follow each user's main and fallback pools.
+The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history use PostgreSQL or optional ClickHouse. Proxy requests follow each user's main and fallback pools.
 
 ### Rotation Strategies
 

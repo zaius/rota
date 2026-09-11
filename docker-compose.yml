@@ -22,7 +22,7 @@ services:
       - ROTA_ADMIN_PASSWORD=${ROTA_ADMIN_PASSWORD:-admin}
       # Set a stable value in production so dashboard sessions survive restarts.
       - JWT_SECRET=${JWT_SECRET:-}
-      # Event store: "postgres" (default) keeps logs + request history in the
+      # Event store: "postgres" (default) keeps request and tunnel history in the
       # primary database; "clickhouse" moves them to the clickhouse service
       # (start it with: docker compose --profile clickhouse up -d).
       - EVENT_STORE=${EVENT_STORE:-postgres}

@@ -101,7 +101,7 @@ func run() error {
 	}
 
 	// Create the event store — the single boundary for time-series event data
-	// (system logs, per-request history). Config selects the backend: events
+	// (request and tunnel history). Config selects the backend: events
 	// in the primary Postgres database (default), or in ClickHouse.
 	var eventStore events.Store
 	switch cfg.EventStore {
@@ -134,61 +134,6 @@ func run() error {
 		return fmt.Errorf("failed to seed default settings: %w", err)
 	}
 
-	// Add database logging hook for proxy logs
-	log.AddHook(func(level, message string, attrs map[string]any) {
-		// Only log proxy-related messages to database
-		source, ok := attrs["source"]
-		if !ok || source != "proxy" {
-			return
-		}
-
-		// Extract details from attributes
-		details := ""
-		if requestID, ok := attrs["request_id"].(string); ok {
-			details += fmt.Sprintf("Request ID: %s\n", requestID)
-		}
-		if method, ok := attrs["method"].(string); ok {
-			details += fmt.Sprintf("Method: %s\n", method)
-		}
-		if url, ok := attrs["url"].(string); ok {
-			details += fmt.Sprintf("URL: %s\n", url)
-		}
-		if proxyID, ok := attrs["proxy_id"].(int); ok {
-			details += fmt.Sprintf("Proxy ID: %d\n", proxyID)
-		}
-		if status, ok := attrs["status"].(int); ok {
-			details += fmt.Sprintf("Status: %d\n", status)
-		}
-		if duration, ok := attrs["duration_ms"].(int); ok {
-			details += fmt.Sprintf("Duration: %dms\n", duration)
-		}
-		if errMsg, ok := attrs["error"]; ok {
-			details += fmt.Sprintf("Error: %v\n", errMsg)
-		}
-
-		// Store in database with timeout
-		dbCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-
-		var detailsPtr *string
-		if details != "" {
-			detailsPtr = &details
-		}
-
-		// Create log entry in the event store
-		entry := events.LogEntry{
-			Level:    level,
-			Message:  message,
-			Details:  detailsPtr,
-			Source:   fmt.Sprintf("%v", source),
-			Metadata: attrs,
-		}
-		if err := eventStore.InsertLog(dbCtx, entry); err != nil {
-			// Don't log errors to avoid infinite loop
-			fmt.Fprintf(os.Stderr, "failed to write log to database: %v\n", err)
-		}
-	})
-
 	// Build background services once and hand their lifecycle to a single
 	// manager, so they start and stop with the process instead of leaking on a
 	// never-cancelled context.Background().
@@ -197,10 +142,10 @@ func run() error {
 	poolSvc := services.NewPoolService(poolRepo, proxyRepo, log)
 	alertWatcher := services.NewAlertWatcher(poolRepo, log)
 	cleanupSvc := services.NewProxyCleanupService(proxyRepo, settingsRepo, eventStore, log)
-	logCleanupSvc := services.NewLogCleanupService(eventStore, settingsRepo, log)
+	historyCleanupSvc := services.NewHistoryCleanupService(eventStore, log)
 	statsRefresher := services.NewStatsRefresher(eventStore, proxyRepo, time.Minute, log)
 
-	backgroundSvcs := []services.Service{geoSvc, sourceSvc, poolSvc, alertWatcher, cleanupSvc, logCleanupSvc, statsRefresher}
+	backgroundSvcs := []services.Service{geoSvc, sourceSvc, poolSvc, alertWatcher, cleanupSvc, historyCleanupSvc, statsRefresher}
 	if metricsProvider != nil {
 		backgroundSvcs = append(backgroundSvcs, metrics.NewFleetPoller(db, poolRepo, 30*time.Second, log))
 	}

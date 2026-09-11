@@ -67,7 +67,6 @@ type Server struct {
 	healthHandler        *handlers.HealthHandler
 	dashboardHandler     *handlers.DashboardHandler
 	proxyHandler         *handlers.ProxyHandler
-	logsHandler          *handlers.LogsHandler
 	settingsHandler      *handlers.SettingsHandler
 	websocketHandler     *handlers.WebSocketHandler
 	sourceHandler        *handlers.SourceHandler
@@ -104,9 +103,8 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	healthHandler := handlers.NewHealthHandler(db, deps.ProxyRepo, log)
 	dashboardHandler := handlers.NewDashboardHandler(deps.DashboardRepo, deps.ProxyRepo, log)
 	proxyHandler := handlers.NewProxyHandler(deps.ProxyRepo, healthChecker, log)
-	logsHandler := handlers.NewLogsHandler(deps.EventStore, log)
 	settingsHandler := handlers.NewSettingsHandler(deps.SettingsRepo, log, nil) // onUpdate set below
-	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, deps.ProxyRepo, deps.EventStore, log, cfg.CORSAllowedOrigins)
+	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, log, cfg.CORSAllowedOrigins)
 	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.FormatHistoryRepo, deps.SourceSvc, log)
 	formatHistoryHandler := handlers.NewFormatHistoryHandler(deps.FormatHistoryRepo, log)
 	poolHandler := handlers.NewPoolHandler(deps.PoolRepo, deps.PoolSvc, log)
@@ -155,7 +153,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		healthHandler:        healthHandler,
 		dashboardHandler:     dashboardHandler,
 		proxyHandler:         proxyHandler,
-		logsHandler:          logsHandler,
 		settingsHandler:      settingsHandler,
 		websocketHandler:     websocketHandler,
 		sourceHandler:        sourceHandler,
@@ -314,10 +311,6 @@ func (s *Server) setupRoutes() {
 			// Sticky sessions (session rotation method)
 			r.Get("/sessions", s.proxyControlHandler.ListSessions)
 
-			// System logs
-			r.Get("/logs", s.logsHandler.List)
-			r.Get("/logs/export", s.logsHandler.Export)
-
 			// Settings
 			r.Get("/settings", s.settingsHandler.Get)
 			r.Put("/settings", s.settingsHandler.Update)
@@ -372,7 +365,6 @@ func (s *Server) setupRoutes() {
 
 	// WebSocket routes — protected via token query param
 	s.router.With(JWTMiddleware(s.jwtSecret)).Get("/ws/dashboard", s.websocketHandler.DashboardWebSocket)
-	s.router.With(JWTMiddleware(s.jwtSecret)).Get("/ws/logs", s.websocketHandler.LogsWebSocket)
 
 	// Serve the built dashboard (SPA) from the same origin as the API when a web
 	// directory is configured — one binary, one port, no separate Node runtime.

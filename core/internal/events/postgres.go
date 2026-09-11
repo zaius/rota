@@ -2,9 +2,7 @@ package events
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -79,163 +77,6 @@ func (s *PostgresStore) capabilities(ctx context.Context) (pgCapabilities, error
 		"timescaledb_policies", caps.tslPolicies,
 	)
 	return caps, nil
-}
-
-// InsertLog records a system log event. The ID is generated in the
-// application (see nextLogID), not by the database.
-func (s *PostgresStore) InsertLog(ctx context.Context, entry LogEntry) error {
-	query := `
-		INSERT INTO logs (id, timestamp, level, message, details, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`
-
-	// Source is stored inside the metadata document, which is what the list
-	// filters query. Copy before annotating so the caller's map is not mutated.
-	metadata := entry.Metadata
-	if entry.Source != "" {
-		metadata = make(map[string]any, len(entry.Metadata)+1)
-		for k, v := range entry.Metadata {
-			metadata[k] = v
-		}
-		metadata["source"] = entry.Source
-	}
-
-	var metadataJSON any
-	if metadata != nil {
-		encoded, err := json.Marshal(metadata)
-		if err != nil {
-			return fmt.Errorf("failed to marshal metadata: %w", err)
-		}
-		metadataJSON = string(encoded)
-	}
-
-	ts := entry.Timestamp
-	if ts.IsZero() {
-		ts = time.Now()
-	}
-
-	if _, err := s.db.Pool.Exec(ctx, query, nextLogID(), pgTime(ts), entry.Level, entry.Message, entry.Details, metadataJSON); err != nil {
-		return fmt.Errorf("failed to create log: %w", err)
-	}
-
-	return nil
-}
-
-// ListLogs returns one page of logs matching the filter, newest first, with
-// the total match count.
-func (s *PostgresStore) ListLogs(ctx context.Context, filter LogFilter, page, limit int) ([]models.Log, int, error) {
-	whereClauses := []string{}
-	args := []any{}
-	argPos := 1
-
-	if filter.Level != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("level = $%d", argPos))
-		args = append(args, filter.Level)
-		argPos++
-	}
-
-	if filter.Search != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("message ILIKE $%d", argPos))
-		args = append(args, "%"+filter.Search+"%")
-		argPos++
-	}
-
-	if filter.Source != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("metadata->>'source' = $%d", argPos))
-		args = append(args, filter.Source)
-		argPos++
-	}
-
-	if filter.StartTime != nil {
-		whereClauses = append(whereClauses, fmt.Sprintf("timestamp >= $%d", argPos))
-		args = append(args, pgTime(*filter.StartTime))
-		argPos++
-	}
-
-	if filter.EndTime != nil {
-		whereClauses = append(whereClauses, fmt.Sprintf("timestamp <= $%d", argPos))
-		args = append(args, pgTime(*filter.EndTime))
-		argPos++
-	}
-
-	whereClause := ""
-	if len(whereClauses) > 0 {
-		whereClause = "WHERE " + strings.Join(whereClauses, " AND ")
-	}
-
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM logs %s", whereClause)
-	var total int
-	if err := s.db.Pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count logs: %w", err)
-	}
-
-	offset := (page - 1) * limit
-	query := fmt.Sprintf(`
-		SELECT id, timestamp, level, message, details, metadata
-		FROM logs
-		%s
-		ORDER BY timestamp DESC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argPos, argPos+1)
-
-	args = append(args, limit, offset)
-
-	rows, err := s.db.Pool.Query(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list logs: %w", err)
-	}
-	defer rows.Close()
-
-	logs, err := scanLogs(rows)
-	if err != nil {
-		return nil, 0, err
-	}
-	return logs, total, nil
-}
-
-// LogsSince returns up to limit logs with ID greater than lastID in ascending
-// ID order, optionally filtered by source.
-func (s *PostgresStore) LogsSince(ctx context.Context, lastID int64, limit int, source string) ([]models.Log, error) {
-	whereClauses := []string{"id > $1"}
-	args := []any{lastID}
-	argPos := 2
-
-	if source != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("metadata->>'source' = $%d", argPos))
-		args = append(args, source)
-		argPos++
-	}
-
-	query := fmt.Sprintf(`
-		SELECT id, timestamp, level, message, details, metadata
-		FROM logs
-		WHERE %s
-		ORDER BY id ASC
-		LIMIT $%d
-	`, strings.Join(whereClauses, " AND "), argPos)
-
-	args = append(args, limit)
-
-	rows, err := s.db.Pool.Query(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list logs: %w", err)
-	}
-	defer rows.Close()
-
-	return scanLogs(rows)
-}
-
-// DeleteLogsOlderThan removes logs older than the given age.
-func (s *PostgresStore) DeleteLogsOlderThan(ctx context.Context, age time.Duration) (int64, error) {
-	query := `DELETE FROM logs WHERE timestamp < $1`
-	cutoff := pgTime(time.Now().Add(-age))
-
-	result, err := s.db.Pool.Exec(ctx, query, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("failed to delete old logs: %w", err)
-	}
-
-	return result.RowsAffected(), nil
 }
 
 // InsertRequest records one proxied request outcome.
@@ -614,8 +455,7 @@ func (s *PostgresStore) SuccessRateChart(ctx context.Context, interval string) (
 // builds) it (re)installs them and lets their background jobs do the work;
 // everywhere else — plain Postgres, Apache-only TimescaleDB builds (e.g.
 // Azure Flexible Server) — it enforces retention directly by deleting expired
-// rows. Compression is policy-only: without TSL there is no equivalent, and
-// CompressionAfterDays is ignored as documented.
+// rows.
 func (s *PostgresStore) ApplyRetention(ctx context.Context, cfg RetentionConfig) error {
 	caps, err := s.capabilities(ctx)
 	if err != nil {
@@ -628,24 +468,12 @@ func (s *PostgresStore) ApplyRetention(ctx context.Context, cfg RetentionConfig)
 	return s.applyRetentionDeletes(ctx, cfg)
 }
 
-// applyRetentionPolicies (re)installs TimescaleDB retention/compression
+// applyRetentionPolicies (re)installs TimescaleDB retention
 // policies. Caller has verified they are available.
 func (s *PostgresStore) applyRetentionPolicies(ctx context.Context, cfg RetentionConfig) error {
 	// Values are integers formatted into DDL because policy intervals cannot
 	// be bind parameters; remove+add so period changes take effect.
 	statements := []string{}
-	if cfg.RetentionDays > 0 {
-		statements = append(statements, fmt.Sprintf(`
-			SELECT remove_retention_policy('logs', if_exists => true);
-			SELECT add_retention_policy('logs', INTERVAL '%d days', if_not_exists => true);
-		`, cfg.RetentionDays))
-	}
-	if cfg.CompressionAfterDays > 0 {
-		statements = append(statements, fmt.Sprintf(`
-			SELECT remove_compression_policy('logs', if_exists => true);
-			SELECT add_compression_policy('logs', INTERVAL '%d days', if_not_exists => true);
-		`, cfg.CompressionAfterDays))
-	}
 	if cfg.RequestRetentionDays > 0 {
 		statements = append(statements, fmt.Sprintf(`
 			SELECT remove_retention_policy('proxy_requests', if_exists => true);
@@ -669,17 +497,7 @@ func (s *PostgresStore) applyRetentionPolicies(ctx context.Context, cfg Retentio
 // portable fallback for servers without policy support. Non-positive periods
 // are skipped so a zero-value config can never delete everything.
 func (s *PostgresStore) applyRetentionDeletes(ctx context.Context, cfg RetentionConfig) error {
-	var logsDeleted, requestsDeleted, tunnelsDeleted int64
-
-	if cfg.RetentionDays > 0 {
-		res, err := s.db.Pool.Exec(ctx,
-			`DELETE FROM logs WHERE timestamp < NOW() - make_interval(days => $1)`,
-			cfg.RetentionDays)
-		if err != nil {
-			return fmt.Errorf("failed to delete expired logs: %w", err)
-		}
-		logsDeleted = res.RowsAffected()
-	}
+	var requestsDeleted, tunnelsDeleted int64
 
 	if cfg.RequestRetentionDays > 0 {
 		res, err := s.db.Pool.Exec(ctx,
@@ -699,42 +517,11 @@ func (s *PostgresStore) applyRetentionDeletes(ctx context.Context, cfg Retention
 		tunnelsDeleted = res.RowsAffected()
 	}
 
-	if logsDeleted > 0 || requestsDeleted > 0 || tunnelsDeleted > 0 {
+	if requestsDeleted > 0 || tunnelsDeleted > 0 {
 		s.logger.Info("applied event retention by deletion",
-			"logs_deleted", logsDeleted,
 			"requests_deleted", requestsDeleted,
 			"tunnels_deleted", tunnelsDeleted,
 		)
 	}
 	return nil
-}
-
-// logRows is the subset of pgx.Rows scanLogs needs.
-type logRows interface {
-	Next() bool
-	Scan(dest ...any) error
-	Err() error
-}
-
-// scanLogs reads (id, timestamp, level, message, details, metadata) rows.
-func scanLogs(rows logRows) ([]models.Log, error) {
-	logs := []models.Log{}
-	for rows.Next() {
-		var l models.Log
-		var metadataJSON []byte
-
-		if err := rows.Scan(&l.ID, &l.Timestamp, &l.Level, &l.Message, &l.Details, &metadataJSON); err != nil {
-			return nil, fmt.Errorf("failed to scan log: %w", err)
-		}
-
-		if metadataJSON != nil {
-			if err := json.Unmarshal(metadataJSON, &l.Metadata); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
-			}
-		}
-
-		logs = append(logs, l)
-	}
-
-	return logs, rows.Err()
 }

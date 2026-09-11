@@ -4,7 +4,6 @@ import { Link, useLocation, useNavigate } from "react-router-dom"
 import {
   LayoutDashboard,
   Network,
-  FileText,
   Settings,
   ChevronRight,
   Moon,
@@ -63,11 +62,6 @@ const navigation = [
     title: "Proxy Users",
     url: "/dashboard/users",
     icon: Users,
-  },
-  {
-    title: "Proxy Logs",
-    url: "/dashboard/logs",
-    icon: FileText,
   },
   {
     title: "Settings",

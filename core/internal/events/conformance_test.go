@@ -53,10 +53,10 @@ type storeBackend interface {
 
 	// VerifyRetentionApplied asserts that cfg took effect after an
 	// ApplyRetention call: delete-based backends check that only the
-	// unexpired rows remain (wantLogs/wantRequests), policy- or TTL-based
+	// unexpired rows remain (wantRequests/wantTunnels), policy- or TTL-based
 	// backends check their native mechanism is configured with cfg's
 	// periods.
-	VerifyRetentionApplied(t *testing.T, cfg RetentionConfig, wantLogs, wantRequests int)
+	VerifyRetentionApplied(t *testing.T, cfg RetentionConfig, wantRequests, wantTunnels int)
 }
 
 // newTestBackend returns the backend selected by EVENT_STORE_TEST (default
@@ -74,110 +74,6 @@ func newTestBackend(t *testing.T) storeBackend {
 	default:
 		t.Fatalf("unknown EVENT_STORE_TEST %q", backend)
 		return nil
-	}
-}
-
-func TestIntegration_Logs_InsertListSince(t *testing.T) {
-	backend := newTestBackend(t)
-	store := backend.Store()
-	ctx := context.Background()
-
-	details := "some details"
-	entries := []LogEntry{
-		{Level: "info", Message: "plain app log"},
-		{Level: "error", Message: "proxy request failed", Details: &details, Source: "proxy"},
-		// Source only as a first-class field, absent from metadata: the store
-		// must still find it via the source filter.
-		{Level: "info", Message: "proxy request ok", Source: "proxy", Metadata: map[string]any{"method": "GET"}},
-	}
-	for _, e := range entries {
-		if err := store.InsertLog(ctx, e); err != nil {
-			t.Fatalf("InsertLog: %v", err)
-		}
-	}
-
-	all, total, err := store.ListLogs(ctx, LogFilter{}, 1, 10)
-	if err != nil {
-		t.Fatalf("ListLogs: %v", err)
-	}
-	if total != 3 || len(all) != 3 {
-		t.Fatalf("ListLogs: want 3 logs, got total=%d len=%d", total, len(all))
-	}
-	// Newest first.
-	if all[0].Message != "proxy request ok" {
-		t.Errorf("ListLogs order: want newest first, got %q", all[0].Message)
-	}
-
-	proxyLogs, total, err := store.ListLogs(ctx, LogFilter{Source: "proxy"}, 1, 10)
-	if err != nil {
-		t.Fatalf("ListLogs(source): %v", err)
-	}
-	if total != 2 || len(proxyLogs) != 2 {
-		t.Fatalf("ListLogs(source): want 2 logs, got total=%d len=%d", total, len(proxyLogs))
-	}
-
-	errLogs, _, err := store.ListLogs(ctx, LogFilter{Level: "error", Search: "FAILED"}, 1, 10)
-	if err != nil {
-		t.Fatalf("ListLogs(level+search): %v", err)
-	}
-	if len(errLogs) != 1 || errLogs[0].Details == nil || *errLogs[0].Details != details {
-		t.Fatalf("ListLogs(level+search): want the error log with details, got %+v", errLogs)
-	}
-
-	// Streaming cursor: ascending IDs, strictly after lastID.
-	since, err := store.LogsSince(ctx, 0, 10, "")
-	if err != nil {
-		t.Fatalf("LogsSince: %v", err)
-	}
-	if len(since) != 3 {
-		t.Fatalf("LogsSince(0): want 3 logs, got %d", len(since))
-	}
-	if since[0].ID >= since[1].ID || since[1].ID >= since[2].ID {
-		t.Errorf("LogsSince order: want strictly ascending IDs, got %d, %d, %d",
-			since[0].ID, since[1].ID, since[2].ID)
-	}
-	// IDs are app-generated (UnixNano-based), not from a database sequence.
-	if since[0].ID < 1<<60 {
-		t.Errorf("log ID %d looks sequence-generated; want app-generated UnixNano-scale ID", since[0].ID)
-	}
-	tail, err := store.LogsSince(ctx, since[0].ID, 10, "proxy")
-	if err != nil {
-		t.Fatalf("LogsSince(cursor): %v", err)
-	}
-	for _, l := range tail {
-		if l.ID <= since[0].ID {
-			t.Errorf("LogsSince(cursor): got ID %d <= cursor %d", l.ID, since[0].ID)
-		}
-	}
-}
-
-func TestIntegration_Logs_DeleteOlderThan(t *testing.T) {
-	backend := newTestBackend(t)
-	store := backend.Store()
-	ctx := context.Background()
-
-	if err := store.InsertLog(ctx, LogEntry{Level: "info", Message: "fresh"}); err != nil {
-		t.Fatalf("InsertLog: %v", err)
-	}
-	// A second log backdated beyond the cutoff.
-	stale := LogEntry{Level: "info", Message: "stale", Timestamp: time.Now().Add(-3 * 24 * time.Hour)}
-	if err := store.InsertLog(ctx, stale); err != nil {
-		t.Fatalf("InsertLog(stale): %v", err)
-	}
-
-	deleted, err := store.DeleteLogsOlderThan(ctx, 24*time.Hour)
-	if err != nil {
-		t.Fatalf("DeleteLogsOlderThan: %v", err)
-	}
-	if deleted != 1 {
-		t.Errorf("DeleteLogsOlderThan: want 1 deleted, got %d", deleted)
-	}
-	_, total, err := store.ListLogs(ctx, LogFilter{}, 1, 10)
-	if err != nil {
-		t.Fatalf("ListLogs: %v", err)
-	}
-	if total != 1 {
-		t.Errorf("after delete: want 1 log remaining, got %d", total)
 	}
 }
 
@@ -333,13 +229,6 @@ func TestIntegration_ApplyRetention(t *testing.T) {
 	proxyID := backend.SeedProxy(t, "127.0.0.1:9999")
 
 	// One fresh and one expired row in each event table.
-	if err := store.InsertLog(ctx, LogEntry{Level: "info", Message: "fresh"}); err != nil {
-		t.Fatalf("InsertLog: %v", err)
-	}
-	staleLog := LogEntry{Level: "info", Message: "stale", Timestamp: time.Now().Add(-20 * 24 * time.Hour)}
-	if err := store.InsertLog(ctx, staleLog); err != nil {
-		t.Fatalf("InsertLog(stale): %v", err)
-	}
 	for _, age := range []time.Duration{0, 20 * 24 * time.Hour} {
 		err := store.InsertRequest(ctx, RequestEvent{
 			ProxyID: proxyID, ProxyAddress: "127.0.0.1:9999", Method: "GET",
@@ -348,13 +237,18 @@ func TestIntegration_ApplyRetention(t *testing.T) {
 		if err != nil {
 			t.Fatalf("InsertRequest: %v", err)
 		}
+		err = store.InsertTunnel(ctx, TunnelEvent{
+			ProxyID: proxyID, ProxyAddress: "127.0.0.1:9999", Host: "example.com:443",
+			OpenedAt: time.Now().Add(-age), DurationMs: 100,
+		})
+		if err != nil {
+			t.Fatalf("InsertTunnel: %v", err)
+		}
 	}
 
 	// Must succeed on any backend; how retention takes effect is the
 	// backend's business, checked by VerifyRetentionApplied.
 	cfg := RetentionConfig{
-		RetentionDays:        14,
-		CompressionAfterDays: 3,
 		RequestRetentionDays: 14,
 	}
 	if err := store.ApplyRetention(ctx, cfg); err != nil {

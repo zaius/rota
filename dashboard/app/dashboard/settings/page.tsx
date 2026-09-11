@@ -7,19 +7,11 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
   RotateCw,
   Gauge,
   Activity,
   Save,
   Loader2,
-  Database,
   KeyRound,
   Eye,
   EyeOff,
@@ -445,140 +437,6 @@ export default function SettingsPage() {
                 One header per line in format: Key: Value
               </p>
             </div>
-          </CardContent>
-        </Card>
-
-        {/* Log Retention Settings */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Database className="h-5 w-5" />
-              <CardTitle>Log Retention</CardTitle>
-            </div>
-            <CardDescription>
-              Configure automatic proxy log cleanup and compression
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label htmlFor="log-retention-enabled">Enable Auto Cleanup</Label>
-                <p className="text-xs text-muted-foreground">
-                  Automatically delete old logs based on retention policy
-                </p>
-              </div>
-              <Switch
-                id="log-retention-enabled"
-                checked={settings.log_retention?.enabled ?? true}
-                onCheckedChange={(checked) =>
-                  setSettings({
-                    ...settings,
-                    log_retention: { ...settings.log_retention, enabled: checked },
-                  })
-                }
-              />
-            </div>
-
-            {settings.log_retention?.enabled && (
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="retention-days">Retention Period</Label>
-                  <Select
-                    value={settings.log_retention.retention_days?.toString() || "30"}
-                    onValueChange={(value) =>
-                      setSettings({
-                        ...settings,
-                        log_retention: {
-                          ...settings.log_retention,
-                          retention_days: parseInt(value),
-                        },
-                      })
-                    }
-                  >
-                    <SelectTrigger id="retention-days">
-                      <SelectValue placeholder="Select retention period" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="7">7 days</SelectItem>
-                      <SelectItem value="15">15 days</SelectItem>
-                      <SelectItem value="30">30 days (Recommended)</SelectItem>
-                      <SelectItem value="60">60 days</SelectItem>
-                      <SelectItem value="90">90 days</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Proxy logs older than this will be permanently deleted
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="compression-days">Compression After</Label>
-                  <Select
-                    value={settings.log_retention.compression_after_days?.toString() || "7"}
-                    onValueChange={(value) =>
-                      setSettings({
-                        ...settings,
-                        log_retention: {
-                          ...settings.log_retention,
-                          compression_after_days: parseInt(value),
-                        },
-                      })
-                    }
-                  >
-                    <SelectTrigger id="compression-days">
-                      <SelectValue placeholder="Select compression period" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="1">1 day</SelectItem>
-                      <SelectItem value="3">3 days</SelectItem>
-                      <SelectItem value="7">7 days (Recommended)</SelectItem>
-                      <SelectItem value="14">14 days</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Logs older than this will be compressed to save space
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="cleanup-interval">Cleanup Interval</Label>
-                  <Select
-                    value={settings.log_retention.cleanup_interval_hours?.toString() || "24"}
-                    onValueChange={(value) =>
-                      setSettings({
-                        ...settings,
-                        log_retention: {
-                          ...settings.log_retention,
-                          cleanup_interval_hours: parseInt(value),
-                        },
-                      })
-                    }
-                  >
-                    <SelectTrigger id="cleanup-interval">
-                      <SelectValue placeholder="Select cleanup interval" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="1">Every 1 hour</SelectItem>
-                      <SelectItem value="6">Every 6 hours</SelectItem>
-                      <SelectItem value="12">Every 12 hours</SelectItem>
-                      <SelectItem value="24">Every 24 hours (Recommended)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    How often to run the cleanup job
-                  </p>
-                </div>
-
-                <div className="rounded-lg bg-muted p-3 text-sm">
-                  <p className="font-medium mb-1">Current Configuration:</p>
-                  <ul className="space-y-1 text-muted-foreground">
-                    <li>• Logs kept for {settings.log_retention.retention_days} days</li>
-                    <li>• Compressed after {settings.log_retention.compression_after_days} days</li>
-                    <li>• Cleanup runs every {settings.log_retention.cleanup_interval_hours} hours</li>
-                  </ul>
-                </div>
-              </>
-            )}
           </CardContent>
         </Card>
       </div>

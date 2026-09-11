@@ -48,7 +48,7 @@ func newPGTestBackend(t *testing.T) storeBackend {
 
 	// Each test starts from empty event tables.
 	ctx := context.Background()
-	for _, table := range []string{"logs", "proxy_requests", "proxy_tunnels"} {
+	for _, table := range []string{"proxy_requests", "proxy_tunnels"} {
 		if _, err := db.Pool.Exec(ctx, "DELETE FROM "+table); err != nil {
 			t.Fatalf("truncate %s: %v", table, err)
 		}
@@ -97,7 +97,7 @@ func (b *pgTestBackend) RequestDims(t *testing.T) []rawRequestDims {
 	return dims
 }
 
-func (b *pgTestBackend) VerifyRetentionApplied(t *testing.T, cfg RetentionConfig, wantLogs, wantRequests int) {
+func (b *pgTestBackend) VerifyRetentionApplied(t *testing.T, cfg RetentionConfig, wantRequests, wantTunnels int) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -114,16 +114,15 @@ func (b *pgTestBackend) VerifyRetentionApplied(t *testing.T, cfg RetentionConfig
 			SELECT COUNT(*) FROM timescaledb_information.jobs
 			WHERE proc_name = 'policy_retention'
 			  AND (
-				(hypertable_name = 'logs'           AND config->>'drop_after' = $1) OR
-				(hypertable_name = 'proxy_requests' AND config->>'drop_after' = $2) OR
-				(hypertable_name = 'proxy_tunnels'  AND config->>'drop_after' = $2)
+				(hypertable_name = 'proxy_requests' AND config->>'drop_after' = $1) OR
+				(hypertable_name = 'proxy_tunnels'  AND config->>'drop_after' = $1)
 			  )
-		`, strconv.Itoa(cfg.RetentionDays)+" days", strconv.Itoa(cfg.RequestRetentionDays)+" days").Scan(&n)
+		`, strconv.Itoa(cfg.RequestRetentionDays)+" days").Scan(&n)
 		if err != nil {
 			t.Fatalf("query policies: %v", err)
 		}
-		if n != 3 {
-			t.Errorf("want retention policies on logs, proxy_requests and proxy_tunnels with configured periods, got %d", n)
+		if n != 2 {
+			t.Errorf("want retention policies on proxy_requests and proxy_tunnels with configured periods, got %d", n)
 		}
 		return
 	}
@@ -140,6 +139,6 @@ func (b *pgTestBackend) VerifyRetentionApplied(t *testing.T, cfg RetentionConfig
 			t.Errorf("%s: want %d rows after retention, got %d", table, want, n)
 		}
 	}
-	assertRows("logs", wantLogs)
 	assertRows("proxy_requests", wantRequests)
+	assertRows("proxy_tunnels", wantTunnels)
 }

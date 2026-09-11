@@ -143,12 +143,6 @@ func defaultSettings() map[string]map[string]any {
 			"status":  200,
 			"headers": []string{"User-Agent: Rota-HealthCheck/1.0"},
 		},
-		"log_retention": {
-			"enabled":                true,
-			"retention_days":         30,
-			"compression_after_days": 7,
-			"cleanup_interval_hours": 24,
-		},
 		"proxy_cleanup": {
 			"enabled":                false,
 			"max_failed_days":        7,

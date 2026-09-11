@@ -46,10 +46,8 @@ func newCHTestBackend(t *testing.T) storeBackend {
 	// defaults — a previous test may have shortened them below the age of
 	// rows this test plants.
 	for _, stmt := range []string{
-		"TRUNCATE TABLE logs",
 		"TRUNCATE TABLE proxy_requests",
 		"TRUNCATE TABLE proxy_tunnels",
-		"ALTER TABLE logs MODIFY TTL toDateTime(timestamp) + toIntervalDay(30)",
 		"ALTER TABLE proxy_requests MODIFY TTL toDateTime(timestamp) + toIntervalDay(90)",
 		"ALTER TABLE proxy_tunnels MODIFY TTL toDateTime(timestamp) + toIntervalDay(90)",
 	} {
@@ -110,7 +108,7 @@ func (b *chTestBackend) RequestDims(t *testing.T) []rawRequestDims {
 	return dims
 }
 
-func (b *chTestBackend) VerifyRetentionApplied(t *testing.T, cfg RetentionConfig, wantLogs, wantRequests int) {
+func (b *chTestBackend) VerifyRetentionApplied(t *testing.T, cfg RetentionConfig, wantRequests, wantTunnels int) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -131,6 +129,6 @@ func (b *chTestBackend) VerifyRetentionApplied(t *testing.T, cfg RetentionConfig
 			t.Errorf("%s: TTL not updated to %s: %s", table, want, createQuery)
 		}
 	}
-	assertTTL("logs", cfg.RetentionDays)
 	assertTTL("proxy_requests", cfg.RequestRetentionDays)
+	assertTTL("proxy_tunnels", cfg.RequestRetentionDays)
 }
