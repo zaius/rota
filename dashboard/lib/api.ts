@@ -2,6 +2,7 @@ import {
   Proxy,
   ProxiesResponse,
   DashboardStats,
+  DomainStatsResponse,
   ChartResponse,
   TrafficChartResponse,
   Settings,
@@ -141,6 +142,11 @@ class ApiClient {
     return this.request<DashboardStats>("/api/v1/dashboard/stats")
   }
 
+  async getDomainStats(range: string = "24h", domain: string = ""): Promise<DomainStatsResponse> {
+    const params = new URLSearchParams({ range, domain })
+    return this.request(`/api/v1/dashboard/domains?${params}`)
+  }
+
   async getTrafficChart(range: string = "24h"): Promise<TrafficChartResponse> {
     return this.request<TrafficChartResponse>(
       `/api/v1/dashboard/charts/traffic?range=${range}`
@@ -254,7 +260,7 @@ class ApiClient {
 
   async invalidateProxy(
     id: number,
-    opts?: { minutes?: number; reason?: string }
+    opts?: { minutes?: number; reason?: string; domain?: string }
   ): Promise<{ status: string; id: number; address: string; cooldown_until?: string }> {
     return this.request(`/api/v1/proxies/${id}/invalidate`, {
       method: "POST",

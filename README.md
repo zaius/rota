@@ -340,7 +340,7 @@ Inspect bindings with `GET /api/v1/sessions`. Release with `POST /api/v1/session
 When you detect a proxy is rate-limited (or otherwise bad) while using it, pull it out of rotation immediately:
 
 ```bash
-# Cooldown for 30 minutes (omit "minutes" or pass 0 to keep it out until reactivated)
+# Cooldown for a caller-selected duration (defaults to 30 minutes if omitted)
 curl -X POST "http://localhost:8001/api/v1/proxies/123/invalidate" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -351,7 +351,7 @@ curl -X POST "http://localhost:8001/api/v1/proxies/123/reactivate" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Invalidation immediately removes the proxy from rotation and drops its bindings. It returns when the cooldown expires. The dashboard also provides **Invalidate / Reactivate** actions.
+Proxy-ID invalidation without `domain` immediately removes the proxy from all rotation and drops its bindings. It returns when the cooldown expires. Pass `domain` (for example `"example.com"`) to cool it only for that domain and its subdomains. `minutes` must be a positive integer; zero and negative durations are rejected. The dashboard also provides **Invalidate / Reactivate** actions.
 
 ### Invalidating by session token
 
@@ -361,10 +361,21 @@ When a session-bound client only knows its own session token — not the proxy I
 curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"token": "job42", "minutes": 30, "reason": "429 from target"}'
+  -d '{"token": "job42", "scope": "example.com", "minutes": 15, "reason": "429 from target"}'
 ```
 
-The proxy currently bound to the session goes on cooldown and the session rebinds to a fresh proxy on its next request. Optional fields: `pool_id` (restrict to one pool) and `domain` (cool the proxy for that domain only, keeping the binding).
+**Session invalidation defaults to the reservation's scope.** The bound proxy goes on cooldown only within that exact scope and the session rebinds on its next request. Other scopes keep their bindings and can continue using the same proxy. A default hostname scope such as `example.com` is separate from `api.example.com`; a custom service scope such as `shopping` applies across all hostnames using that scope. Cooldowns apply across pools and users sharing the scope, including non-session rotation, and persist across restarts.
+
+The caller controls the duration with `minutes` (positive integer, default **30**). Optional `scope`, `pool_id`, and admin-only `username` filters select bindings. Without a `scope` filter, every matching binding is invalidated within its own scope, including when one proxy is bound in several scopes.
+
+Two explicit overrides are available:
+
+- `"domain": "example.com"` cools each matched proxy for that domain and its subdomains, regardless of reservation scope. Include `scope` to select a particular binding when the token is used in multiple scopes.
+- `"global": true` cools each matched proxy across all targets and drops all of its bindings. `global` and `domain` cannot be combined.
+
+Inspect active cooldowns with admin-authenticated `GET /api/v1/proxies/scope-cooldowns` or `GET /api/v1/proxies/domain-cooldowns`. Reactivate an exact scope early with `POST /api/v1/proxies/{id}/reactivate` and `{"scope":"shopping"}`; omit both `scope` and `domain` to clear all cooldowns for that proxy.
+
+**Behavior change:** session invalidation without `domain` used to invalidate globally; callers that need that behavior must now send `global: true`. An omitted duration now means 30 minutes (the previous implementation used 24 hours despite the API comment saying 30). `minutes: 0` no longer selects that legacy 24-hour fallback.
 
 ### Invalidating with proxy-user credentials
 
@@ -383,6 +394,21 @@ curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
 ```
 
 Proxy-user calls are scoped to the user's own pools: only proxies that belong to the user's main/fallback pools can be invalidated, and session operations only match that user's own bindings in those pools. The endpoints share the same brute-force protection as the login endpoint. Reactivation stays admin-only — prefer invalidating with `minutes` so the proxy comes back on its own.
+
+### Per-domain statistics
+
+The dashboard's **Traffic by Domain** table follows the traffic time range, refreshes every 30 seconds, and can filter to a domain and its subdomains. It shows visible HTTP requests, success rate, failures, 429 responses, p50/p95 latency, completed HTTPS tunnels, tunnel errors, and bytes sent/received.
+
+The same stats are available with an admin JWT:
+
+```bash
+curl "http://localhost:8001/api/v1/dashboard/domains?range=24h&domain=example.com&limit=100" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+`range` accepts `1h`, `6h`, `24h` (default), `7d`, or `30d`. Omit `domain` for all hosts. `limit` is 1–1000 (default 100); rows are ranked by requests plus completed tunnels, then hostname. Each hostname has its own row; filtering to a parent includes subdomain rows without merging them.
+
+Responses include `requests`, `successes`, `failures`, `rate_limited`, `avg_response_time`, `p50_ms`, `p95_ms`, `tunnels`, `tunnel_errors`, `bytes_up`, and `bytes_down` per domain. Latencies are milliseconds and cover successful requests only. Request outcomes inside opaque HTTPS tunnels are unknown; tunnels and their bytes are counted separately at close time. Historical events without a recorded domain are excluded. Both PostgreSQL and ClickHouse event stores support these queries.
 
 ---
 

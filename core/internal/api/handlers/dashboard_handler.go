@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/alpkeskin/rota/core/internal/proxy"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
@@ -61,6 +63,49 @@ func (h *DashboardHandler) SetProxyServer(ps ProxyServer) { h.proxyServer = ps }
 
 // trafficRanges is the set of ranges the traffic chart accepts.
 var trafficRanges = map[string]bool{"1h": true, "6h": true, "24h": true, "7d": true, "30d": true}
+
+// GetDomainStats returns traffic grouped by normalized target hostname.
+//
+//	@Summary Domain traffic statistics
+//	@Tags dashboard
+//	@Produce json
+//	@Param range query string false "Trailing range (1h, 6h, 24h, 7d, 30d)" default(24h)
+//	@Param domain query string false "Filter to this domain and its subdomains"
+//	@Param limit query int false "Maximum domains (1-1000)" default(100)
+//	@Success 200 {object} models.DomainStatsData
+//	@Router /dashboard/domains [get]
+func (h *DashboardHandler) GetDomainStats(w http.ResponseWriter, r *http.Request) {
+	rng := r.URL.Query().Get("range")
+	if rng == "" {
+		rng = "24h"
+	}
+	if !trafficRanges[rng] {
+		writeError(w, http.StatusBadRequest, "Invalid range (use 1h, 6h, 24h, 7d or 30d)")
+		return
+	}
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		var err error
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 1000 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 1000")
+			return
+		}
+	}
+	rawDomain := r.URL.Query().Get("domain")
+	domain := proxy.NormalizeCooldownDomain(rawDomain)
+	if rawDomain != "" && domain == "" {
+		writeError(w, http.StatusBadRequest, "invalid domain")
+		return
+	}
+	data, err := h.dashboardRepo.GetDomainStats(r.Context(), rng, domain, limit)
+	if err != nil {
+		h.logger.Error("failed to get domain stats", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to get domain stats")
+		return
+	}
+	writeJSON(w, http.StatusOK, models.DomainStatsData{Range: rng, Data: data})
+}
 
 // GetTrafficChart handles traffic series requests: request volume and latency
 // percentiles in shared time buckets.

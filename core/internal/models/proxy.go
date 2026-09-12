@@ -44,6 +44,14 @@ type ProxyDomainCooldown struct {
 	Reason        *string   `json:"reason,omitempty"`
 }
 
+// ProxyScopeCooldown excludes a proxy only from this exact reservation scope.
+type ProxyScopeCooldown struct {
+	ProxyID       int       `json:"proxy_id"`
+	Scope         string    `json:"scope"`
+	CooldownUntil time.Time `json:"cooldown_until"`
+	Reason        string    `json:"reason,omitempty"`
+}
+
 // ProxyWithStats represents a proxy with calculated statistics
 type ProxyWithStats struct {
 	ID              int        `json:"id"`

@@ -70,6 +70,29 @@ type TrafficChartData struct {
 	Data          []TrafficPoint `json:"data"`
 }
 
+// DomainStats keeps visible HTTP requests separate from completed CONNECT
+// tunnels. Latency covers successful requests only; historical events without
+// a domain are excluded.
+type DomainStats struct {
+	Domain          string `json:"domain"`
+	Requests        int64  `json:"requests"`
+	Successes       int64  `json:"successes"`
+	Failures        int64  `json:"failures"`
+	RateLimited     int64  `json:"rate_limited"`
+	AvgResponseTime int    `json:"avg_response_time"`
+	P50Ms           int    `json:"p50_ms"`
+	P95Ms           int    `json:"p95_ms"`
+	Tunnels         int64  `json:"tunnels"`
+	TunnelErrors    int64  `json:"tunnel_errors"`
+	BytesUp         int64  `json:"bytes_up"`
+	BytesDown       int64  `json:"bytes_down"`
+}
+
+type DomainStatsData struct {
+	Range string        `json:"range"`
+	Data  []DomainStats `json:"data"`
+}
+
 // ResponseTimeChartData represents response time chart data
 type ResponseTimeChartData struct {
 	Data []ChartDataPoint `json:"data"`

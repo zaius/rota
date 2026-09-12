@@ -23,6 +23,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import { Button } from "@/components/ui/button"
+import { DomainStats } from "@/components/domain-stats"
 import { api, type SocketHandle } from "@/lib/api"
 import { formatBytes } from "@/lib/format-utils"
 import { ChartRange, DashboardStats, TrafficPoint } from "@/lib/types"
@@ -324,6 +325,8 @@ export default function DashboardPage() {
           ))}
         </div>
       </div>
+
+      <DomainStats range={range} />
 
       <Card>
         <CardHeader>

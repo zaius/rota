@@ -17,11 +17,15 @@ import (
 type fakeProxyServer struct {
 	sessions []proxy.SessionInfo
 
-	released []proxy.SessionFilter
+	released        []proxy.SessionFilter
+	cooldowns       []models.ProxyScopeCooldown
+	domainCooldowns []models.ProxyDomainCooldown
+	evicted         []int
+	clearedScopes   []models.ProxyScopeCooldown
 }
 
 func (f *fakeProxyServer) ReloadSettings(ctx context.Context) error { return nil }
-func (f *fakeProxyServer) EvictProxy(proxyID int)                   {}
+func (f *fakeProxyServer) EvictProxy(proxyID int)                   { f.evicted = append(f.evicted, proxyID) }
 func (f *fakeProxyServer) InvalidateUser(username string)           {}
 func (f *fakeProxyServer) ListSessions() []proxy.SessionInfo        { return f.sessions }
 func (f *fakeProxyServer) SessionsForToken(token string) []proxy.SessionInfo {
@@ -38,7 +42,16 @@ func (f *fakeProxyServer) ReleaseSessions(filter proxy.SessionFilter) int {
 	return 1
 }
 func (f *fakeProxyServer) SetDomainCooldown(proxyID int, domain string, until time.Time, reason string) {
+	f.domainCooldowns = append(f.domainCooldowns, models.ProxyDomainCooldown{ProxyID: proxyID, Domain: domain, CooldownUntil: until})
 }
+func (f *fakeProxyServer) SetScopeCooldown(c models.ProxyScopeCooldown) {
+	f.cooldowns = append(f.cooldowns, c)
+}
+func (f *fakeProxyServer) ClearScopeCooldowns(proxyID int, scope string) int {
+	f.clearedScopes = append(f.clearedScopes, models.ProxyScopeCooldown{ProxyID: proxyID, Scope: scope})
+	return 1
+}
+func (f *fakeProxyServer) ListScopeCooldowns() []models.ProxyScopeCooldown     { return f.cooldowns }
 func (f *fakeProxyServer) ClearDomainCooldown(proxyID int, domain string) bool { return false }
 func (f *fakeProxyServer) ClearProxyDomainCooldowns(proxyID int) int           { return 0 }
 func (f *fakeProxyServer) ListDomainCooldowns() []models.ProxyDomainCooldown   { return nil }

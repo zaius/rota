@@ -20,6 +20,7 @@ type SessionManager struct {
 	mu           sync.Mutex
 	sessions     map[sessionIdentity]*sessionEntry
 	reservations map[reservationKey]sessionIdentity
+	cooldowns    map[reservationKey]models.ProxyScopeCooldown
 	stop         chan struct{}
 }
 
@@ -88,6 +89,7 @@ func NewSessionManager() *SessionManager {
 	m := &SessionManager{
 		sessions:     make(map[sessionIdentity]*sessionEntry),
 		reservations: make(map[reservationKey]sessionIdentity),
+		cooldowns:    make(map[reservationKey]models.ProxyScopeCooldown),
 		stop:         make(chan struct{}),
 	}
 	go m.reapLoop()
@@ -106,6 +108,9 @@ func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, cho
 		boundID = e.proxyID
 	}
 	available := func(proxyID int) bool {
+		if c, ok := m.cooldowns[reservationKey{proxyID, key.scope}]; ok && c.CooldownUntil.After(now) {
+			return false
+		}
 		owner, reserved := m.reservations[reservationKey{proxyID, key.scope}]
 		if !reserved || m.liveLocked(owner, now) == nil {
 			return true
@@ -238,6 +243,11 @@ func (m *SessionManager) reapLoop() {
 			now := time.Now()
 			for key := range m.sessions {
 				m.liveLocked(key, now)
+			}
+			for key, c := range m.cooldowns {
+				if !c.CooldownUntil.After(now) {
+					delete(m.cooldowns, key)
+				}
 			}
 			m.mu.Unlock()
 		case <-m.stop:

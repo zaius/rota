@@ -155,6 +155,11 @@ type Store interface {
 	// is dense and chart-ready.
 	TrafficSeries(ctx context.Context, rng string) ([]models.TrafficPoint, error)
 
+	// DomainStats groups traffic by target hostname over the trailing range.
+	// domain optionally filters to that hostname and its subdomains. Results
+	// are ordered by requests + completed tunnels descending, then hostname.
+	DomainStats(ctx context.Context, rng, domain string, limit int) ([]models.DomainStats, error)
+
 	// ResponseTimeChart returns average response time of successful requests
 	// bucketed over time. Interval is one of "1h", "4h", "1d".
 	ResponseTimeChart(ctx context.Context, interval string) ([]models.ChartDataPoint, error)

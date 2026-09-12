@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
@@ -92,6 +93,9 @@ type Server struct {
 	refreshTicker *time.Ticker
 	cleanupTicker *time.Ticker
 	stopChan      chan struct{}
+	// Serialize live scope updates with DB snapshots, so a refresh started
+	// before an invalidation/reactivation cannot overwrite its live effect.
+	scopeCooldownMu sync.Mutex
 }
 
 // New creates a new proxy server instance
@@ -140,6 +144,11 @@ func New(
 
 	// Session manager for "session" rotation (process-wide, survives chain rebuilds)
 	sessionMgr := NewSessionManager()
+	if cooldowns, err := proxyRepo.ListActiveScopeCooldowns(ctx); err != nil {
+		log.Warn("failed to load scope cooldowns", "error", err)
+	} else {
+		sessionMgr.ReplaceScopeCooldowns(cooldowns)
+	}
 
 	// Create user-aware auth middleware (pool-based routing)
 	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, sessionMgr, domainCD, tracker, log)
@@ -210,6 +219,15 @@ func (s *Server) startBackgroundTasks() {
 					} else {
 						s.domainCD.ReplaceAll(cooldowns)
 					}
+				}
+				if s.sessionMgr != nil {
+					s.scopeCooldownMu.Lock()
+					if cooldowns, err := s.proxyRepo.ListActiveScopeCooldowns(ctx); err != nil {
+						s.logger.Error("failed to refresh scope cooldowns", "error", err)
+					} else {
+						s.sessionMgr.ReplaceScopeCooldowns(cooldowns)
+					}
+					s.scopeCooldownMu.Unlock()
 				}
 				cancel()
 			case <-s.stopChan:
@@ -356,6 +374,30 @@ func (s *Server) ListDomainCooldowns() []models.ProxyDomainCooldown {
 		return nil
 	}
 	return s.domainCD.List()
+}
+
+func (s *Server) SetScopeCooldown(c models.ProxyScopeCooldown) {
+	s.scopeCooldownMu.Lock()
+	defer s.scopeCooldownMu.Unlock()
+	if s.sessionMgr != nil {
+		s.sessionMgr.SetScopeCooldown(c)
+	}
+}
+
+func (s *Server) ClearScopeCooldowns(proxyID int, scope string) int {
+	s.scopeCooldownMu.Lock()
+	defer s.scopeCooldownMu.Unlock()
+	if s.sessionMgr == nil {
+		return 0
+	}
+	return s.sessionMgr.ClearScopeCooldowns(proxyID, scope)
+}
+
+func (s *Server) ListScopeCooldowns() []models.ProxyScopeCooldown {
+	if s.sessionMgr == nil {
+		return nil
+	}
+	return s.sessionMgr.ListScopeCooldowns()
 }
 
 // ReloadSettings reloads settings from database and updates components

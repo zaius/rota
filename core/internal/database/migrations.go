@@ -698,6 +698,25 @@ var migrations = []Migration{
 			ALTER TABLE proxy_users DROP COLUMN IF EXISTS tls_profile;
 		`,
 	},
+	{
+		Version:     30,
+		Description: "Persist reservation scope cooldowns and index domain request stats",
+		Up: `
+			CREATE TABLE IF NOT EXISTS proxy_scope_cooldowns (
+				proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,
+				scope TEXT NOT NULL,
+				cooldown_until TIMESTAMPTZ NOT NULL,
+				reason TEXT NOT NULL DEFAULT '',
+				PRIMARY KEY (proxy_id, scope)
+			);
+			CREATE INDEX IF NOT EXISTS idx_proxy_scope_cooldowns_until ON proxy_scope_cooldowns(cooldown_until);
+			CREATE INDEX IF NOT EXISTS idx_proxy_requests_domain ON proxy_requests(domain, timestamp DESC);
+		`,
+		Down: `
+			DROP INDEX IF EXISTS idx_proxy_requests_domain;
+			DROP TABLE IF EXISTS proxy_scope_cooldowns;
+		`,
+	},
 }
 
 // migrationLockKey serializes each migration transaction across instances.

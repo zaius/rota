@@ -85,6 +85,26 @@ export interface TrafficChartResponse {
   data: TrafficPoint[]
 }
 
+export interface DomainStats {
+  domain: string
+  requests: number
+  successes: number
+  failures: number
+  rate_limited: number
+  avg_response_time: number
+  p50_ms: number
+  p95_ms: number
+  tunnels: number
+  tunnel_errors: number
+  bytes_up: number
+  bytes_down: number
+}
+
+export interface DomainStatsResponse {
+  range: ChartRange
+  data: DomainStats[]
+}
+
 export interface Settings {
   rotation: {
     follow_redirect: boolean

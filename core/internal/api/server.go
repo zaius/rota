@@ -287,6 +287,7 @@ func (s *Server) setupRoutes() {
 
 			// Dashboard endpoints
 			r.Get("/dashboard/stats", s.dashboardHandler.GetStats)
+			r.Get("/dashboard/domains", s.dashboardHandler.GetDomainStats)
 			r.Get("/dashboard/charts/traffic", s.dashboardHandler.GetTrafficChart)
 			r.Get("/dashboard/charts/response-time", s.dashboardHandler.GetResponseTimeChart)
 			r.Get("/dashboard/charts/success-rate", s.dashboardHandler.GetSuccessRateChart)
@@ -306,6 +307,7 @@ func (s *Server) setupRoutes() {
 			r.Post("/proxies/{id}/test", s.proxyHandler.Test)
 			r.Post("/proxies/{id}/reactivate", s.proxyControlHandler.ReactivateProxy)
 			r.Get("/proxies/domain-cooldowns", s.proxyControlHandler.ListDomainCooldowns)
+			r.Get("/proxies/scope-cooldowns", s.proxyControlHandler.ListScopeCooldowns)
 			r.Post("/proxies/reload", s.proxyControlHandler.ReloadProxyPool)
 
 			// Sticky sessions (session rotation method)

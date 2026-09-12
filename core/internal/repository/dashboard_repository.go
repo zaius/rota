@@ -81,6 +81,10 @@ func (r *DashboardRepository) GetTrafficChart(ctx context.Context, rng string) (
 	return r.events.TrafficSeries(ctx, rng)
 }
 
+func (r *DashboardRepository) GetDomainStats(ctx context.Context, rng, domain string, limit int) ([]models.DomainStats, error) {
+	return r.events.DomainStats(ctx, rng, domain, limit)
+}
+
 // GetResponseTimeChart retrieves response time chart data
 func (r *DashboardRepository) GetResponseTimeChart(ctx context.Context, interval string) ([]models.ChartDataPoint, error) {
 	return r.events.ResponseTimeChart(ctx, interval)
