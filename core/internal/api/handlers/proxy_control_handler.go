@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -25,7 +26,7 @@ type ProxyServer interface {
 	ListSessions() []proxy.SessionInfo
 	SessionsForToken(token string) []proxy.SessionInfo
 	ReleaseSessions(filter proxy.SessionFilter) int
-	SetDomainCooldown(proxyID int, domain string, until time.Time, reason string)
+	SetDomainCooldown(c models.ProxyDomainCooldown)
 	ClearDomainCooldown(proxyID int, domain string) bool
 	ClearProxyDomainCooldowns(proxyID int) int
 	ListDomainCooldowns() []models.ProxyDomainCooldown
@@ -54,12 +55,15 @@ type ProxyControlHandler struct {
 	poolRepo    *repository.PoolRepository
 	logger      *logger.Logger
 	proxyServer ProxyServer
+	// Keep database commits and their live updates in the same order.
+	cooldownMu sync.Mutex
 }
 
 type proxyControlRepository interface {
 	SetCooldown(context.Context, int, time.Duration, string) (*models.Proxy, error)
-	SetDomainCooldown(context.Context, int, string, time.Time, string) (*models.Proxy, error)
-	SetScopeCooldown(context.Context, int, string, time.Time, string) (*models.Proxy, error)
+	SetDomainCooldown(context.Context, int, string, time.Time, string) (*models.Proxy, models.ProxyDomainCooldown, error)
+	BackoffScopeCooldown(context.Context, int, string, time.Duration, string) (*models.Proxy, models.ProxyScopeCooldown, error)
+	BackoffDomainCooldown(context.Context, int, string, time.Duration, string) (*models.Proxy, models.ProxyDomainCooldown, error)
 	ClearCooldown(context.Context, int) (*models.Proxy, error)
 	ClearDomainCooldown(context.Context, int, string) (bool, error)
 	ClearAllDomainCooldowns(context.Context, int) (int, error)
@@ -120,7 +124,8 @@ type invalidateBody struct {
 
 	// Set from the selected binding, never directly from JSON. The request's
 	// scope field filters bindings; it does not name an arbitrary cooldown.
-	cooldownScope string
+	cooldownScope  string
+	sessionBackoff bool
 }
 
 func (b *invalidateBody) validate() string {
@@ -144,13 +149,14 @@ func (b *invalidateBody) validate() string {
 // per-proxy response payload. On failure it returns the HTTP status and
 // message to report instead.
 func (h *ProxyControlHandler) applyInvalidation(ctx context.Context, id int, body invalidateBody) (map[string]interface{}, int, string) {
+	h.cooldownMu.Lock()
+	defer h.cooldownMu.Unlock()
 	if msg := body.validate(); msg != "" {
 		return nil, http.StatusBadRequest, msg
 	}
 	d := time.Duration(body.Minutes) * time.Minute
 	if body.cooldownScope != "" {
-		until := time.Now().Add(d)
-		p, err := h.proxyRepo.SetScopeCooldown(ctx, id, body.cooldownScope, until, body.Reason)
+		p, cooldown, err := h.proxyRepo.BackoffScopeCooldown(ctx, id, body.cooldownScope, d, body.Reason)
 		if err != nil {
 			h.logger.Error("failed to invalidate proxy for scope", "id", id, "scope", body.cooldownScope, "error", err)
 			return nil, http.StatusInternalServerError, "failed to invalidate proxy"
@@ -159,14 +165,13 @@ func (h *ProxyControlHandler) applyInvalidation(ctx context.Context, id int, bod
 			return nil, http.StatusNotFound, "proxy not found"
 		}
 		if h.proxyServer != nil {
-			h.proxyServer.SetScopeCooldown(models.ProxyScopeCooldown{
-				ProxyID: id, Scope: body.cooldownScope, CooldownUntil: until, Reason: body.Reason,
-			})
+			h.proxyServer.SetScopeCooldown(cooldown)
 		}
 		h.logger.Info("proxy invalidated for scope", "id", id, "scope", body.cooldownScope, "minutes", body.Minutes, "reason", body.Reason)
 		return map[string]interface{}{
 			"status": "invalidated", "id": p.ID, "address": p.Address,
-			"scope": body.cooldownScope, "cooldown_until": until,
+			"scope": body.cooldownScope, "cooldown_until": cooldownExpiry(cooldown.CooldownUntil, cooldown.Invalid),
+			"failure_count": cooldown.FailureCount, "invalid": cooldown.Invalid,
 		}, http.StatusOK, ""
 	}
 
@@ -175,7 +180,14 @@ func (h *ProxyControlHandler) applyInvalidation(ctx context.Context, id int, bod
 		domain := body.Domain
 		until := time.Now().Add(d)
 
-		proxyObj, err := h.proxyRepo.SetDomainCooldown(ctx, id, domain, until, body.Reason)
+		var proxyObj *models.Proxy
+		var cooldown models.ProxyDomainCooldown
+		var err error
+		if body.sessionBackoff {
+			proxyObj, cooldown, err = h.proxyRepo.BackoffDomainCooldown(ctx, id, domain, d, body.Reason)
+		} else {
+			proxyObj, cooldown, err = h.proxyRepo.SetDomainCooldown(ctx, id, domain, until, body.Reason)
+		}
 		if err != nil {
 			h.logger.Error("failed to invalidate proxy for domain", "id", id, "domain", domain, "error", err)
 			return nil, http.StatusInternalServerError, "failed to invalidate proxy"
@@ -187,7 +199,7 @@ func (h *ProxyControlHandler) applyInvalidation(ctx context.Context, id int, bod
 		// Make it effective immediately. Sessions bound to this proxy are kept;
 		// they rebind lazily on their next request to the cooled domain.
 		if h.proxyServer != nil {
-			h.proxyServer.SetDomainCooldown(id, domain, until, body.Reason)
+			h.proxyServer.SetDomainCooldown(cooldown)
 		}
 
 		h.logger.Info("proxy invalidated for domain",
@@ -197,7 +209,8 @@ func (h *ProxyControlHandler) applyInvalidation(ctx context.Context, id int, bod
 			"id":             proxyObj.ID,
 			"address":        proxyObj.Address,
 			"domain":         domain,
-			"cooldown_until": until,
+			"cooldown_until": cooldownExpiry(cooldown.CooldownUntil, cooldown.Invalid),
+			"failure_count":  cooldown.FailureCount, "invalid": cooldown.Invalid,
 		}, http.StatusOK, ""
 	}
 
@@ -222,6 +235,15 @@ func (h *ProxyControlHandler) applyInvalidation(ctx context.Context, id int, bod
 		"address":        proxyObj.Address,
 		"cooldown_until": proxyObj.CooldownUntil,
 	}, http.StatusOK, ""
+}
+
+// A permanent scoped exclusion has no expiry, even though its stored deadline
+// remains a timestamp for compatibility with existing cooldown rows.
+func cooldownExpiry(until time.Time, invalid bool) *time.Time {
+	if invalid {
+		return nil
+	}
+	return &until
 }
 
 // proxyInCallerScope reports whether a proxy-user-authenticated caller may act
@@ -299,7 +321,7 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 // global explicitly cools the proxy across all targets and drops all bindings.
 //
 //	@Summary		Invalidate the proxy bound to a session
-//	@Description	Cool each bound proxy in its reservation scope by default. domain and global override cooldown scope. Filter bindings by pool_id, scope, or username (admin). Proxy users only match their own bindings in assigned pools. minutes sets duration (default 30).
+//	@Description	Cool each bound proxy in its reservation scope by default. domain and global override cooldown scope. Filter bindings by pool_id, scope, or username (admin). Proxy users only match their own bindings in assigned pools. minutes sets the base duration (default 30); consecutive invalidations use 1x, 2x, 4x, then exclude until reactivated. Resumed traffic without invalidation for the session idle-expiry duration resets the streak.
 //	@Tags			sessions
 //	@Param			token	body	string	true	"Session token"
 //	@Param			pool_id	body	int		false	"Restrict to a single pool"
@@ -394,6 +416,7 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 	invalidated := make([]map[string]interface{}, 0, len(sessions))
 	for _, s := range sessions {
 		invalidation := body.invalidateBody
+		invalidation.sessionBackoff = true
 		if !body.Global && body.Domain == "" {
 			invalidation.cooldownScope = s.Scope
 		}
@@ -434,6 +457,8 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 //	@Success		200	{object}	map[string]interface{}
 //	@Router			/proxies/{id}/reactivate [post]
 func (h *ProxyControlHandler) ReactivateProxy(w http.ResponseWriter, r *http.Request) {
+	h.cooldownMu.Lock()
+	defer h.cooldownMu.Unlock()
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")

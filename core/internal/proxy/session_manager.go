@@ -108,7 +108,7 @@ func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, cho
 		boundID = e.proxyID
 	}
 	available := func(proxyID int) bool {
-		if c, ok := m.cooldowns[reservationKey{proxyID, key.scope}]; ok && c.CooldownUntil.After(now) {
+		if c, ok := m.cooldowns[reservationKey{proxyID, key.scope}]; ok && (c.Invalid || c.CooldownUntil.After(now)) {
 			return false
 		}
 		owner, reserved := m.reservations[reservationKey{proxyID, key.scope}]
@@ -245,7 +245,7 @@ func (m *SessionManager) reapLoop() {
 				m.liveLocked(key, now)
 			}
 			for key, c := range m.cooldowns {
-				if !c.CooldownUntil.After(now) {
+				if !c.Invalid && c.FailureCount == 0 && !c.CooldownUntil.After(now) {
 					delete(m.cooldowns, key)
 				}
 			}

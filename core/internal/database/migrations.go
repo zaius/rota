@@ -717,6 +717,30 @@ var migrations = []Migration{
 			DROP TABLE IF EXISTS proxy_scope_cooldowns;
 		`,
 	},
+	{
+		Version:     31,
+		Description: "Persist session invalidation backoff and scoped exclusions",
+		Up: `
+			-- Preserve the existing database interpretation of domain deadlines
+			-- while making new deadlines unambiguous across server time zones.
+			ALTER TABLE proxy_domain_cooldowns ALTER COLUMN cooldown_until TYPE TIMESTAMPTZ
+			  USING cooldown_until AT TIME ZONE current_setting('TimeZone');
+			ALTER TABLE proxy_scope_cooldowns
+			  ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count BETWEEN 0 AND 4),
+			  ADD COLUMN invalid BOOLEAN NOT NULL DEFAULT FALSE,
+			  ADD COLUMN recovery_after TIMESTAMPTZ;
+			ALTER TABLE proxy_domain_cooldowns
+			  ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count BETWEEN 0 AND 4),
+			  ADD COLUMN invalid BOOLEAN NOT NULL DEFAULT FALSE,
+			  ADD COLUMN recovery_after TIMESTAMPTZ;
+		`,
+		Down: `
+			ALTER TABLE proxy_scope_cooldowns DROP COLUMN failure_count, DROP COLUMN invalid, DROP COLUMN recovery_after;
+			ALTER TABLE proxy_domain_cooldowns DROP COLUMN failure_count, DROP COLUMN invalid, DROP COLUMN recovery_after;
+			ALTER TABLE proxy_domain_cooldowns ALTER COLUMN cooldown_until TYPE TIMESTAMP
+			  USING cooldown_until AT TIME ZONE current_setting('TimeZone');
+		`,
+	},
 }
 
 // migrationLockKey serializes each migration transaction across instances.

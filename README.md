@@ -366,14 +366,18 @@ curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
 
 **Session invalidation defaults to the reservation's scope.** The bound proxy goes on cooldown only within that exact scope and the session rebinds on its next request. Other scopes keep their bindings and can continue using the same proxy. A default hostname scope such as `example.com` is separate from `api.example.com`; a custom service scope such as `shopping` applies across all hostnames using that scope. Cooldowns apply across pools and users sharing the scope, including non-session rotation, and persist across restarts.
 
-The caller controls the duration with `minutes` (positive integer, default **30**). Optional `scope`, `pool_id`, and admin-only `username` filters select bindings. Without a `scope` filter, every matching binding is invalidated within its own scope, including when one proxy is bound in several scopes.
+The caller controls the **base duration** with `minutes` (positive integer, default **30**). Consecutive session invalidations for the same proxy and scope use **1×, 2×, then 4×** that duration. The **fourth invalidation** flags the proxy as invalid and excludes it from that scope until an admin reactivates it. For example, sending `minutes: 360` each time gives **6h → 12h → 24h → excluded**. This also applies when session invalidation explicitly supplies a `domain`. Counts belong to the proxy and scope/domain, survive cooldown expiry, session rebinding, and restarts, and do not affect the proxy's availability for unrelated targets.
+
+Recovery is inferred from the client's lack of invalidation, independent of HTTP status codes. The first session request using that proxy after its cooldown starts a grace period equal to the serving session's `session_ttl_minutes`. An invalidation during that period advances the streak; once that period passes without invalidation, the streak resets. Further requests do not extend the grace period. **No resumed session traffic means no reset.** This works for opaque HTTPS tunnels too; it requires no success-reporting API call. A late invalidation after the grace period starts again at the base duration.
+
+Optional `scope`, `pool_id`, and admin-only `username` filters select bindings. Without a `scope` filter, every matching binding is invalidated within its own scope, including when one proxy is bound in several scopes. Responses include `failure_count` and `invalid`; a permanent exclusion returns `invalid: true` and `cooldown_until: null` in the invalidation response.
 
 Two explicit overrides are available:
 
 - `"domain": "example.com"` cools each matched proxy for that domain and its subdomains, regardless of reservation scope. Include `scope` to select a particular binding when the token is used in multiple scopes.
 - `"global": true` cools each matched proxy across all targets and drops all of its bindings. `global` and `domain` cannot be combined.
 
-Inspect active cooldowns with admin-authenticated `GET /api/v1/proxies/scope-cooldowns` or `GET /api/v1/proxies/domain-cooldowns`. Reactivate an exact scope early with `POST /api/v1/proxies/{id}/reactivate` and `{"scope":"shopping"}`; omit both `scope` and `domain` to clear all cooldowns for that proxy.
+Inspect active cooldowns and permanent exclusions with admin-authenticated `GET /api/v1/proxies/scope-cooldowns` or `GET /api/v1/proxies/domain-cooldowns`. In these lists, `invalid: true` means the exclusion has no expiry, regardless of the stored `cooldown_until` timestamp. Reactivate an exact scope with `POST /api/v1/proxies/{id}/reactivate` and `{"scope":"shopping"}`; use `{"domain":"example.com"}` for an explicit domain exclusion, or omit both to clear all cooldowns and exclusions for that proxy. Reactivation also clears the failure history. Global session invalidation (`global: true`) and direct proxy-ID invalidation retain their fixed-duration behavior; only admin reactivation lifts a permanent scope/domain exclusion.
 
 **Behavior change:** session invalidation without `domain` used to invalidate globally; callers that need that behavior must now send `global: true`. An omitted duration now means 30 minutes (the previous implementation used 24 hours despite the API comment saying 30). `minutes: 0` no longer selects that legacy 24-hour fallback.
 
@@ -393,7 +397,7 @@ curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
   -d '{"token": "job42", "minutes": 30}'
 ```
 
-Proxy-user calls are scoped to the user's own pools: only proxies that belong to the user's main/fallback pools can be invalidated, and session operations only match that user's own bindings in those pools. The endpoints share the same brute-force protection as the login endpoint. Reactivation stays admin-only — prefer invalidating with `minutes` so the proxy comes back on its own.
+Proxy-user calls are scoped to the user's own pools: only proxies that belong to the user's main/fallback pools can be invalidated, and session operations only match that user's own bindings in those pools. The endpoints share the same brute-force protection as the login endpoint. Reactivation stays admin-only. Temporary cooldowns expire automatically; permanent exclusions after repeated session invalidations require admin reactivation.
 
 ### Per-domain statistics
 

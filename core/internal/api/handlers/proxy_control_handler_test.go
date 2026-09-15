@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/proxy"
@@ -41,8 +40,8 @@ func (f *fakeProxyServer) ReleaseSessions(filter proxy.SessionFilter) int {
 	f.released = append(f.released, filter)
 	return 1
 }
-func (f *fakeProxyServer) SetDomainCooldown(proxyID int, domain string, until time.Time, reason string) {
-	f.domainCooldowns = append(f.domainCooldowns, models.ProxyDomainCooldown{ProxyID: proxyID, Domain: domain, CooldownUntil: until})
+func (f *fakeProxyServer) SetDomainCooldown(c models.ProxyDomainCooldown) {
+	f.domainCooldowns = append(f.domainCooldowns, c)
 }
 func (f *fakeProxyServer) SetScopeCooldown(c models.ProxyScopeCooldown) {
 	f.cooldowns = append(f.cooldowns, c)

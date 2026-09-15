@@ -95,7 +95,8 @@ type Server struct {
 	stopChan      chan struct{}
 	// Serialize live scope updates with DB snapshots, so a refresh started
 	// before an invalidation/reactivation cannot overwrite its live effect.
-	scopeCooldownMu sync.Mutex
+	scopeCooldownMu  sync.Mutex
+	domainCooldownMu sync.Mutex
 }
 
 // New creates a new proxy server instance
@@ -126,13 +127,7 @@ func New(
 	if cooldowns, err := proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
 		log.Warn("failed to load domain cooldowns", "error", err)
 	} else {
-		for _, c := range cooldowns {
-			reason := ""
-			if c.Reason != nil {
-				reason = *c.Reason
-			}
-			domainCD.Set(c.ProxyID, c.Domain, c.CooldownUntil, reason)
-		}
+		domainCD.ReplaceAll(cooldowns)
 	}
 
 	// Create upstream proxy handler (forwards through the request's PoolChain).
@@ -214,11 +209,13 @@ func (s *Server) startBackgroundTasks() {
 				// the in-memory view tracks expirations and cooldowns set by
 				// other instances.
 				if s.domainCD != nil {
+					s.domainCooldownMu.Lock()
 					if cooldowns, err := s.proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
 						s.logger.Error("failed to refresh domain cooldowns", "error", err)
 					} else {
 						s.domainCD.ReplaceAll(cooldowns)
 					}
+					s.domainCooldownMu.Unlock()
 				}
 				if s.sessionMgr != nil {
 					s.scopeCooldownMu.Lock()
@@ -343,16 +340,20 @@ func (s *Server) InvalidateUser(username string) {
 // SetDomainCooldown puts a proxy on a domain-scoped cooldown: it is skipped
 // for requests to domain (and its subdomains) until the given time, but stays
 // in rotation for every other target. Takes effect immediately.
-func (s *Server) SetDomainCooldown(proxyID int, domain string, until time.Time, reason string) {
+func (s *Server) SetDomainCooldown(c models.ProxyDomainCooldown) {
+	s.domainCooldownMu.Lock()
+	defer s.domainCooldownMu.Unlock()
 	if s.domainCD == nil {
 		return
 	}
-	s.domainCD.Set(proxyID, domain, until, reason)
+	s.domainCD.SetCooldown(c)
 }
 
 // ClearDomainCooldown removes a single (proxy, domain) cooldown.
 // Returns true if one existed.
 func (s *Server) ClearDomainCooldown(proxyID int, domain string) bool {
+	s.domainCooldownMu.Lock()
+	defer s.domainCooldownMu.Unlock()
 	if s.domainCD == nil {
 		return false
 	}
@@ -362,6 +363,8 @@ func (s *Server) ClearDomainCooldown(proxyID int, domain string) bool {
 // ClearProxyDomainCooldowns removes every domain cooldown for a proxy.
 // Returns the count removed.
 func (s *Server) ClearProxyDomainCooldowns(proxyID int) int {
+	s.domainCooldownMu.Lock()
+	defer s.domainCooldownMu.Unlock()
 	if s.domainCD == nil {
 		return 0
 	}

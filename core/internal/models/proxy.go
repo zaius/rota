@@ -36,20 +36,28 @@ type Proxy struct {
 
 // ProxyDomainCooldown is a per-domain invalidation: the proxy is excluded from
 // rotation for requests to Domain (and its subdomains) until CooldownUntil,
-// but stays available for every other target.
+// but stays available for every other target. Invalid overrides CooldownUntil
+// with an exclusion that lasts until explicit reactivation.
 type ProxyDomainCooldown struct {
-	ProxyID       int       `json:"proxy_id"`
-	Domain        string    `json:"domain"`
-	CooldownUntil time.Time `json:"cooldown_until"`
-	Reason        *string   `json:"reason,omitempty"`
+	ProxyID       int        `json:"proxy_id"`
+	Domain        string     `json:"domain"`
+	CooldownUntil time.Time  `json:"cooldown_until"`
+	Reason        *string    `json:"reason,omitempty"`
+	FailureCount  int        `json:"failure_count"`
+	Invalid       bool       `json:"invalid"`
+	RecoveryAfter *time.Time `json:"recovery_after,omitempty"`
 }
 
 // ProxyScopeCooldown excludes a proxy only from this exact reservation scope.
+// Invalid overrides CooldownUntil with an exclusion until reactivation.
 type ProxyScopeCooldown struct {
-	ProxyID       int       `json:"proxy_id"`
-	Scope         string    `json:"scope"`
-	CooldownUntil time.Time `json:"cooldown_until"`
-	Reason        string    `json:"reason,omitempty"`
+	ProxyID       int        `json:"proxy_id"`
+	Scope         string     `json:"scope"`
+	CooldownUntil time.Time  `json:"cooldown_until"`
+	Reason        string     `json:"reason,omitempty"`
+	FailureCount  int        `json:"failure_count"`
+	Invalid       bool       `json:"invalid"`
+	RecoveryAfter *time.Time `json:"recovery_after,omitempty"`
 }
 
 // ProxyWithStats represents a proxy with calculated statistics

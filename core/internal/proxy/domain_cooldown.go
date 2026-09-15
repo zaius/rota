@@ -26,20 +26,15 @@ var TargetHostContextKey = targetHostKey{}
 // manager is the live view consulted on the request hot path.
 type DomainCooldownManager struct {
 	mu      sync.RWMutex
-	entries map[int]map[string]domainCooldownEntry // proxyID → domain → entry
+	entries map[int]map[string]models.ProxyDomainCooldown // proxyID → domain → entry
 	stop    chan struct{}
-}
-
-type domainCooldownEntry struct {
-	until  time.Time
-	reason string
 }
 
 // NewDomainCooldownManager creates a DomainCooldownManager and starts its
 // expiry reaper.
 func NewDomainCooldownManager() *DomainCooldownManager {
 	m := &DomainCooldownManager{
-		entries: make(map[int]map[string]domainCooldownEntry),
+		entries: make(map[int]map[string]models.ProxyDomainCooldown),
 		stop:    make(chan struct{}),
 	}
 	go m.reapLoop()
@@ -49,41 +44,44 @@ func NewDomainCooldownManager() *DomainCooldownManager {
 // Set puts (or refreshes) a domain cooldown for a proxy. domain must already
 // be normalized (see NormalizeCooldownDomain).
 func (m *DomainCooldownManager) Set(proxyID int, domain string, until time.Time, reason string) {
-	if domain == "" || !until.After(time.Now()) {
+	if !until.After(time.Now()) {
+		return
+	}
+	m.SetCooldown(models.ProxyDomainCooldown{ProxyID: proxyID, Domain: domain, CooldownUntil: until, Reason: &reason})
+}
+
+// SetCooldown also carries persistent backoff history and exclusions.
+func (m *DomainCooldownManager) SetCooldown(c models.ProxyDomainCooldown) {
+	if c.Domain == "" {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	byDomain, ok := m.entries[proxyID]
-	if !ok {
-		byDomain = make(map[string]domainCooldownEntry)
-		m.entries[proxyID] = byDomain
+	if m.entries[c.ProxyID] == nil {
+		m.entries[c.ProxyID] = make(map[string]models.ProxyDomainCooldown)
 	}
-	byDomain[domain] = domainCooldownEntry{until: until, reason: reason}
+	m.entries[c.ProxyID][c.Domain] = c
 }
 
 // ReplaceAll atomically swaps the entire cooldown set for a fresh snapshot,
-// typically one just reloaded from the DB. Expired or empty-domain entries are
-// dropped. This keeps the in-memory view eventually consistent with the table
+// typically one just reloaded from the DB. Expired fixed cooldowns and empty
+// domains are dropped; backoff history remains available for recovery tracking.
+// This keeps the in-memory view eventually consistent with the table
 // (and so with cooldowns set by other instances sharing the same DB), mirroring
 // how the proxy selectors fully refresh their lists from the DB on a tick.
 func (m *DomainCooldownManager) ReplaceAll(cooldowns []models.ProxyDomainCooldown) {
 	now := time.Now()
-	next := make(map[int]map[string]domainCooldownEntry)
+	next := make(map[int]map[string]models.ProxyDomainCooldown)
 	for _, c := range cooldowns {
-		if c.Domain == "" || !c.CooldownUntil.After(now) {
+		if c.Domain == "" || (!c.Invalid && c.FailureCount == 0 && !c.CooldownUntil.After(now)) {
 			continue
-		}
-		reason := ""
-		if c.Reason != nil {
-			reason = *c.Reason
 		}
 		byDomain, ok := next[c.ProxyID]
 		if !ok {
-			byDomain = make(map[string]domainCooldownEntry)
+			byDomain = make(map[string]models.ProxyDomainCooldown)
 			next[c.ProxyID] = byDomain
 		}
-		byDomain[c.Domain] = domainCooldownEntry{until: c.CooldownUntil, reason: reason}
+		byDomain[c.Domain] = c
 	}
 	m.mu.Lock()
 	m.entries = next
@@ -132,7 +130,7 @@ func (m *DomainCooldownManager) IsCooled(proxyID int, host string) bool {
 		return false
 	}
 	for domain, e := range byDomain {
-		if e.until.After(now) && hostMatchesDomain(host, domain) {
+		if (e.Invalid || e.CooldownUntil.After(now)) && hostMatchesDomain(host, domain) {
 			return true
 		}
 	}
@@ -145,21 +143,11 @@ func (m *DomainCooldownManager) List() []models.ProxyDomainCooldown {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]models.ProxyDomainCooldown, 0)
-	for proxyID, byDomain := range m.entries {
-		for domain, e := range byDomain {
-			if !e.until.After(now) {
-				continue
+	for _, byDomain := range m.entries {
+		for _, c := range byDomain {
+			if c.Invalid || c.CooldownUntil.After(now) {
+				out = append(out, c)
 			}
-			c := models.ProxyDomainCooldown{
-				ProxyID:       proxyID,
-				Domain:        domain,
-				CooldownUntil: e.until,
-			}
-			if e.reason != "" {
-				reason := e.reason
-				c.Reason = &reason
-			}
-			out = append(out, c)
 		}
 	}
 	return out
@@ -177,7 +165,7 @@ func (m *DomainCooldownManager) reapLoop() {
 			m.mu.Lock()
 			for proxyID, byDomain := range m.entries {
 				for domain, e := range byDomain {
-					if !e.until.After(now) {
+					if !e.Invalid && e.FailureCount == 0 && !e.CooldownUntil.After(now) {
 						delete(byDomain, domain)
 					}
 				}

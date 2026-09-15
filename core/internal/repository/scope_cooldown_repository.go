@@ -18,7 +18,7 @@ func (r *ProxyRepository) SetScopeCooldown(ctx context.Context, id int, scope st
 			INSERT INTO proxy_scope_cooldowns (proxy_id, scope, cooldown_until, reason)
 			SELECT id, $2, $3, $4 FROM target
 			ON CONFLICT (proxy_id, scope)
-			DO UPDATE SET cooldown_until = EXCLUDED.cooldown_until, reason = EXCLUDED.reason
+			DO UPDATE SET cooldown_until = EXCLUDED.cooldown_until, reason = EXCLUDED.reason, recovery_after = NULL
 		)
 		SELECT id, address, protocol, status FROM target
 	`, id, scope, until, reason).Scan(&p.ID, &p.Address, &p.Protocol, &p.Status)
@@ -41,10 +41,13 @@ func (r *ProxyRepository) ClearScopeCooldowns(ctx context.Context, id int, scope
 	return int(result.RowsAffected()), nil
 }
 
+// ListActiveScopeCooldowns also loads expired backoff history for recovery tracking.
 func (r *ProxyRepository) ListActiveScopeCooldowns(ctx context.Context) ([]models.ProxyScopeCooldown, error) {
-	_, _ = r.db.Pool.Exec(ctx, `DELETE FROM proxy_scope_cooldowns WHERE cooldown_until < NOW()`)
+	_, _ = r.db.Pool.Exec(ctx, `DELETE FROM proxy_scope_cooldowns
+		WHERE NOT invalid AND cooldown_until < NOW()
+		  AND (failure_count = 0 OR recovery_after <= NOW())`)
 	rows, err := r.db.Pool.Query(ctx, `
-		SELECT proxy_id, scope, cooldown_until, reason FROM proxy_scope_cooldowns WHERE cooldown_until > NOW()
+		SELECT proxy_id, scope, cooldown_until, reason, failure_count, invalid, recovery_after FROM proxy_scope_cooldowns
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list proxy scope cooldowns: %w", err)
@@ -53,7 +56,7 @@ func (r *ProxyRepository) ListActiveScopeCooldowns(ctx context.Context) ([]model
 	out := []models.ProxyScopeCooldown{}
 	for rows.Next() {
 		var c models.ProxyScopeCooldown
-		if err := rows.Scan(&c.ProxyID, &c.Scope, &c.CooldownUntil, &c.Reason); err != nil {
+		if err := rows.Scan(&c.ProxyID, &c.Scope, &c.CooldownUntil, &c.Reason, &c.FailureCount, &c.Invalid, &c.RecoveryAfter); err != nil {
 			return nil, fmt.Errorf("failed to scan proxy scope cooldown: %w", err)
 		}
 		out = append(out, c)

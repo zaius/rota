@@ -20,6 +20,69 @@ type cooldownRepo struct {
 	durations []time.Duration
 }
 
+type backoffResultRepo struct {
+	proxyControlRepository
+	count int
+	err   error
+}
+
+func (r *backoffResultRepo) BackoffScopeCooldown(_ context.Context, id int, scope string, _ time.Duration, reason string) (*models.Proxy, models.ProxyScopeCooldown, error) {
+	return &models.Proxy{ID: id}, models.ProxyScopeCooldown{ProxyID: id, Scope: scope, CooldownUntil: time.Now().Add(time.Hour), Reason: reason, FailureCount: r.count, Invalid: r.count == 4}, r.err
+}
+
+func (r *backoffResultRepo) BackoffDomainCooldown(_ context.Context, id int, domain string, _ time.Duration, reason string) (*models.Proxy, models.ProxyDomainCooldown, error) {
+	return &models.Proxy{ID: id}, models.ProxyDomainCooldown{ProxyID: id, Domain: domain, CooldownUntil: time.Now().Add(time.Hour), Reason: &reason, FailureCount: r.count, Invalid: r.count == 4}, r.err
+}
+
+func TestInvalidateSession_ExposesPersistedBackoffAndExclusion(t *testing.T) {
+	for _, body := range []string{`{"token":"job42","minutes":360}`, `{"token":"job42","minutes":360,"domain":"example.com"}`} {
+		for _, count := range []int{2, 4} {
+			ps := &fakeProxyServer{sessions: []proxy.SessionInfo{{Token: "job42", Username: "alice", PoolID: 1, Scope: "shopping", ProxyID: 42}}}
+			h := newTestControlHandler(ps)
+			h.proxyRepo = &backoffResultRepo{count: count}
+			w := httptest.NewRecorder()
+			h.InvalidateSession(w, asProxyUser(httptest.NewRequest("POST", "/", strings.NewReader(body)), 1))
+			var response struct {
+				Proxies []struct {
+					FailureCount int        `json:"failure_count"`
+					Invalid      bool       `json:"invalid"`
+					Until        *time.Time `json:"cooldown_until"`
+				} `json:"proxies"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != http.StatusOK || len(response.Proxies) != 1 {
+				t.Fatalf("response: %d %s", w.Code, w.Body.String())
+			}
+			p := response.Proxies[0]
+			if p.FailureCount != count || p.Invalid != (count == 4) || (p.Until == nil) != p.Invalid {
+				t.Fatalf("incorrect backoff response: %+v", p)
+			}
+			if len(ps.evicted) != 0 {
+				t.Fatal("scoped exclusion evicted the proxy globally")
+			}
+			if strings.Contains(body, "domain") {
+				if len(ps.domainCooldowns) != 1 || ps.domainCooldowns[0].FailureCount != count || ps.domainCooldowns[0].Invalid != p.Invalid {
+					t.Fatalf("live domain state: %v", ps.domainCooldowns)
+				}
+			} else if len(ps.cooldowns) != 1 || ps.cooldowns[0].FailureCount != count || ps.cooldowns[0].Invalid != p.Invalid {
+				t.Fatalf("live scope state: %v", ps.cooldowns)
+			}
+		}
+	}
+}
+
+func TestInvalidateSession_BackoffPersistenceFailureDoesNotChangeRotation(t *testing.T) {
+	for _, body := range []string{`{"token":"job42"}`, `{"token":"job42","domain":"example.com"}`} {
+		ps := &fakeProxyServer{sessions: []proxy.SessionInfo{{Token: "job42", Scope: "shopping", ProxyID: 42}}}
+		h := newTestControlHandler(ps)
+		h.proxyRepo = &backoffResultRepo{count: 4, err: errors.New("database unavailable")}
+		w := httptest.NewRecorder()
+		h.InvalidateSession(w, httptest.NewRequest("POST", "/", strings.NewReader(body)))
+		if w.Code != http.StatusInternalServerError || len(ps.cooldowns)+len(ps.domainCooldowns)+len(ps.evicted) != 0 {
+			t.Fatalf("live state changed on failure: %d %+v", w.Code, ps)
+		}
+	}
+}
+
 type reactivationRepo struct {
 	proxyControlRepository
 	scopes             []string
@@ -84,13 +147,18 @@ func (r *cooldownRepo) SetCooldown(_ context.Context, id int, d time.Duration, _
 	until := time.Now().Add(d)
 	return &models.Proxy{ID: id, CooldownUntil: &until}, nil
 }
-func (r *cooldownRepo) SetScopeCooldown(_ context.Context, id int, _ string, until time.Time, _ string) (*models.Proxy, error) {
-	r.durations = append(r.durations, time.Until(until))
-	return &models.Proxy{ID: id}, nil
+func (r *cooldownRepo) BackoffScopeCooldown(_ context.Context, id int, scope string, base time.Duration, reason string) (*models.Proxy, models.ProxyScopeCooldown, error) {
+	r.durations = append(r.durations, base)
+	return &models.Proxy{ID: id}, models.ProxyScopeCooldown{ProxyID: id, Scope: scope, CooldownUntil: time.Now().Add(base), FailureCount: 1}, nil
 }
-func (r *cooldownRepo) SetDomainCooldown(_ context.Context, id int, _ string, until time.Time, _ string) (*models.Proxy, error) {
+func (r *cooldownRepo) BackoffDomainCooldown(ctx context.Context, id int, domain string, base time.Duration, reason string) (*models.Proxy, models.ProxyDomainCooldown, error) {
+	p, c, err := r.SetDomainCooldown(ctx, id, domain, time.Now().Add(base), reason)
+	c.FailureCount = 1
+	return p, c, err
+}
+func (r *cooldownRepo) SetDomainCooldown(_ context.Context, id int, domain string, until time.Time, _ string) (*models.Proxy, models.ProxyDomainCooldown, error) {
 	r.durations = append(r.durations, time.Until(until))
-	return &models.Proxy{ID: id}, nil
+	return &models.Proxy{ID: id}, models.ProxyDomainCooldown{ProxyID: id, Domain: domain, CooldownUntil: until}, nil
 }
 
 func TestInvalidateSession_DefaultScopeAndOverrides(t *testing.T) {

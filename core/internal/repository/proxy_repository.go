@@ -459,7 +459,7 @@ func (r *ProxyRepository) ClearCooldown(ctx context.Context, id int) (*models.Pr
 // excluded from rotation for requests to domain (and its subdomains) until
 // the given time, but stays available for other targets. Returns nil if the
 // proxy does not exist. domain must already be normalized.
-func (r *ProxyRepository) SetDomainCooldown(ctx context.Context, id int, domain string, until time.Time, reason string) (*models.Proxy, error) {
+func (r *ProxyRepository) SetDomainCooldown(ctx context.Context, id int, domain string, until time.Time, reason string) (*models.Proxy, models.ProxyDomainCooldown, error) {
 	var reasonPtr *string
 	if reason != "" {
 		reasonPtr = &reason
@@ -471,21 +471,23 @@ func (r *ProxyRepository) SetDomainCooldown(ctx context.Context, id int, domain 
 			INSERT INTO proxy_domain_cooldowns (proxy_id, domain, cooldown_until, reason)
 			SELECT id, $2, $3, $4 FROM target
 			ON CONFLICT (proxy_id, domain)
-			DO UPDATE SET cooldown_until = EXCLUDED.cooldown_until, reason = EXCLUDED.reason
+			DO UPDATE SET cooldown_until = EXCLUDED.cooldown_until, reason = EXCLUDED.reason, recovery_after = NULL
+			RETURNING cooldown_until, failure_count, invalid
 		)
-		SELECT id, address, protocol, status FROM target
+		SELECT id, address, protocol, status, cooldown_until, failure_count, invalid FROM target CROSS JOIN upsert
 	`
 	var p models.Proxy
+	c := models.ProxyDomainCooldown{ProxyID: id, Domain: domain, Reason: reasonPtr}
 	err := r.db.Pool.QueryRow(ctx, query, id, domain, until, reasonPtr).Scan(
-		&p.ID, &p.Address, &p.Protocol, &p.Status,
+		&p.ID, &p.Address, &p.Protocol, &p.Status, &c.CooldownUntil, &c.FailureCount, &c.Invalid,
 	)
 	if err == pgx.ErrNoRows {
-		return nil, nil
+		return nil, c, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to set proxy domain cooldown: %w", err)
+		return nil, c, fmt.Errorf("failed to set proxy domain cooldown: %w", err)
 	}
-	return &p, nil
+	return &p, c, nil
 }
 
 // ClearDomainCooldown removes a single (proxy, domain) cooldown.
@@ -510,16 +512,17 @@ func (r *ProxyRepository) ClearAllDomainCooldowns(ctx context.Context, id int) (
 	return int(result.RowsAffected()), nil
 }
 
-// ListActiveDomainCooldowns returns all unexpired domain cooldowns, pruning
-// expired rows along the way. Used to warm the in-memory manager at startup.
+// ListActiveDomainCooldowns loads cooldowns, exclusions and expired backoff
+// history awaiting recovery. Used to warm the in-memory manager at startup.
 func (r *ProxyRepository) ListActiveDomainCooldowns(ctx context.Context) ([]models.ProxyDomainCooldown, error) {
 	// Opportunistic cleanup; expired rows are inert either way.
-	_, _ = r.db.Pool.Exec(ctx, `DELETE FROM proxy_domain_cooldowns WHERE cooldown_until < NOW()`)
+	_, _ = r.db.Pool.Exec(ctx, `DELETE FROM proxy_domain_cooldowns
+		WHERE NOT invalid AND cooldown_until < NOW()
+		  AND (failure_count = 0 OR recovery_after <= NOW())`)
 
 	rows, err := r.db.Pool.Query(ctx, `
-		SELECT proxy_id, domain, cooldown_until, reason
+		SELECT proxy_id, domain, cooldown_until, reason, failure_count, invalid, recovery_after
 		FROM proxy_domain_cooldowns
-		WHERE cooldown_until > NOW()
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list proxy domain cooldowns: %w", err)
@@ -529,7 +532,7 @@ func (r *ProxyRepository) ListActiveDomainCooldowns(ctx context.Context) ([]mode
 	var out []models.ProxyDomainCooldown
 	for rows.Next() {
 		var c models.ProxyDomainCooldown
-		if err := rows.Scan(&c.ProxyID, &c.Domain, &c.CooldownUntil, &c.Reason); err != nil {
+		if err := rows.Scan(&c.ProxyID, &c.Domain, &c.CooldownUntil, &c.Reason, &c.FailureCount, &c.Invalid, &c.RecoveryAfter); err != nil {
 			return nil, fmt.Errorf("failed to scan proxy domain cooldown: %w", err)
 		}
 		out = append(out, c)

@@ -43,7 +43,7 @@ func (m *SessionManager) ListScopeCooldowns() []models.ProxyScopeCooldown {
 	out := []models.ProxyScopeCooldown{}
 	now := time.Now()
 	for _, c := range m.cooldowns {
-		if c.CooldownUntil.After(now) {
+		if c.Invalid || c.CooldownUntil.After(now) {
 			out = append(out, c)
 		}
 	}

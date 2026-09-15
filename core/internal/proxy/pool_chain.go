@@ -29,13 +29,14 @@ const chainFailureThreshold = 3
 // individual attempt took — so per-proxy stats are charged per attempt, not
 // per retry loop.
 type PoolChain struct {
-	selectors  []*PoolSelector
-	tracker    *UsageTracker
-	logger     *logger.Logger
-	maxRetry   int    // total upstream attempts across all pools
-	username   string // proxy user this chain serves; "" for the default chain
-	inspectTLS bool   // user opted in to HTTPS interception
-	tlsProfile *tlsprofile.Profile
+	selectors    []*PoolSelector
+	tracker      *UsageTracker
+	recoveryRepo cooldownRecoveryRepository
+	logger       *logger.Logger
+	maxRetry     int    // total upstream attempts across all pools
+	username     string // proxy user this chain serves; "" for the default chain
+	inspectTLS   bool   // user opted in to HTTPS interception
+	tlsProfile   *tlsprofile.Profile
 
 	// failCounts tracks consecutive failures per proxy id, so a single transient
 	// error doesn't evict an otherwise-healthy proxy from the pool.
@@ -66,7 +67,7 @@ func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, ma
 		profile = tlsprofile.Passthrough
 	}
 
-	return &PoolChain{
+	chain := &PoolChain{
 		selectors:  selectors,
 		tracker:    tracker,
 		logger:     log,
@@ -76,6 +77,10 @@ func NewPoolChain(db *database.DB, pools []models.ProxyPool, username string, ma
 		tlsProfile: profile,
 		failCounts: make(map[int]int),
 	}
+	if tracker != nil {
+		chain.recoveryRepo = tracker.repo
+	}
+	return chain
 }
 
 // InspectTLS reports whether this chain's proxy user opted in to HTTPS
@@ -177,6 +182,7 @@ func (c *PoolChain) pickProxy(ctx context.Context, tried map[int]bool) (*models.
 	for i, sel := range c.selectors {
 		p, err := sel.selectExcluding(ctx, tried, forceSession)
 		if err == nil {
+			c.startCooldownRecovery(ctx, p.ID, i)
 			return p, i, nil
 		}
 		if !errors.Is(err, ErrNoProxyAvailable) {
