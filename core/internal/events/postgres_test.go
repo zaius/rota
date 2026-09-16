@@ -59,6 +59,53 @@ func newPGTestBackend(t *testing.T) storeBackend {
 
 func (b *pgTestBackend) Store() Store { return b.store }
 
+func TestIntegration_PostgresTargetFailureUpgrade(t *testing.T) {
+	b, ok := newTestBackend(t).(*pgTestBackend)
+	if !ok {
+		t.Skip("Postgres schema upgrade")
+	}
+	ctx := context.Background()
+	proxyID := b.SeedProxy(t, "127.0.0.1:9204")
+	if err := b.store.ApplyRetention(ctx, RetentionConfig{RequestRetentionDays: 90}); err != nil {
+		t.Fatal(err)
+	}
+	// Reconstruct the previous schema and seed a row using the old insert shape.
+	if _, err := b.db.Pool.Exec(ctx, `
+		ALTER TABLE proxy_requests DROP COLUMN target_failure;
+		DELETE FROM schema_migrations WHERE version = 32;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.db.Pool.Exec(ctx, `
+		INSERT INTO proxy_requests (proxy_id, proxy_address, method, success, timestamp)
+		VALUES ($1, 'x', 'CONNECT', false, NOW() - INTERVAL '21 days')
+	`, proxyID); err != nil {
+		t.Fatal(err)
+	}
+	caps, err := b.store.capabilities(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caps.tslPolicies {
+		if _, err := b.db.Pool.Exec(ctx, `
+			SELECT compress_chunk(chunk, if_not_compressed => true)
+			FROM show_chunks('proxy_requests', older_than => INTERVAL '14 days') AS chunk
+		`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := b.db.Migrate(ctx); err != nil {
+		t.Fatalf("upgrade request history: %v", err)
+	}
+	var targetFailure bool
+	if err := b.db.Pool.QueryRow(ctx, `SELECT target_failure FROM proxy_requests WHERE proxy_id = $1`, proxyID).Scan(&targetFailure); err != nil {
+		t.Fatal(err)
+	}
+	if targetFailure {
+		t.Fatal("migration reclassified an existing request")
+	}
+}
+
 func (b *pgTestBackend) SeedProxy(t *testing.T, address string) int {
 	t.Helper()
 	var id int

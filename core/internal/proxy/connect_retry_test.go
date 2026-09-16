@@ -39,7 +39,7 @@ func (s *connectRequestStore) next(t *testing.T) events.RequestEvent {
 }
 
 func TestConnectWithRetry_RejectionDoesNotWalkPoolOrChargeProxy(t *testing.T) {
-	for _, status := range []int{301, 403, 407, 429, 500, 502, 503, 504, 592, 593, 594} {
+	for _, status := range []int{403, 429, 500, 502, 503, 504, 592, 593, 594} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			var attempts atomic.Int32
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +76,7 @@ func TestConnectWithRetry_RejectionDoesNotWalkPoolOrChargeProxy(t *testing.T) {
 					t.Fatalf("%d CONNECT requests consumed %d upstream attempts", attempt, got)
 				}
 				event := store.next(t)
-				if event.Success || event.PoolID != 10 || event.ProxyID != (attempt-1)%2+1 || event.Username != "alice" || event.Method != "CONNECT" || event.URL != "CONNECT://target.example:443" || !strings.Contains(event.Error, fmt.Sprint(status)) {
+				if event.Success || !event.TargetFailure || event.PoolID != 10 || event.ProxyID != (attempt-1)%2+1 || event.Username != "alice" || event.Method != "CONNECT" || event.URL != "CONNECT://target.example:443" || !strings.Contains(event.Error, fmt.Sprint(status)) {
 					t.Fatalf("incorrect target rejection record: %+v", event)
 				}
 			}
@@ -92,10 +92,18 @@ func TestConnectWithRetry_RejectionDoesNotWalkPoolOrChargeProxy(t *testing.T) {
 	}
 }
 
-func TestConnectWithRetry_TransportFailureRetriesAndChargesProxy(t *testing.T) {
-	for _, failure := range []string{"dial", "malformed reply", "truncated reply"} {
+func TestConnectWithRetry_ProxyFailureRetriesAndChargesProxy(t *testing.T) {
+	for _, failure := range []string{"dial", "malformed reply", "truncated reply", "407", "301"} {
 		t.Run(failure, func(t *testing.T) {
 			bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if failure == "407" {
+					w.WriteHeader(http.StatusProxyAuthRequired)
+					return
+				}
+				if failure == "301" {
+					w.WriteHeader(http.StatusMovedPermanently)
+					return
+				}
 				conn, _, err := w.(http.Hijacker).Hijack()
 				if err != nil {
 					t.Error(err)
@@ -143,7 +151,7 @@ func TestConnectWithRetry_TransportFailureRetriesAndChargesProxy(t *testing.T) {
 				event := store.next(t)
 				records[event.ProxyID] = event
 			}
-			if len(records) != 2 || records[1].Success || records[1].Error == "" || !records[2].Success {
+			if len(records) != 2 || records[1].Success || records[1].TargetFailure || records[1].Error == "" || !records[2].Success {
 				t.Fatalf("incorrect attempt records: %+v", records)
 			}
 		})
@@ -162,7 +170,7 @@ func TestUsageTracker_TargetRejectionDoesNotUpdateHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if event := store.next(t); event.ProxyID != 42 || event.Success || event.Error != "502 Bad Gateway" {
+	if event := store.next(t); event.ProxyID != 42 || event.Success || !event.TargetFailure || event.Error != "502 Bad Gateway" {
 		t.Fatalf("target failure missing from request history: %+v", event)
 	}
 }

@@ -741,6 +741,15 @@ var migrations = []Migration{
 			  USING cooldown_until AT TIME ZONE current_setting('TimeZone');
 		`,
 	},
+	{
+		Version:     32,
+		Description: "Separate target failures from proxy reliability statistics",
+		Up: `
+			ALTER TABLE proxy_requests
+			  ADD COLUMN target_failure BOOLEAN NOT NULL DEFAULT FALSE;
+		`,
+		Down: `ALTER TABLE proxy_requests DROP COLUMN target_failure;`,
+	},
 }
 
 // migrationLockKey serializes each migration transaction across instances.

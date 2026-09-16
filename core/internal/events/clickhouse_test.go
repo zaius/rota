@@ -61,6 +61,37 @@ func newCHTestBackend(t *testing.T) storeBackend {
 
 func (b *chTestBackend) Store() Store { return b.store }
 
+func TestIntegration_ClickHouseTargetFailureUpgrade(t *testing.T) {
+	b, ok := newTestBackend(t).(*chTestBackend)
+	if !ok {
+		t.Skip("ClickHouse schema upgrade")
+	}
+	ctx := context.Background()
+	for _, stmt := range []string{
+		`ALTER TABLE proxy_requests DROP COLUMN target_failure`,
+		`INSERT INTO proxy_requests (timestamp, proxy_id, proxy_address, method, success) VALUES (now(), 1, 'x', 'CONNECT', false)`,
+	} {
+		if err := b.store.conn.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The bootstrap runs on every startup, including against an existing schema.
+	for range 2 {
+		for _, ddl := range chSchema {
+			if err := b.store.conn.Exec(ctx, ddl); err != nil {
+				t.Fatalf("upgrade request history: %v", err)
+			}
+		}
+	}
+	var targetFailure bool
+	if err := b.store.conn.QueryRow(ctx, `SELECT target_failure FROM proxy_requests`).Scan(&targetFailure); err != nil {
+		t.Fatal(err)
+	}
+	if targetFailure {
+		t.Fatal("migration reclassified an existing request")
+	}
+}
+
 func (b *chTestBackend) SeedProxy(t *testing.T, address string) int {
 	t.Helper()
 	if id, ok := b.proxyIDs[address]; ok {

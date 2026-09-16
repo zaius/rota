@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,6 +25,9 @@ type targetIPResolver interface {
 // rotation slot or session reservation. Keep the hostname in the CONNECT request
 // so the upstream still resolves it using its own DNS view.
 func (c *PoolChain) validateConnectTarget(ctx context.Context, authority string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	host, _, err := net.SplitHostPort(authority)
 	if err != nil {
 		return forwardingFailure("proxy_connect_rejected", fmt.Errorf("invalid CONNECT target %q: %w", authority, err))
@@ -47,8 +51,16 @@ func (c *PoolChain) validateConnectTarget(ctx context.Context, authority string)
 	lookupCtx, cancel := context.WithTimeout(ctx, connectTargetLookupTimeout)
 	defer cancel()
 	ips, err := resolver.LookupIP(lookupCtx, "ip4", host)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err != nil {
-		return forwardingFailure("proxy_connect_rejected", fmt.Errorf("resolve CONNECT target %q: %w", host, err))
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+			return forwardingFailure("proxy_connect_rejected", fmt.Errorf("resolve CONNECT target %q: %w", host, err))
+		}
+		// A local resolver failure is inconclusive; the upstream's DNS may work.
+		return nil
 	}
 	for _, ip := range ips {
 		if ip.To4() != nil {
@@ -120,7 +132,13 @@ func connectViaHTTPStandalone(p *models.Proxy, host string, timeout time.Duratio
 	}
 	if status < 200 || status >= 300 {
 		conn.Close()
-		return nil, forwardingFailure("proxy_connect_rejected", fmt.Errorf("CONNECT target %s via %s rejected: %s", host, p.Address, line))
+		reason := "proxy_connect_rejected"
+		if status == http.StatusProxyAuthRequired {
+			reason = "upstream_proxy_auth_failed"
+		} else if status < 400 {
+			reason = "proxy_handshake_failed"
+		}
+		return nil, forwardingFailure(reason, fmt.Errorf("CONNECT target %s via %s rejected: %s", host, p.Address, line))
 	}
 
 	_ = conn.SetDeadline(time.Time{})

@@ -285,15 +285,17 @@ Rota uses these custom codes on the **proxy listener**. Match the number and `X-
 | --- | --- |
 | `proxy_connect_failed` | Proxy DNS/TCP connection failed. |
 | `proxy_handshake_failed` | Sending CONNECT or reading/parsing its reply failed. |
-| `proxy_connect_rejected` | CONNECT target has no IPv4 address, target resolution failed, or the upstream returned a non-2xx CONNECT response (including `407`). No pool retry or proxy-health strike. |
-| `upstream_proxy_auth_failed` | Upstream HTTP proxy returned `407` while forwarding an HTTP request; check its stored credentials. |
+| `proxy_connect_rejected` | CONNECT target has no IPv4 address (NXDOMAIN/NODATA), or the upstream returned a 4xx/5xx CONNECT response other than `407`. No pool retry or proxy-health strike. |
+| `upstream_proxy_auth_failed` | Upstream HTTP proxy returned `407` during CONNECT or HTTP forwarding; check its stored credentials. Counts against proxy health and retries another proxy. |
 | `upstream_timeout` | Connection, tunnel, or request timed out. |
 | `proxy_configuration_error` | Invalid proxy URL or unsupported transport/protocol. |
 | `upstream_request_failed` | Other forwarding failures, including unclassified SOCKS errors. |
 
 Rota cannot always identify whether the proxy or target caused a failure. Ordinary upstream statuses and bodies pass through, including `429`, `502`, and `503`; upstream HTTP proxy `407` is mapped to `592`. Upstream `X-Rota-Error` headers are removed from forwarded/inspected responses to prevent false attribution.
 
-Before selecting a proxy for CONNECT, Rota checks the target for IPv4 addresses using its local resolver, with a five-second lookup limit (or the client's earlier deadline). IPv6-only targets and lookup errors return `592` without consuming an upstream attempt or session reservation. The original hostname is still sent to the upstream. An upstream CONNECT rejection records one failed request for that attempt but leaves proxy health unchanged and stops retries; TCP dial and CONNECT handshake failures still count against the proxy and try the next one.
+Before selecting a proxy for CONNECT, Rota checks the target for IPv4 addresses using its local resolver, with a five-second lookup limit (or the client's earlier deadline). IPv6-only targets, NXDOMAIN, and NODATA return `592` without consuming an upstream attempt or session reservation. Other resolver errors, including SERVFAIL and lookup timeouts, allow the upstream to resolve the original hostname. A canceled or expired client request stops before selection.
+
+An upstream CONNECT target rejection records one failed request for that attempt but leaves proxy health unchanged and stops retries. Its persisted `target_failure` flag excludes it from per-proxy success-rate rollups and low-success cleanup; traffic history and charts still include the failed request. Existing records retain their previous classification. TCP dial, CONNECT handshake, and upstream authentication failures still count against the proxy and try the next one.
 
 **Standard codes:** Client proxy authentication retains `407` with `Proxy-Authenticate` and reason `proxy_auth_required` or `invalid_tls_profile`. Internal proxy/authentication failures use `500` with `rota_internal_error`. The directly addressed control API uses standard codes:
 

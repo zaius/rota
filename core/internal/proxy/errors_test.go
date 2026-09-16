@@ -31,7 +31,7 @@ func TestWriteProxyError_Classification(t *testing.T) {
 		{"proxy_timeout", forwardingFailure("proxy_connect_failed", context.DeadlineExceeded), 592, "upstream_timeout"},
 		{"handshake", forwardingFailure("proxy_handshake_failed", io.EOF), 592, "proxy_handshake_failed"},
 		{"rejected", forwardingFailure("proxy_connect_rejected", errors.New("403")), 592, "proxy_connect_rejected"},
-		{"target_dns_timeout", forwardingFailure("proxy_connect_rejected", &net.DNSError{Name: "target.invalid", Err: "timeout", IsTimeout: true}), 592, "proxy_connect_rejected"},
+		{"target_dns_missing", forwardingFailure("proxy_connect_rejected", &net.DNSError{Name: "target.invalid", Err: "no such host", IsNotFound: true}), 592, "proxy_connect_rejected"},
 		{"proxy_dns", forwardingFailure("proxy_connect_failed", &net.DNSError{Name: "proxy.invalid", Err: "no such host", IsNotFound: true}), 592, "proxy_connect_failed"},
 		{"auth", forwardingFailure("upstream_proxy_auth_failed", errors.New("407")), 592, "upstream_proxy_auth_failed"},
 		{"configuration", forwardingFailure("proxy_configuration_error", errors.New("http://user:secret@proxy")), 592, "proxy_configuration_error"},
@@ -82,7 +82,7 @@ func TestProxyHandler_UpstreamStatuses(t *testing.T) {
 					h.HandleHTTPRequest(w, req)
 				}
 				switch {
-				case status == 407 && method != http.MethodConnect:
+				case status == 407:
 					if w.Code != 592 || w.Header().Get(ProxyErrorHeader) != "upstream_proxy_auth_failed" {
 						t.Fatalf("upstream auth misreported: %d %v", w.Code, w.Header())
 					}

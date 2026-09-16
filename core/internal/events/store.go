@@ -38,6 +38,8 @@ type RequestEvent struct {
 	Success      bool
 	Error        string
 	Timestamp    time.Time
+
+	TargetFailure bool // retained in traffic history, excluded from proxy reliability
 }
 
 // RequestStats aggregates request outcomes over the trailing day, with the
@@ -112,9 +114,8 @@ type RetentionConfig struct {
 }
 
 // ProxyRequestStats aggregates request outcomes for one proxy over the event
-// retention window. AvgResponseTime covers successful requests only — failed
-// attempts (timeouts especially) would say more about the failure than about
-// the proxy's latency.
+// retention window, excluding target failures. AvgResponseTime covers successful
+// requests only; failed attempts do not measure the proxy's normal latency.
 type ProxyRequestStats struct {
 	ProxyID         int
 	Requests        int64
@@ -141,12 +142,13 @@ type Store interface {
 
 	// ProxyRollup returns per-proxy request aggregates over the whole event
 	// window. It feeds the stats refresher, which denormalizes these numbers
-	// onto the proxies table for list sorting and filtering.
+	// onto the proxies table for list sorting and filtering. Target failures
+	// are excluded from these proxy reliability statistics.
 	ProxyRollup(ctx context.Context) ([]ProxyRequestStats, error)
 
 	// LowSuccessProxies returns the IDs of proxies whose success rate over
 	// the trailing window is below minRate percent, counting only proxies
-	// with at least minRequests requests in that window.
+	// with at least minRequests requests in that window, excluding target failures.
 	LowSuccessProxies(ctx context.Context, window time.Duration, minRate float64, minRequests int) ([]int, error)
 
 	// TrafficSeries returns request volume and latency percentiles bucketed

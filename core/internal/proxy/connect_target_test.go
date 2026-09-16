@@ -38,8 +38,11 @@ func TestValidateConnectTarget(t *testing.T) {
 		{name: "no A", authority: "target.example:443", lookup: true, rejected: true},
 		{name: "AAAA only", authority: "target.example:443", ips: []net.IP{net.ParseIP("2001:db8::1")}, lookup: true, rejected: true},
 		{name: "NXDOMAIN", authority: "target.example:443", err: &net.DNSError{Err: "no such host", IsNotFound: true}, lookup: true, rejected: true},
-		{name: "DNS timeout", authority: "target.example:443", err: &net.DNSError{Err: "timeout", IsTimeout: true}, lookup: true, rejected: true},
-		{name: "resolver error", authority: "target.example:443", err: errors.New("resolver unavailable"), lookup: true, rejected: true},
+		{name: "NODATA", authority: "target.example:443", err: &net.DNSError{Err: "no records of requested type", IsNotFound: true}, lookup: true, rejected: true},
+		{name: "DNS timeout", authority: "target.example:443", err: &net.DNSError{Err: "timeout", IsTimeout: true}, lookup: true},
+		{name: "SERVFAIL", authority: "target.example:443", err: &net.DNSError{Err: "server misbehaving", IsTemporary: true}, lookup: true},
+		{name: "lookup deadline", authority: "target.example:443", err: context.DeadlineExceeded, lookup: true},
+		{name: "resolver error", authority: "target.example:443", err: errors.New("resolver unavailable"), lookup: true},
 		{name: "IPv4 literal", authority: "192.0.2.1:443"},
 		{name: "IPv4 mapped literal", authority: "[::ffff:192.0.2.1]:443"},
 		{name: "IPv6 literal", authority: "[2001:db8::1]:443", rejected: true},
@@ -64,7 +67,7 @@ func TestValidateConnectTarget(t *testing.T) {
 			if tc.rejected && (!isTargetConnectFailure(err) || forwardingReason(err) != "proxy_connect_rejected") {
 				t.Fatalf("misclassified target failure: %v", err)
 			}
-			if tc.err != nil && !errors.Is(err, tc.err) {
+			if tc.rejected && tc.err != nil && !errors.Is(err, tc.err) {
 				t.Fatalf("lost resolver cause: %v", err)
 			}
 		})
@@ -79,7 +82,8 @@ func TestConnectTargetLookupHonorsContext(t *testing.T) {
 			if canceled {
 				cancel()
 			}
-			chain := &PoolChain{targetResolver: targetResolverFunc(func(lookupCtx context.Context, _, _ string) ([]net.IP, error) {
+			chain, selector := chainWithProxy(7)
+			chain.targetResolver = targetResolverFunc(func(lookupCtx context.Context, _, _ string) ([]net.IP, error) {
 				deadline, _ := ctx.Deadline()
 				lookupDeadline, _ := lookupCtx.Deadline()
 				if !deadline.Equal(lookupDeadline) {
@@ -87,10 +91,44 @@ func TestConnectTargetLookupHonorsContext(t *testing.T) {
 				}
 				<-lookupCtx.Done()
 				return nil, lookupCtx.Err()
-			})}
+			})
 			_, _, err := chain.ConnectWithRetry("target.example:443", ctx, nil, logger.New("error"))
-			if !errors.Is(err, ctx.Err()) || forwardingReason(err) != "proxy_connect_rejected" {
+			if !errors.Is(err, ctx.Err()) || isTargetConnectFailure(err) {
 				t.Fatalf("context error = %v", err)
+			}
+			if proxyCount(selector) != 1 || len(chain.failCounts) != 0 {
+				t.Fatal("canceled request attempted or charged a proxy")
+			}
+		})
+	}
+}
+
+func TestConnectTargetLookupFailureFallsThroughToUpstream(t *testing.T) {
+	for _, lookupErr := range []error{
+		&net.DNSError{Err: "timeout", IsTimeout: true},
+		&net.DNSError{Err: "server misbehaving", IsTemporary: true},
+		context.DeadlineExceeded,
+	} {
+		t.Run(lookupErr.Error(), func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Host != "target.example:443" {
+					t.Errorf("lost target hostname: %s", r.Host)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+			chain, selector := chainWithProxy(7)
+			selector.proxies[0].Address = upstream.Listener.Addr().String()
+			chain.targetResolver = targetResolverFunc(func(context.Context, string, string) ([]net.IP, error) {
+				return nil, lookupErr
+			})
+			conn, binding, err := chain.ConnectWithRetry("target.example:443", context.Background(), nil, logger.New("error"))
+			if err != nil {
+				t.Fatalf("local DNS error prevented upstream CONNECT: %v", err)
+			}
+			defer conn.Close()
+			if binding.ProxyID != 7 || len(chain.failCounts) != 0 {
+				t.Fatalf("unexpected binding or proxy strike: %+v", binding)
 			}
 		})
 	}

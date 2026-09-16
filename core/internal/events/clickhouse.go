@@ -47,11 +47,13 @@ var chSchema = []string{
 		status_code   UInt16,
 		response_time Int32,
 		success       Bool,
-		error         String
+		error         String,
+		target_failure Bool DEFAULT false
 	) ENGINE = MergeTree
 	PARTITION BY toYYYYMMDD(timestamp)
 	ORDER BY (proxy_id, timestamp)
 	TTL toDateTime(timestamp) + toIntervalDay(90)`,
+	`ALTER TABLE proxy_requests ADD COLUMN IF NOT EXISTS target_failure Bool DEFAULT false`,
 
 	`CREATE TABLE IF NOT EXISTS proxy_tunnels (
 		timestamp     DateTime64(3),
@@ -120,8 +122,8 @@ func (s *ClickHouseStore) InsertRequest(ctx context.Context, event RequestEvent)
 	err := s.conn.Exec(ctx, `
 		INSERT INTO proxy_requests (
 			timestamp, proxy_id, proxy_address, pool_id, username,
-			method, url, domain, status_code, response_time, success, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			method, url, domain, status_code, response_time, success, error, target_failure
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		event.Timestamp,
 		int32(event.ProxyID),
@@ -135,6 +137,7 @@ func (s *ClickHouseStore) InsertRequest(ctx context.Context, event RequestEvent)
 		int32(event.ResponseTime),
 		event.Success,
 		event.Error,
+		event.TargetFailure,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert proxy request: %w", err)
@@ -388,6 +391,7 @@ func (s *ClickHouseStore) ProxyRollup(ctx context.Context) ([]ProxyRequestStats,
 		       if(countIf(success) = 0, 0, toInt32(sumIf(response_time, success) / countIf(success)))
 		FROM proxy_requests
 		WHERE proxy_id > 0
+		  AND NOT target_failure
 		GROUP BY proxy_id
 	`)
 	if err != nil {
@@ -420,6 +424,7 @@ func (s *ClickHouseStore) LowSuccessProxies(ctx context.Context, window time.Dur
 		SELECT proxy_id
 		FROM proxy_requests
 		WHERE proxy_id > 0
+		  AND NOT target_failure
 		  AND timestamp >= now() - toIntervalSecond(?)
 		GROUP BY proxy_id
 		HAVING count() >= ?

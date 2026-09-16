@@ -84,8 +84,8 @@ func (s *PostgresStore) InsertRequest(ctx context.Context, event RequestEvent) e
 	query := `
 		INSERT INTO proxy_requests (
 			proxy_id, proxy_address, pool_id, username, method, url, domain,
-			status_code, success, response_time, error, timestamp
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			status_code, success, response_time, error, timestamp, target_failure
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`
 
 	var errorMsg *string
@@ -127,6 +127,7 @@ func (s *PostgresStore) InsertRequest(ctx context.Context, event RequestEvent) e
 		event.ResponseTime,
 		errorMsg,
 		pgTime(event.Timestamp),
+		event.TargetFailure,
 	)
 
 	return err
@@ -262,6 +263,7 @@ func (s *PostgresStore) ProxyRollup(ctx context.Context) ([]ProxyRequestStats, e
 		       COALESCE((AVG(response_time) FILTER (WHERE success))::int, 0)
 		FROM proxy_requests
 		WHERE proxy_id IS NOT NULL
+		  AND NOT target_failure
 		GROUP BY proxy_id
 	`)
 	if err != nil {
@@ -287,6 +289,7 @@ func (s *PostgresStore) LowSuccessProxies(ctx context.Context, window time.Durat
 		SELECT proxy_id
 		FROM proxy_requests
 		WHERE proxy_id IS NOT NULL
+		  AND NOT target_failure
 		  AND timestamp >= NOW() - $1::interval
 		GROUP BY proxy_id
 		HAVING COUNT(*) >= $2

@@ -49,18 +49,19 @@ func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) 
 	// derived from the URL with the same normalization as domain cooldowns,
 	// so per-domain analytics line up with proxy_domain_cooldowns entries.
 	err := t.events.InsertRequest(ctx, events.RequestEvent{
-		ProxyID:      record.ProxyID,
-		ProxyAddress: record.ProxyAddress,
-		PoolID:       record.PoolID,
-		Username:     record.Username,
-		Method:       record.Method,
-		URL:          record.RequestedURL,
-		Domain:       NormalizeCooldownDomain(record.RequestedURL),
-		StatusCode:   record.StatusCode,
-		ResponseTime: record.ResponseTime,
-		Success:      record.Success,
-		Error:        record.ErrorMessage,
-		Timestamp:    record.Timestamp,
+		ProxyID:       record.ProxyID,
+		ProxyAddress:  record.ProxyAddress,
+		PoolID:        record.PoolID,
+		Username:      record.Username,
+		Method:        record.Method,
+		URL:           record.RequestedURL,
+		Domain:        NormalizeCooldownDomain(record.RequestedURL),
+		StatusCode:    record.StatusCode,
+		ResponseTime:  record.ResponseTime,
+		Success:       record.Success,
+		Error:         record.ErrorMessage,
+		Timestamp:     record.Timestamp,
+		TargetFailure: record.TargetFailure,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to insert proxy request: %w", err)
