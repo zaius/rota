@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net"
@@ -12,6 +13,50 @@ import (
 	"github.com/alpkeskin/rota/core/internal/models"
 	proxyDialer "golang.org/x/net/proxy"
 )
+
+const connectTargetLookupTimeout = 5 * time.Second
+
+type targetIPResolver interface {
+	LookupIP(context.Context, string, string) ([]net.IP, error)
+}
+
+// validateConnectTarget checks for an IPv4 address before selection can consume a
+// rotation slot or session reservation. Keep the hostname in the CONNECT request
+// so the upstream still resolves it using its own DNS view.
+func (c *PoolChain) validateConnectTarget(ctx context.Context, authority string) error {
+	host, _, err := net.SplitHostPort(authority)
+	if err != nil {
+		return forwardingFailure("proxy_connect_rejected", fmt.Errorf("invalid CONNECT target %q: %w", authority, err))
+	}
+	noIPv4 := func() error {
+		return forwardingFailure("proxy_connect_rejected", &net.DNSError{
+			Err: "no IPv4 address for CONNECT target", Name: host, IsNotFound: true,
+		})
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.To4() == nil {
+			return noIPv4()
+		}
+		return nil
+	}
+
+	resolver := c.targetResolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, connectTargetLookupTimeout)
+	defer cancel()
+	ips, err := resolver.LookupIP(lookupCtx, "ip4", host)
+	if err != nil {
+		return forwardingFailure("proxy_connect_rejected", fmt.Errorf("resolve CONNECT target %q: %w", host, err))
+	}
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			return nil
+		}
+	}
+	return noIPv4()
+}
 
 // connectViaSocks5 dials host through a SOCKS5 proxy.
 func connectViaSocks5(p *models.Proxy, host string) (net.Conn, error) {
@@ -75,11 +120,7 @@ func connectViaHTTPStandalone(p *models.Proxy, host string, timeout time.Duratio
 	}
 	if status < 200 || status >= 300 {
 		conn.Close()
-		reason := "proxy_connect_rejected"
-		if status == http.StatusProxyAuthRequired {
-			reason = "upstream_proxy_auth_failed"
-		}
-		return nil, forwardingFailure(reason, fmt.Errorf("CONNECT to %s rejected: %s", p.Address, line))
+		return nil, forwardingFailure("proxy_connect_rejected", fmt.Errorf("CONNECT target %s via %s rejected: %s", host, p.Address, line))
 	}
 
 	_ = conn.SetDeadline(time.Time{})

@@ -29,14 +29,15 @@ const chainFailureThreshold = 3
 // individual attempt took — so per-proxy stats are charged per attempt, not
 // per retry loop.
 type PoolChain struct {
-	selectors    []*PoolSelector
-	tracker      *UsageTracker
-	recoveryRepo cooldownRecoveryRepository
-	logger       *logger.Logger
-	maxRetry     int    // total upstream attempts across all pools
-	username     string // proxy user this chain serves; "" for the default chain
-	inspectTLS   bool   // user opted in to HTTPS interception
-	tlsProfile   *tlsprofile.Profile
+	selectors      []*PoolSelector
+	tracker        *UsageTracker
+	recoveryRepo   cooldownRecoveryRepository
+	logger         *logger.Logger
+	maxRetry       int    // total upstream attempts across all pools
+	username       string // proxy user this chain serves; "" for the default chain
+	inspectTLS     bool   // user opted in to HTTPS interception
+	tlsProfile     *tlsprofile.Profile
+	targetResolver targetIPResolver // nil uses net.DefaultResolver
 
 	// failCounts tracks consecutive failures per proxy id, so a single transient
 	// error doesn't evict an otherwise-healthy proxy from the pool.
@@ -126,14 +127,15 @@ func (c *PoolChain) recordAttempt(record RequestRecord) {
 // never advance for pooled proxies — a dead proxy would be retried forever.
 func (c *PoolChain) recordFailure(selIdx, proxyID int, address, url, method string, attemptStart time.Time, cause error) {
 	record := RequestRecord{
-		ProxyID:      proxyID,
-		ProxyAddress: address,
-		PoolID:       c.poolID(selIdx),
-		RequestedURL: url,
-		Method:       method,
-		Success:      false,
-		ResponseTime: int(time.Since(attemptStart).Milliseconds()),
-		Timestamp:    attemptStart,
+		ProxyID:       proxyID,
+		ProxyAddress:  address,
+		PoolID:        c.poolID(selIdx),
+		RequestedURL:  url,
+		Method:        method,
+		Success:       false,
+		TargetFailure: isTargetConnectFailure(cause),
+		ResponseTime:  int(time.Since(attemptStart).Milliseconds()),
+		Timestamp:     attemptStart,
 	}
 	if cause != nil {
 		record.ErrorMessage = cause.Error()
@@ -414,6 +416,10 @@ func (c *PoolChain) ConnectWithRetry(
 	rotationSettings *models.RotationSettings,
 	log *logger.Logger,
 ) (net.Conn, *TunnelBinding, error) {
+	if err := c.validateConnectTarget(ctx, host); err != nil {
+		return nil, nil, err
+	}
+
 	tried := make(map[int]bool)
 	maxAttempts := c.maxRetry
 	if maxAttempts <= 0 {
@@ -441,6 +447,10 @@ func (c *PoolChain) ConnectWithRetry(
 		conn, err := connectViaProxyStandalone(selectedProxy, host, rotationSettings)
 		if err != nil {
 			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, "CONNECT://"+host, "CONNECT", attemptStart, err)
+			if isTargetConnectFailure(err) {
+				log.Warn("pool chain CONNECT: target rejected", "proxy", selectedProxy.Address, "host", host, "err", err)
+				return nil, nil, err
+			}
 			lastErr = fmt.Errorf("CONNECT proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)
 			log.Warn("pool chain CONNECT: failed", "proxy", selectedProxy.Address, "err", err)
 			c.markFailed(selIdx, selectedProxy.ID)

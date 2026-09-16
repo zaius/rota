@@ -23,7 +23,7 @@ func TestProxyRouter_CapacityResponse(t *testing.T) {
 				cd := NewDomainCooldownManager()
 				defer cd.Stop()
 				ps := newDomainSelector("session", sm, cd, 42)
-				chain := &PoolChain{username: "alice", selectors: []*PoolSelector{ps}}
+				chain := &PoolChain{username: "alice", selectors: []*PoolSelector{ps}, targetResolver: ipv4TargetResolver{}}
 				username := "alice-session-new"
 				ctx := context.WithValue(ctxWithToken("owner"), TargetHostContextKey, "example.com")
 				switch scenario {
@@ -73,7 +73,11 @@ func TestUpstreamHandler_ConfigurationFailureStatus(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodConnect} {
 		// An unsupported protocol gives a deterministic upstream/configuration failure.
 		chain := &PoolChain{maxRetry: 2, selectors: []*PoolSelector{newMethodSelector("roundrobin", &models.Proxy{ID: 404, Protocol: "invalid"})}}
-		req := httptest.NewRequest(method, "http://example.com", nil)
+		target := "http://127.0.0.1"
+		if method == http.MethodConnect {
+			target = "127.0.0.1:443"
+		}
+		req := httptest.NewRequest(method, target, nil)
 		req = req.WithContext(context.WithValue(req.Context(), UserChainContextKey, chain))
 		h := NewUpstreamProxyHandler(nil, nil, logger.New("error"))
 		w := httptest.NewRecorder()

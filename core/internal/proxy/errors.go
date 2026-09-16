@@ -30,7 +30,18 @@ func forwardingFailure(reason string, err error) error {
 	return &upstreamFailure{reason: reason, cause: err}
 }
 
+// A complete CONNECT rejection or failed target lookup says nothing about the
+// proxy's transport health. Do not rotate or advance its failure streak.
+func isTargetConnectFailure(err error) bool {
+	var failure *upstreamFailure
+	return errors.As(err, &failure) && failure.reason == "proxy_connect_rejected"
+}
+
 func forwardingReason(err error) string {
+	// Target DNS timeouts are still target failures, not upstream dial timeouts.
+	if isTargetConnectFailure(err) {
+		return "proxy_connect_rejected"
+	}
 	var timeout net.Error
 	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()) {
 		return "upstream_timeout"

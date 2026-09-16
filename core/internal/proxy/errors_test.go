@@ -31,6 +31,8 @@ func TestWriteProxyError_Classification(t *testing.T) {
 		{"proxy_timeout", forwardingFailure("proxy_connect_failed", context.DeadlineExceeded), 592, "upstream_timeout"},
 		{"handshake", forwardingFailure("proxy_handshake_failed", io.EOF), 592, "proxy_handshake_failed"},
 		{"rejected", forwardingFailure("proxy_connect_rejected", errors.New("403")), 592, "proxy_connect_rejected"},
+		{"target_dns_timeout", forwardingFailure("proxy_connect_rejected", &net.DNSError{Name: "target.invalid", Err: "timeout", IsTimeout: true}), 592, "proxy_connect_rejected"},
+		{"proxy_dns", forwardingFailure("proxy_connect_failed", &net.DNSError{Name: "proxy.invalid", Err: "no such host", IsNotFound: true}), 592, "proxy_connect_failed"},
 		{"auth", forwardingFailure("upstream_proxy_auth_failed", errors.New("407")), 592, "upstream_proxy_auth_failed"},
 		{"configuration", forwardingFailure("proxy_configuration_error", errors.New("http://user:secret@proxy")), 592, "proxy_configuration_error"},
 	} {
@@ -65,7 +67,7 @@ func TestProxyHandler_UpstreamStatuses(t *testing.T) {
 				defer upstream.Close()
 				p := &models.Proxy{ID: 42, Protocol: "http", Address: upstream.Listener.Addr().String()}
 				t.Cleanup(func() { InvalidateTransport(p) })
-				chain := &PoolChain{maxRetry: 1, selectors: []*PoolSelector{newMethodSelector("roundrobin", p)}}
+				chain := &PoolChain{maxRetry: 1, selectors: []*PoolSelector{newMethodSelector("roundrobin", p)}, targetResolver: ipv4TargetResolver{}}
 				target := "http://example.com/path"
 				if method == http.MethodConnect {
 					target = "example.com:443"
@@ -80,7 +82,7 @@ func TestProxyHandler_UpstreamStatuses(t *testing.T) {
 					h.HandleHTTPRequest(w, req)
 				}
 				switch {
-				case status == 407:
+				case status == 407 && method != http.MethodConnect:
 					if w.Code != 592 || w.Header().Get(ProxyErrorHeader) != "upstream_proxy_auth_failed" {
 						t.Fatalf("upstream auth misreported: %d %v", w.Code, w.Header())
 					}

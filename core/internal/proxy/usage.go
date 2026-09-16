@@ -27,17 +27,18 @@ func NewUsageTracker(eventStore events.Store, repo *repository.ProxyRepository) 
 
 // RequestRecord represents a single proxy request
 type RequestRecord struct {
-	ProxyID      int
-	ProxyAddress string
-	PoolID       int    // pool that served the request; 0 = default pool
-	Username     string // proxy user the request was authenticated as
-	RequestedURL string
-	Method       string
-	Success      bool
-	ResponseTime int // milliseconds
-	StatusCode   int
-	ErrorMessage string
-	Timestamp    time.Time
+	ProxyID       int
+	ProxyAddress  string
+	PoolID        int    // pool that served the request; 0 = default pool
+	Username      string // proxy user the request was authenticated as
+	RequestedURL  string
+	Method        string
+	Success       bool
+	TargetFailure bool // record the outcome without changing proxy health
+	ResponseTime  int  // milliseconds
+	StatusCode    int
+	ErrorMessage  string
+	Timestamp     time.Time
 }
 
 // RecordRequest records a proxy request and updates statistics
@@ -84,6 +85,12 @@ func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) 
 // — a healthy proxy staying healthy — touches no row. A consequence is that
 // last_check advances on transitions and health checks, not on every request.
 func (t *UsageTracker) updateProxyStats(ctx context.Context, record RequestRecord) error {
+	// Rejected targets remain visible in request history, but neither advance
+	// nor reset the proxy's consecutive transport-failure streak.
+	if record.TargetFailure {
+		return nil
+	}
+
 	if record.Success {
 		query := `
 			UPDATE proxies
