@@ -133,7 +133,7 @@ func (c *PoolChain) recordFailure(selIdx, proxyID int, address, url, method stri
 		RequestedURL:  url,
 		Method:        method,
 		Success:       false,
-		TargetFailure: isTargetConnectFailure(cause),
+		TargetFailure: isTargetConnectFailure(cause) || isClientRequestAbort(cause),
 		ResponseTime:  int(time.Since(attemptStart).Milliseconds()),
 		Timestamp:     attemptStart,
 	}
@@ -249,6 +249,9 @@ func (c *PoolChain) SendWithRetry(
 
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := clientRequestAbort(req, ctx, nil); err != nil {
+			return nil, 0, err
+		}
 		selectedProxy, selIdx, err := c.pickProxy(ctx, tried)
 		if err != nil {
 			if lastErr != nil {
@@ -308,6 +311,11 @@ func (c *PoolChain) SendWithRetry(
 			// a connection, and nothing downstream will close it.
 			if resp != nil {
 				resp.Body.Close()
+			}
+			if abort := clientRequestAbort(req, ctx, err); abort != nil {
+				c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, abort)
+				log.Debug("pool chain: client request aborted", "proxy", selectedProxy.Address, "err", abort)
+				return nil, 0, abort
 			}
 			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, req.URL.String(), req.Method, attemptStart, err)
 			lastErr = fmt.Errorf("proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)

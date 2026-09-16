@@ -39,7 +39,7 @@ type RequestEvent struct {
 	Error        string
 	Timestamp    time.Time
 
-	TargetFailure bool // retained in traffic history, excluded from proxy reliability
+	TargetFailure bool // target rejection or client abort; excluded from proxy reliability
 }
 
 // RequestStats aggregates request outcomes over the trailing day, with the

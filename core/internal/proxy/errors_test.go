@@ -27,6 +27,8 @@ func TestWriteProxyError_Classification(t *testing.T) {
 		{"capacity", fmt.Errorf("wrapped: %w", ErrNoProxyAvailable), 593, "no_proxy_available"},
 		{"request", io.ErrUnexpectedEOF, 592, "upstream_request_failed"},
 		{"timeout", fmt.Errorf("wrapped: %w", context.DeadlineExceeded), 592, "upstream_timeout"},
+		{"client_cancel", forwardingFailure("client_request_aborted", context.Canceled), 592, "client_request_aborted"},
+		{"client_deadline", forwardingFailure("client_request_aborted", context.DeadlineExceeded), 592, "client_request_aborted"},
 		{"dial", fmt.Errorf("wrapped: %w", &net.OpError{Op: "dial", Err: errors.New("refused")}), 592, "proxy_connect_failed"},
 		{"proxy_timeout", forwardingFailure("proxy_connect_failed", context.DeadlineExceeded), 592, "upstream_timeout"},
 		{"handshake", forwardingFailure("proxy_handshake_failed", io.EOF), 592, "proxy_handshake_failed"},

@@ -34,7 +34,7 @@ type RequestRecord struct {
 	RequestedURL  string
 	Method        string
 	Success       bool
-	TargetFailure bool // record the outcome without changing proxy health
+	TargetFailure bool // target rejection or client abort; does not change proxy health
 	ResponseTime  int  // milliseconds
 	StatusCode    int
 	ErrorMessage  string
@@ -86,8 +86,8 @@ func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) 
 // — a healthy proxy staying healthy — touches no row. A consequence is that
 // last_check advances on transitions and health checks, not on every request.
 func (t *UsageTracker) updateProxyStats(ctx context.Context, record RequestRecord) error {
-	// Rejected targets remain visible in request history, but neither advance
-	// nor reset the proxy's consecutive transport-failure streak.
+	// Target rejections and client aborts remain visible in request history,
+	// but neither advance nor reset the proxy's failure streak.
 	if record.TargetFailure {
 		return nil
 	}

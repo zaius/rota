@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 )
@@ -37,7 +38,29 @@ func isTargetConnectFailure(err error) bool {
 	return errors.As(err, &failure) && failure.reason == "proxy_connect_rejected"
 }
 
+// A deadline from http.Client.Timeout is an upstream failure while the caller
+// is still waiting. Only a finished caller context or an explicit cancellation
+// makes the attempt a client abort.
+func clientRequestAbort(req *http.Request, ctx context.Context, cause error) error {
+	if err := ctx.Err(); err != nil {
+		cause = err
+	} else if err := req.Context().Err(); err != nil {
+		cause = err
+	} else if !errors.Is(cause, context.Canceled) {
+		return nil
+	}
+	return forwardingFailure("client_request_aborted", fmt.Errorf("client request aborted: %w", cause))
+}
+
+func isClientRequestAbort(err error) bool {
+	var failure *upstreamFailure
+	return errors.As(err, &failure) && failure.reason == "client_request_aborted"
+}
+
 func forwardingReason(err error) string {
+	if isClientRequestAbort(err) {
+		return "client_request_aborted"
+	}
 	var timeout net.Error
 	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()) {
 		return "upstream_timeout"
