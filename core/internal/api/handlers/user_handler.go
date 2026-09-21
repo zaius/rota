@@ -17,8 +17,8 @@ type UserHandler struct {
 	poolRepo *repository.PoolRepository
 	logger   *logger.Logger
 
-	// onUserChanged, if set, is invoked with the affected username after a user
-	// is updated or deleted so the proxy server can drop its cached auth entry.
+	// onUserChanged tells the proxy server to drop the affected user's cached
+	// pool chain after an update or deletion.
 	onUserChanged func(username string)
 }
 
@@ -31,8 +31,8 @@ func NewUserHandler(
 	return &UserHandler{userRepo: userRepo, poolRepo: poolRepo, logger: log}
 }
 
-// SetOnUserChanged registers a callback invoked after a user is updated or
-// deleted, so cached proxy auth can be invalidated promptly.
+// SetOnUserChanged registers a callback to invalidate cached pool chains after
+// the repository updates or deletes a user.
 func (h *UserHandler) SetOnUserChanged(fn func(username string)) {
 	h.onUserChanged = fn
 }
@@ -140,8 +140,8 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	// Resolve the username before deleting so the cached proxy auth entry can be
-	// invalidated (the cache is keyed by username, not id).
+	// Resolve the username before deleting to invalidate the cached pool chain
+	// (the cache uses usernames, not ids).
 	var username string
 	if existing, err := h.userRepo.GetByID(r.Context(), id); err == nil && existing != nil {
 		username = existing.Username

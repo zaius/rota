@@ -173,10 +173,8 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		}
 	})
 
-	// Wire user invalidation: when a proxy user is updated or deleted, drop the
-	// proxy server's cached auth entry for that user so disables, password
-	// changes and pool reassignments take effect immediately rather than after
-	// the auth cache TTL.
+	// The repository invalidates shared credentials on user changes. Drop the
+	// proxy server's cached pool chain too so it rebuilds the user's routing.
 	userHandler.SetOnUserChanged(func(username string) {
 		if s.proxyServer != nil {
 			s.proxyServer.InvalidateUser(username)

@@ -15,12 +15,10 @@ import (
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/tlsprofile"
 	"github.com/alpkeskin/rota/core/pkg/logger"
-	"golang.org/x/crypto/bcrypt"
 )
 
-// bcryptCompare is a thin wrapper so the hot-path resolve() doesn't need a DB call.
-func bcryptCompare(hash, password string) error {
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+type proxyUserAuthenticator interface {
+	Authenticate(context.Context, string, string) (*models.ProxyUser, error)
 }
 
 // userChainKey is the context key that carries the resolved *PoolChain.
@@ -99,14 +97,13 @@ func splitProfileUsername(raw string) (rest, profile string) {
 	return raw[:idx], raw[idx+len(profileMarker):]
 }
 
-// userEntry caches a resolved PoolChain and the verified password hash for a user.
-// This avoids bcrypt on every request — bcrypt only runs on first auth or after TTL expiry.
+// userEntry caches a resolved PoolChain for a particular user revision.
+// The repository handles credential caching for both proxy and API requests.
 type userEntry struct {
 	chain     *PoolChain
 	expiresAt time.Time
-	// passwordHash is the bcrypt hash we verified against. If the user changes their
-	// password the hash changes, causing a cache miss on next TTL expiry.
-	verifiedPwHash string
+	userID    int
+	updatedAt time.Time
 }
 
 // UserAuthMiddleware resolves Proxy-Authorization credentials against proxy_users.
@@ -115,7 +112,7 @@ type userEntry struct {
 // resolve to an enabled proxy user is rejected, so a deployment without
 // proxy_users blocks all traffic rather than running an open proxy.
 type UserAuthMiddleware struct {
-	userRepo   *repository.UserRepository
+	userRepo   proxyUserAuthenticator
 	poolRepo   *repository.PoolRepository
 	db         *database.DB
 	logger     *logger.Logger
@@ -140,7 +137,6 @@ func NewUserAuthMiddleware(
 	log *logger.Logger,
 ) *UserAuthMiddleware {
 	m := &UserAuthMiddleware{
-		userRepo:   userRepo,
 		poolRepo:   poolRepo,
 		db:         db,
 		sessionMgr: sessionMgr,
@@ -148,6 +144,9 @@ func NewUserAuthMiddleware(
 		tracker:    tracker,
 		logger:     log,
 		cache:      make(map[string]userEntry),
+	}
+	if userRepo != nil {
+		m.userRepo = userRepo
 	}
 	// background goroutine: refresh all cached user chains every 30s
 	go m.refreshLoop()
@@ -233,37 +232,25 @@ func (m *UserAuthMiddleware) HandleConnect(req *http.Request) (*http.Request, *h
 	return m.HandleRequest(req)
 }
 
-// resolve authenticates the user and returns a warm PoolChain.
-// bcrypt is only called on first auth or after the cache TTL expires (60s).
-// On cache hits the incoming password is compared directly against the cached
-// bcrypt hash using bcrypt.CompareHashAndPassword — but this only happens once
-// per 60-second window, not on every request.
+// resolve authenticates through the shared credential cache before reusing a chain.
 func (m *UserAuthMiddleware) resolve(ctx context.Context, username, password string) (*PoolChain, error) {
-	now := time.Now()
-
-	// ── Fast path: cache hit within TTL ──────────────────────────────────
-	m.mu.RLock()
-	entry, hit := m.cache[username]
-	m.mu.RUnlock()
-
-	if hit && now.Before(entry.expiresAt) {
-		// Verify password against the cached hash — no DB round-trip, no new bcrypt work.
-		// bcrypt.CompareHashAndPassword is still ~30ms but we avoid the DB SELECT.
-		// For even higher throughput, consider storing a fast HMAC of password+secret
-		// instead — but bcrypt cache is sufficient for most workloads.
-		if err := bcryptCompare(entry.verifiedPwHash, password); err != nil {
-			return nil, repository.ErrProxyAuthentication
-		}
-		return entry.chain, nil
-	}
-
-	// ── Slow path: full DB lookup + bcrypt (runs at most once per 60s per user) ──
 	if m.userRepo == nil {
 		return nil, repository.ErrProxyAuthentication
 	}
 	user, err := m.userRepo.Authenticate(ctx, username, password)
 	if err != nil {
 		return nil, err
+	}
+
+	now := time.Now()
+	m.mu.RLock()
+	entry, hit := m.cache[username]
+	m.mu.RUnlock()
+
+	// Check the revision too: an in-flight chain build can finish after a user
+	// update invalidates the old entry.
+	if hit && now.Before(entry.expiresAt) && entry.userID == user.ID && entry.updatedAt.Equal(user.UpdatedAt) {
+		return entry.chain, nil
 	}
 
 	chain, err := m.buildChain(ctx, user)
@@ -273,9 +260,10 @@ func (m *UserAuthMiddleware) resolve(ctx context.Context, username, password str
 
 	m.mu.Lock()
 	m.cache[username] = userEntry{
-		chain:          chain,
-		expiresAt:      now.Add(60 * time.Second),
-		verifiedPwHash: user.PasswordHash,
+		chain:     chain,
+		expiresAt: now.Add(60 * time.Second),
+		userID:    user.ID,
+		updatedAt: user.UpdatedAt,
 	}
 	m.mu.Unlock()
 

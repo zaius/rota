@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/database"
+	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func TestUserAuth_DatabaseFailureIsNotBadCredentials(t *testing.T) {
@@ -35,13 +35,20 @@ func timeInAnHour() time.Time {
 	return time.Now().Add(time.Hour)
 }
 
-func bcryptHashForTest(t *testing.T, password string) string {
-	t.Helper()
-	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("bcrypt: %v", err)
-	}
-	return string(h)
+type testUserAuthenticator func(context.Context, string, string) (*models.ProxyUser, error)
+
+func (f testUserAuthenticator) Authenticate(ctx context.Context, username, password string) (*models.ProxyUser, error) {
+	return f(ctx, username, password)
+}
+
+func cacheTestUser(m *UserAuthMiddleware, chain *PoolChain) {
+	m.userRepo = testUserAuthenticator(func(_ context.Context, username, password string) (*models.ProxyUser, error) {
+		if username != "alice" || password != "secret" {
+			return nil, repository.ErrProxyAuthentication
+		}
+		return &models.ProxyUser{ID: 1, Username: "alice", Enabled: true}, nil
+	})
+	m.cache["alice"] = userEntry{chain: chain, expiresAt: timeInAnHour(), userID: 1}
 }
 
 // Per-user credentials are the only proxy auth: any request that does not
@@ -86,15 +93,11 @@ func TestUserAuth_UnresolvedCredsRejects(t *testing.T) {
 }
 
 // A resolved user's chain is attached to the request and the credentials are
-// stripped before forwarding. The cache stands in for the DB lookup.
+// stripped before forwarding. The authenticator stands in for the repository.
 func TestUserAuth_ResolvedUserGetsChain(t *testing.T) {
 	m := newTestUserAuthMw()
 	chain := &PoolChain{}
-	m.cache["alice"] = userEntry{
-		chain:          chain,
-		expiresAt:      timeInAnHour(),
-		verifiedPwHash: bcryptHashForTest(t, "secret"),
-	}
+	cacheTestUser(m, chain)
 
 	req := httptest.NewRequest("GET", "http://example.com/", nil)
 	basicProxyAuth(req, "alice-session-job42", "secret")
@@ -117,7 +120,7 @@ func TestUserAuth_ResolvedUserGetsChain(t *testing.T) {
 func TestUserAuth_SessionScopeComposesWithProfile(t *testing.T) {
 	m := newTestUserAuthMw()
 	chain := &PoolChain{username: "alice"}
-	m.cache["alice"] = userEntry{chain: chain, expiresAt: timeInAnHour(), verifiedPwHash: bcryptHashForTest(t, "secret")}
+	cacheTestUser(m, chain)
 	for _, method := range []string{http.MethodGet, http.MethodConnect} {
 		req := httptest.NewRequest(method, "http://example.com/", nil)
 		basicProxyAuth(req, "alice-session-job42-scope-SHARED-profile-ios", "secret")
@@ -149,5 +152,34 @@ func TestSplitSessionScope(t *testing.T) {
 		if rest != tc.rest || scope != tc.scope {
 			t.Fatalf("%q: got %q/%q", tc.raw, rest, scope)
 		}
+	}
+}
+
+func TestUserAuth_CachedChainStillRequiresAuthentication(t *testing.T) {
+	m := newTestUserAuthMw()
+	cacheTestUser(m, &PoolChain{})
+	for _, method := range []string{http.MethodGet, http.MethodConnect} {
+		req := httptest.NewRequest(method, "http://example.com/", nil)
+		basicProxyAuth(req, "alice-session-new-job", "wrong")
+		_, resp := m.HandleRequest(req)
+		if resp == nil || resp.StatusCode != http.StatusProxyAuthRequired {
+			t.Fatalf("%s: cached chain bypassed authentication: %v", method, resp)
+		}
+	}
+}
+
+func TestUserAuth_ChangedUserRebuildsCachedChain(t *testing.T) {
+	m := newTestUserAuthMw()
+	oldChain := &PoolChain{}
+	cacheTestUser(m, oldChain)
+	m.userRepo = testUserAuthenticator(func(context.Context, string, string) (*models.ProxyUser, error) {
+		return &models.ProxyUser{ID: 1, Username: "alice", Enabled: true, UpdatedAt: time.Now(), MaxRetries: 7}, nil
+	})
+	chain, err := m.resolve(context.Background(), "alice", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chain == oldChain || chain.maxRetry != 7 {
+		t.Fatal("reused a chain from an older user revision")
 	}
 }

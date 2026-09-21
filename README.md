@@ -571,6 +571,8 @@ All standard OpenTelemetry variables are honored (`OTEL_EXPORTER_OTLP_PROTOCOL` 
 
 Management endpoints require an admin JWT. The three [client-control endpoints](#invalidating-with-proxy-user-credentials) also accept proxy-user Basic credentials.
 
+Proxy traffic and client-control Basic auth share a process-local credential cache (up to 1,024 users). After a successful bcrypt check, repeat requests compare an HMAC-SHA-256 digest in constant time for a fixed 60 seconds, avoiding further database lookups and bcrypt work. Session/profile suffixes on proxy usernames share the base user's entry. User edits and deletions through this instance's API invalidate the cache immediately; direct database edits or changes through another instance take effect when the entry expires.
+
 ```bash
 # Login
 TOKEN=$(curl -s -X POST http://localhost:8001/api/v1/auth/login \

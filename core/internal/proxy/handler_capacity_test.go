@@ -41,7 +41,7 @@ func TestProxyRouter_CapacityResponse(t *testing.T) {
 					cd.Set(42, "example.com", time.Now().Add(time.Hour), "")
 				}
 				auth := newTestUserAuthMw()
-				auth.cache["alice"] = userEntry{chain: chain, expiresAt: timeInAnHour(), verifiedPwHash: bcryptHashForTest(t, "secret")}
+				cacheTestUser(auth, chain)
 				router := &proxyRouter{
 					userAuthMw:  auth,
 					rateLimitMw: NewRateLimitMiddleware(models.RateLimitSettings{}),

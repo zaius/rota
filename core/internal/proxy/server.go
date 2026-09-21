@@ -328,9 +328,8 @@ func (s *Server) EvictProxy(proxyID int) {
 	}
 }
 
-// InvalidateUser drops a proxy user's cached auth entry so that changes to the
-// user (disable, password change, pool reassignment, deletion) take effect on
-// the next request instead of after the auth cache TTL.
+// InvalidateUser drops a proxy user's cached pool chain after a user change.
+// The user repository invalidates shared credentials when it writes the change.
 func (s *Server) InvalidateUser(username string) {
 	if s.userAuthMw != nil {
 		s.userAuthMw.InvalidateUser(username)
