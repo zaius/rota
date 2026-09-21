@@ -24,18 +24,17 @@ func IsValidTLSProfile(name string) bool {
 // ProxyUser is a user that authenticates to the proxy server port (8000).
 // Each user has a main pool and optional ordered fallback pools.
 type ProxyUser struct {
-	ID                int       `json:"id"`
-	Username          string    `json:"username"`
-	PasswordHash      string    `json:"-"` // bcrypt, never in JSON
-	Enabled           bool      `json:"enabled"`
-	MainPoolID        *int      `json:"main_pool_id,omitempty"`
-	FallbackPoolIDs   []int     `json:"fallback_pool_ids"`
-	MaxRetries        int       `json:"max_retries"`
-	RequestsPerMinute int       `json:"requests_per_minute"` // 0 = no limit
-	InspectTLS        bool      `json:"inspect_tls"`         // intercept HTTPS to count requests
-	TLSProfile        string    `json:"tls_profile"`         // fingerprint to present when intercepting; "" = go
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID              int       `json:"id"`
+	Username        string    `json:"username"`
+	PasswordHash    string    `json:"-"` // bcrypt, never in JSON
+	Enabled         bool      `json:"enabled"`
+	MainPoolID      *int      `json:"main_pool_id,omitempty"`
+	FallbackPoolIDs []int     `json:"fallback_pool_ids"`
+	MaxRetries      int       `json:"max_retries"`
+	InspectTLS      bool      `json:"inspect_tls"` // intercept HTTPS to count requests
+	TLSProfile      string    `json:"tls_profile"` // fingerprint to present when intercepting; "" = go
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 
 	// Enriched fields (JOIN, not stored)
 	MainPoolName string `json:"main_pool_name,omitempty"`
@@ -50,13 +49,12 @@ type ProxyUserWithPools struct {
 
 // CreateProxyUserRequest is the payload for POST /api/v1/proxy-users
 type CreateProxyUserRequest struct {
-	Username          string `json:"username"             validate:"required"`
-	Password          string `json:"password"             validate:"required,min=6"`
-	Enabled           bool   `json:"enabled"`
-	MainPoolID        *int   `json:"main_pool_id,omitempty"`
-	FallbackPoolIDs   []int  `json:"fallback_pool_ids"`
-	MaxRetries        int    `json:"max_retries"           validate:"omitempty,min=1,max=50"`
-	RequestsPerMinute int    `json:"requests_per_minute"` // 0 = no limit
+	Username        string `json:"username"             validate:"required"`
+	Password        string `json:"password"             validate:"required,min=6"`
+	Enabled         bool   `json:"enabled"`
+	MainPoolID      *int   `json:"main_pool_id,omitempty"`
+	FallbackPoolIDs []int  `json:"fallback_pool_ids"`
+	MaxRetries      int    `json:"max_retries"           validate:"omitempty,min=1,max=50"`
 
 	// InspectTLS opts this user's HTTPS traffic into interception, so requests
 	// inside CONNECT tunnels are recorded individually instead of the tunnel
@@ -75,14 +73,13 @@ type CreateProxyUserRequest struct {
 // Partial updates: every field left out of the document keeps its current
 // value — only fields explicitly present are applied.
 type UpdateProxyUserRequest struct {
-	Password          string          `json:"password,omitempty"`                                     // "" keeps
-	Enabled           *bool           `json:"enabled,omitempty"`                                      // omitted keeps
-	MainPoolID        Optional[int]   `json:"main_pool_id"`                                           // omitted keeps, null clears
-	FallbackPoolIDs   Optional[[]int] `json:"fallback_pool_ids"`                                      // omitted keeps, null/[] clears, list replaces
-	MaxRetries        int             `json:"max_retries,omitempty"`                                  // 0 keeps
-	RequestsPerMinute *int            `json:"requests_per_minute,omitempty"`                          // omitted keeps
-	InspectTLS        *bool           `json:"inspect_tls,omitempty"`                                  // omitted keeps
-	TLSProfile        *string         `json:"tls_profile,omitempty" validate:"omitempty,tls_profile"` // omitted keeps
+	Password        string          `json:"password,omitempty"`                                     // "" keeps
+	Enabled         *bool           `json:"enabled,omitempty"`                                      // omitted keeps
+	MainPoolID      Optional[int]   `json:"main_pool_id"`                                           // omitted keeps, null clears
+	FallbackPoolIDs Optional[[]int] `json:"fallback_pool_ids"`                                      // omitted keeps, null/[] clears, list replaces
+	MaxRetries      int             `json:"max_retries,omitempty"`                                  // 0 keeps
+	InspectTLS      *bool           `json:"inspect_tls,omitempty"`                                  // omitted keeps
+	TLSProfile      *string         `json:"tls_profile,omitempty" validate:"omitempty,tls_profile"` // omitted keeps
 }
 
 // proxyUserContextKey is used to pass the resolved ProxyUser through request context

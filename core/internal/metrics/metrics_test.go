@@ -58,7 +58,7 @@ func TestProviderEndToEnd(t *testing.T) {
 	RecordProxyRequest(context.Background(), 1, "alice", true, 200, 42)
 	RecordProxyTunnel(context.Background(), 1, "alice", true, 10, 20, 1500)
 	RecordAuthRejection(context.Background(), "bad_credentials")
-	RecordRateLimitRejection(context.Background())
+	RecordAuthRejection(context.Background(), "rate_limited")
 	RecordHealthCheck(context.Background(), false, 950)
 	RecordSourceFetch(context.Background(), true, 12)
 	RecordPoolAlert(context.Background(), true)
@@ -92,7 +92,7 @@ func TestProviderEndToEnd(t *testing.T) {
 		"rota_proxy_sessions_active 2",
 		"rota_proxy_domain_cooldowns_active 1",
 		"rota_proxy_auth_rejections_total",
-		"rota_proxy_ratelimit_rejections_total",
+		`reason="rate_limited"`,
 		"rota_healthcheck_checks_total",
 		"rota_healthcheck_duration_seconds",
 		"rota_source_fetches_total",

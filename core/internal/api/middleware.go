@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/authlimit"
 	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
@@ -94,6 +95,10 @@ func JWTMiddleware(secret string) func(next http.Handler) http.Handler {
 	}
 }
 
+type proxyUserAuthenticator interface {
+	Authenticate(context.Context, string, string) (*models.ProxyUser, error)
+}
+
 // JWTOrProxyUserMiddleware authorizes a request either with an admin JWT
 // (exactly like JWTMiddleware) or with HTTP Basic credentials of an enabled
 // proxy user. It guards the client-control endpoints (invalidate, session
@@ -107,7 +112,7 @@ func JWTMiddleware(secret string) func(next http.Handler) http.Handler {
 // A present-but-invalid credential of either kind is rejected outright rather
 // than falling through to the other scheme. Rejected credentials return 401;
 // authentication infrastructure errors return 500 and are not counted as bad logins.
-func JWTOrProxyUserMiddleware(secret string, userRepo *repository.UserRepository, log *logger.Logger) func(next http.Handler) http.Handler {
+func JWTOrProxyUserMiddleware(secret string, userRepo proxyUserAuthenticator, log *logger.Logger, limiter *authlimit.Limiter) func(next http.Handler) http.Handler {
 	key := []byte(secret)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +125,10 @@ func JWTOrProxyUserMiddleware(secret string, userRepo *repository.UserRepository
 					return key, nil
 				})
 				if err != nil || !token.Valid {
+					if !limiter.Allow(w, r) {
+						return
+					}
+					limiter.Failed(r)
 					w.Header().Set("Content-Type", "application/json")
 					http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
 					return
@@ -129,6 +138,9 @@ func JWTOrProxyUserMiddleware(secret string, userRepo *repository.UserRepository
 			}
 
 			// 2. Proxy-user Basic credentials
+			if !limiter.Allow(w, r) {
+				return
+			}
 			if username, password, ok := r.BasicAuth(); ok {
 				user, err := userRepo.Authenticate(r.Context(), username, password)
 				if err != nil && !errors.Is(err, repository.ErrProxyAuthentication) {
@@ -138,6 +150,7 @@ func JWTOrProxyUserMiddleware(secret string, userRepo *repository.UserRepository
 					return
 				}
 				if err != nil || user == nil {
+					limiter.Failed(r)
 					log.Warn("proxy-user API auth failed", "username", username)
 					w.Header().Set("Content-Type", "application/json")
 					http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
@@ -148,6 +161,7 @@ func JWTOrProxyUserMiddleware(secret string, userRepo *repository.UserRepository
 				return
 			}
 
+			limiter.Failed(r)
 			w.Header().Set("Content-Type", "application/json")
 			http.Error(w, `{"error":"authorization required"}`, http.StatusUnauthorized)
 		})

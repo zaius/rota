@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/authlimit"
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
@@ -23,11 +24,56 @@ func TestUserAuth_DatabaseFailureIsNotBadCredentials(t *testing.T) {
 	pool.Close() // Fail deterministically without connecting to a database.
 	m := newTestUserAuthMw()
 	m.userRepo = repository.NewUserRepository(&database.DB{Pool: pool})
+	m.authLimiter = authlimit.New(1, time.Minute, time.Minute)
 	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
 	basicProxyAuth(req, "alice", "secret")
-	_, resp := m.HandleRequest(req)
-	if resp == nil || resp.StatusCode != 500 || resp.Header.Get(ProxyErrorHeader) != "rota_internal_error" || resp.Header.Get("Proxy-Authenticate") != "" {
-		t.Fatalf("database outage was misreported: %v", resp)
+	for range 3 {
+		_, resp := m.HandleRequest(req)
+		if resp == nil || resp.StatusCode != 500 || resp.Header.Get(ProxyErrorHeader) != "rota_internal_error" || resp.Header.Get("Proxy-Authenticate") != "" {
+			t.Fatalf("database outage was misreported: %v", resp)
+		}
+	}
+}
+
+func TestUserAuthLimitsOnlyCredentialFailures(t *testing.T) {
+	m := newTestUserAuthMw()
+	m.authLimiter = authlimit.New(2, time.Minute, time.Minute)
+	cacheTestUser(m, &PoolChain{})
+	for i := range 1500 {
+		r := httptest.NewRequest(http.MethodConnect, "http://example.com", nil)
+		username := "alice-session-job"
+		if i < 20 {
+			username += "-profile-invalid-profile"
+		}
+		basicProxyAuth(r, username, "secret")
+		_, resp := m.HandleRequest(r)
+		if i < 20 {
+			if resp == nil || resp.Header.Get(ProxyErrorHeader) != "invalid_tls_profile" {
+				t.Fatalf("unexpected profile rejection: %v", resp)
+			}
+		} else if resp != nil {
+			t.Fatalf("successful traffic exhausted limiter: %v", resp)
+		}
+	}
+	calls := 0
+	m.userRepo = testUserAuthenticator(func(context.Context, string, string) (*models.ProxyUser, error) {
+		calls++
+		return nil, repository.ErrProxyAuthentication
+	})
+	for i, method := range []string{http.MethodGet, http.MethodConnect, http.MethodGet} {
+		r := httptest.NewRequest(method, "http://example.com", nil)
+		basicProxyAuth(r, "alice", "wrong")
+		r.Header.Set("X-Forwarded-For", "203.0.113.99")
+		_, resp := m.HandleRequest(r)
+		if resp == nil || resp.StatusCode != 407 || resp.Header.Get("Proxy-Authenticate") == "" {
+			t.Fatalf("missing auth challenge: %v", resp)
+		}
+		if i == 2 && (resp.Header.Get("Retry-After") != "60" || resp.Header.Get(ProxyErrorHeader) != "proxy_auth_rate_limited") {
+			t.Fatalf("missing block details: %v", resp)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("blocked request reached credential verification: %d calls", calls)
 	}
 }
 

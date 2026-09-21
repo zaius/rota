@@ -46,7 +46,6 @@ var (
 	proxyTunnelDuration   metric.Float64Histogram
 	proxyTunnelBytes      metric.Int64Counter
 	authRejections        metric.Int64Counter
-	rateLimitRejections   metric.Int64Counter
 	healthChecks          metric.Int64Counter
 	healthCheckDuration   metric.Float64Histogram
 	sourceFetches         metric.Int64Counter
@@ -77,8 +76,6 @@ func init() {
 		metric.WithUnit("By"))
 	authRejections, _ = meter.Int64Counter("rota.proxy.auth.rejections",
 		metric.WithDescription("Proxy requests rejected with 407, by reason"))
-	rateLimitRejections, _ = meter.Int64Counter("rota.proxy.ratelimit.rejections",
-		metric.WithDescription("Proxy requests rejected with 594 by the per-IP rate limiter"))
 	healthChecks, _ = meter.Int64Counter("rota.healthcheck.checks",
 		metric.WithDescription("Proxy health checks performed, by outcome"))
 	healthCheckDuration, _ = meter.Float64Histogram("rota.healthcheck.duration",
@@ -196,15 +193,9 @@ func RecordProxyTunnel(ctx context.Context, poolID int, username string, clean b
 }
 
 // RecordAuthRejection records a proxy request rejected with 407. reason is one
-// of "missing_credentials", "bad_credentials", "bad_profile".
+// of "missing_credentials", "bad_credentials", "bad_profile", "rate_limited".
 func RecordAuthRejection(ctx context.Context, reason string) {
 	authRejections.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
-}
-
-// RecordRateLimitRejection records a proxy request rejected with 594. The
-// client IP is deliberately not a label (unbounded).
-func RecordRateLimitRejection(ctx context.Context) {
-	rateLimitRejections.Add(ctx, 1)
 }
 
 // RecordHealthCheck records one proxy health-check probe.

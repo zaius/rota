@@ -8,7 +8,6 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import {
   RotateCw,
-  Gauge,
   Activity,
   Save,
   Loader2,
@@ -269,74 +268,7 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-      {/* Other Settings in 2-column grid */}
-      <div className="grid gap-4 md:grid-cols-2">
-        {/* Rate Limit Settings */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Gauge className="h-5 w-5" />
-              <CardTitle>Rate Limiting</CardTitle>
-            </div>
-            <CardDescription>
-              Control request rate limits
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label htmlFor="rate-limit-enabled">Enable Rate Limiting</Label>
-                <p className="text-xs text-muted-foreground">
-                  Limit number of requests per interval
-                </p>
-              </div>
-              <Switch
-                id="rate-limit-enabled"
-                checked={settings.rate_limit.enabled}
-                onCheckedChange={(checked) =>
-                  setSettings({
-                    ...settings,
-                    rate_limit: { ...settings.rate_limit, enabled: checked },
-                  })
-                }
-              />
-            </div>
-
-            {settings.rate_limit.enabled && (
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="rate-limit-interval">Interval (seconds)</Label>
-                  <Input
-                    id="rate-limit-interval"
-                    type="number"
-                    value={settings.rate_limit.interval}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        rate_limit: { ...settings.rate_limit, interval: parseInt(e.target.value) },
-                      })
-                    }
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="rate-limit-max">Max Requests per Interval</Label>
-                  <Input
-                    id="rate-limit-max"
-                    type="number"
-                    value={settings.rate_limit.max_requests}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        rate_limit: { ...settings.rate_limit, max_requests: parseInt(e.target.value) },
-                      })
-                    }
-                  />
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
+      <div className="grid gap-4">
         {/* Health Check Settings */}
         <Card>
           <CardHeader>

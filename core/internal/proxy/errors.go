@@ -13,7 +13,6 @@ import (
 const (
 	StatusForwardingFailed = 592
 	StatusNoProxyAvailable = 593
-	StatusProxyRateLimited = 594
 	ProxyErrorHeader       = "X-Rota-Error"
 )
 
@@ -79,7 +78,7 @@ func forwardingReason(err error) string {
 	return "upstream_request_failed"
 }
 
-// Capacity and rate-limit errors happen before forwarding. A forwarding error
+// Capacity errors happen before forwarding. A forwarding error
 // may occur after the target processed a request, so it carries no retry promise.
 func writeProxyError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrNoProxyAvailable) {

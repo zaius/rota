@@ -22,7 +22,7 @@
 
 ## ✨ Key Features
 
-- **Proxy routing:** HTTP and SOCKS proxies, per-pool rotation, ordered fallback pools, retries, and per-IP rate limits.
+- **Proxy routing:** HTTP and SOCKS proxies, per-pool rotation, ordered fallback pools, retries, and failed-auth protection.
 - **Pools and sources:** Scheduled imports, GeoIP enrichment, geo/ISP/tag filters, automatic or manual membership, and exports.
 - **Sessions:** Exclusive reservations per target or custom scope, idle expiry, and explicit release/invalidation.
 - **Monitoring:** Scheduled health checks, webhook alerts, and request/tunnel history.
@@ -80,11 +80,9 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `METRICS_ENABLED` | `true` | Prometheus `/metrics` endpoint + optional OTLP push — see [Metrics & Observability](#-metrics--observability) |
 | `METRICS_BEARER_TOKEN` | *(empty)* | When set, `/metrics` requires `Authorization: Bearer <token>` |
-| `AUTH_IP_MAX_ATTEMPTS` | `10` | Failed login attempts before an IP is blocked |
+| `AUTH_IP_MAX_ATTEMPTS` | `10` | Authentication failures across proxy/API entry points before an IP is blocked |
 | `AUTH_IP_WINDOW_MINUTES` | `10` | Sliding window (minutes) to count per-IP failures |
-| `AUTH_IP_BLOCK_MINUTES` | `30` | How long a blocked IP cannot attempt login |
-| `AUTH_GLOBAL_MAX_PER_MINUTE` | `1000` | Max total login attempts/min across all IPs before global lockout |
-| `AUTH_GLOBAL_LOCKOUT_MINUTES` | `1` | Duration of global login lockout |
+| `AUTH_IP_BLOCK_MINUTES` | `30` | How long a blocked IP cannot attempt password authentication |
 
 > **Note**: `ROTA_ADMIN_USER` and `ROTA_ADMIN_PASSWORD` are only used when the database is empty (first start). After that, use the **Settings → Admin Account** page to change credentials.
 
@@ -277,9 +275,8 @@ Rota uses these custom codes on the **proxy listener**. Match the number and `X-
 | --- | --- | --- |
 | **592** | Forwarding/tunnel failure; reason in `X-Rota-Error` below. | Inspect the reason. The target may have received the request; retry only if safe to repeat. |
 | **593** | `no_proxy_available`: eligible proxies are empty, reserved, or on cooldown. | Wait `Retry-After` seconds (currently 5), then retry with the same session/scope. |
-| **594** | `proxy_rate_limited`: Rota's per-IP limiter rejected the request. | Reduce the rate and wait `Retry-After` seconds. |
 
-`593` and `594` are returned before forwarding. `Retry-After` is a polling delay, not a guarantee of availability.
+Rota returns `593` before forwarding. Its `Retry-After` is a polling delay, not a guarantee of availability.
 
 | `592` reason | Meaning |
 | --- | --- |
@@ -300,7 +297,7 @@ An upstream CONNECT target rejection records one failed request for that attempt
 
 HTTP forwarding also stops when the client cancels or its request context expires. An in-flight abort records one failed attempt with `target_failure = true` and a `client request aborted` error; it neither adds nor resets a proxy strike and is excluded from proxy reliability statistics and cleanup. Cancellation before proxy selection records no attempt. An upstream timeout while the client context is still active remains a proxy failure and retries normally.
 
-**Standard codes:** Client proxy authentication retains `407` with `Proxy-Authenticate` and reason `proxy_auth_required` or `invalid_tls_profile`. Internal proxy/authentication failures use `500` with `rota_internal_error`. The directly addressed control API uses standard codes:
+**Standard codes:** Client proxy authentication returns `407` with `Proxy-Authenticate` and reason `proxy_auth_required` or `invalid_tls_profile`. An IP blocked after authentication failures also receives `407`, with `X-Rota-Error: proxy_auth_rate_limited` and `Retry-After` in seconds. Internal proxy/authentication failures use `500` with `rota_internal_error`. The directly addressed control API uses standard codes:
 
 | API case | Result |
 | --- | --- |
@@ -527,7 +524,6 @@ Rota instruments itself once with OpenTelemetry and exports through two paths �
 | `rota_proxy_sessions_active` | gauge | live sticky-session bindings |
 | `rota_proxy_domain_cooldowns_active` | gauge | active domain-scoped cooldowns |
 | `rota_proxy_auth_rejections_total` | counter | 407s by `reason` |
-| `rota_proxy_ratelimit_rejections_total` | counter | 594s from the proxy's per-IP limiter |
 | `rota_proxies` | gauge | fleet size by `status` |
 | `rota_pool_proxies` | gauge | per-pool proxy counts by `pool`, `status` |
 | `rota_proxy_users` | gauge | configured proxy users by `enabled` |
@@ -587,14 +583,15 @@ Public endpoints: `GET /health`, `HEAD /health`, and `POST /api/v1/auth/login`. 
 
 ### Brute-Force Protection
 
-The login endpoint has two independent rate-limit mechanisms:
+Rota limits **failed authentication only**. Successful proxy traffic and release/invalidate calls have no request-volume limit.
 
-| Mechanism | Trigger | Response |
-|-----------|---------|----------|
-| **Per-IP block** | ≥ `AUTH_IP_MAX_ATTEMPTS` failed attempts from one IP within `AUTH_IP_WINDOW_MINUTES` minutes | `429` — IP blocked for `AUTH_IP_BLOCK_MINUTES` minutes |
-| **Global lockout** | ≥ `AUTH_GLOBAL_MAX_PER_MINUTE` total attempts per minute across all IPs | `429` — login disabled for everyone for `AUTH_GLOBAL_LOCKOUT_MINUTES` minute(s) |
+Proxy authentication, admin login, and client-control API authentication share a per-IP failure counter within each process. By default, **10 failures within 10 minutes block password authentication from that IP for 30 minutes**. The threshold-reaching request receives the normal authentication failure; subsequent attempts skip credential verification until the block expires. Correct passwords from a blocked IP must also wait; valid admin JWTs remain usable.
 
-Both responses include a `Retry-After` header. All thresholds are configurable via `.env`.
+Missing/invalid proxy credentials, failed admin logins, and missing/invalid client-control credentials count as failures. Handler-level `403`s, malformed request bodies, invalid TLS-profile options, and database/server errors do not. Successes do not add or reset failures. Blocks do not extend when clients retry, and expiry starts a fresh failure window.
+
+Blocked API authentication returns `429`; blocked proxy authentication retains `407` with `X-Rota-Error: proxy_auth_rate_limited`. Both include `Retry-After` in whole seconds. Proxy auth metrics record these blocks under `rota_proxy_auth_rejections_total{reason="rate_limited"}`.
+
+Configure `AUTH_IP_MAX_ATTEMPTS`, `AUTH_IP_WINDOW_MINUTES`, and `AUTH_IP_BLOCK_MINUTES` through the environment or Compose `.env`; all must be positive. Counters live in memory, reset on restart, and are independent across replicas. The API trusts forwarded client-IP headers only with `TRUST_PROXY_HEADERS=true`; the forward proxy always uses its socket peer.
 
 The dashboard automatically redirects to the login page with a *"Session expired"* message when a `401` response is received.
 

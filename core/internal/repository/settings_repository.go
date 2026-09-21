@@ -131,11 +131,6 @@ func defaultSettings() map[string]map[string]any {
 			"follow_redirect": false,
 			"timeout":         90,
 		},
-		"rate_limit": {
-			"enabled":      false,
-			"interval":     1,
-			"max_requests": 100,
-		},
 		"healthcheck": {
 			"timeout": 60,
 			"workers": 20,

@@ -16,7 +16,6 @@ func TestHealthRouteAnswersGetAndHead(t *testing.T) {
 	s := &Server{
 		router:        chi.NewRouter(),
 		healthHandler: handlers.NewHealthHandler(nil, nil, nil),
-		authRL:        newAuthRateLimiter(5, 1, 1, 60, 1, false, nil),
 	}
 	s.setupRoutes()
 

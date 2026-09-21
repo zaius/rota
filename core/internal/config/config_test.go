@@ -2,6 +2,17 @@ package config
 
 import "testing"
 
+func TestFailedAuthSettingsRequirePositiveValues(t *testing.T) {
+	for _, key := range []string{"AUTH_IP_MAX_ATTEMPTS", "AUTH_IP_WINDOW_MINUTES", "AUTH_IP_BLOCK_MINUTES"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, "0")
+			if _, err := Load(); err == nil {
+				t.Fatalf("accepted %s=0", key)
+			}
+		})
+	}
+}
+
 func TestGetEnvAsInt(t *testing.T) {
 	tests := []struct {
 		name  string

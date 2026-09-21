@@ -5,10 +5,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/authlimit"
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -112,13 +114,14 @@ type userEntry struct {
 // resolve to an enabled proxy user is rejected, so a deployment without
 // proxy_users blocks all traffic rather than running an open proxy.
 type UserAuthMiddleware struct {
-	userRepo   proxyUserAuthenticator
-	poolRepo   *repository.PoolRepository
-	db         *database.DB
-	logger     *logger.Logger
-	sessionMgr *SessionManager
-	domainCD   *DomainCooldownManager
-	tracker    *UsageTracker
+	userRepo    proxyUserAuthenticator
+	authLimiter *authlimit.Limiter
+	poolRepo    *repository.PoolRepository
+	db          *database.DB
+	logger      *logger.Logger
+	sessionMgr  *SessionManager
+	domainCD    *DomainCooldownManager
+	tracker     *UsageTracker
 
 	// mu guards the user chain cache.
 	mu sync.RWMutex
@@ -135,15 +138,17 @@ func NewUserAuthMiddleware(
 	domainCD *DomainCooldownManager,
 	tracker *UsageTracker,
 	log *logger.Logger,
+	limiter *authlimit.Limiter,
 ) *UserAuthMiddleware {
 	m := &UserAuthMiddleware{
-		poolRepo:   poolRepo,
-		db:         db,
-		sessionMgr: sessionMgr,
-		domainCD:   domainCD,
-		tracker:    tracker,
-		logger:     log,
-		cache:      make(map[string]userEntry),
+		poolRepo:    poolRepo,
+		db:          db,
+		sessionMgr:  sessionMgr,
+		domainCD:    domainCD,
+		tracker:     tracker,
+		logger:      log,
+		authLimiter: limiter,
+		cache:       make(map[string]userEntry),
 	}
 	if userRepo != nil {
 		m.userRepo = userRepo
@@ -159,6 +164,12 @@ func NewUserAuthMiddleware(
 // resolve to an enabled proxy user — missing credentials, wrong credentials,
 // or a deployment with no proxy users at all — is rejected with 407.
 func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *http.Response) {
+	if seconds := m.authLimiter.RetryAfter(req); seconds > 0 {
+		resp := unauthorized("proxy_auth_rate_limited")
+		resp.Header.Set("Retry-After", strconv.Itoa(seconds))
+		metrics.RecordAuthRejection(req.Context(), "rate_limited")
+		return req, resp
+	}
 	rawUsername, password, ok := parseProxyAuth(req)
 	if ok {
 		// Parse suffixes from the outside in:
@@ -192,10 +203,12 @@ func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *h
 				}
 			}
 			metrics.RecordAuthRejection(req.Context(), "bad_credentials")
+			m.authLimiter.Failed(req)
 			return req, unauthorized("proxy_auth_required")
 		}
 	}
 	metrics.RecordAuthRejection(req.Context(), "missing_credentials")
+	m.authLimiter.Failed(req)
 	return req, unauthorized("proxy_auth_required")
 }
 

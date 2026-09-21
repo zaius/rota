@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
@@ -30,15 +29,12 @@ func (m *mockHandler) HandleConnectRequest(w http.ResponseWriter, r *http.Reques
 func TestProxyRouter_AuthReject(t *testing.T) {
 	log := logger.New("error")
 
-	rlMw := NewRateLimitMiddleware(models.RateLimitSettings{Enabled: false})
-
 	// A request without resolvable proxy-user credentials must be rejected at
 	// the router level — there is no unauthenticated path.
 	router := &proxyRouter{
-		userAuthMw:  NewTestUserAuthMiddleware(),
-		rateLimitMw: rlMw,
-		upstream:    nil, // won't be reached due to auth rejection
-		logger:      log,
+		userAuthMw: NewTestUserAuthMiddleware(),
+		upstream:   nil, // won't be reached due to auth rejection
+		logger:     log,
 	}
 
 	req := httptest.NewRequest("GET", "http://example.com/path", nil)
@@ -47,33 +43,6 @@ func TestProxyRouter_AuthReject(t *testing.T) {
 
 	if w.Code != http.StatusProxyAuthRequired {
 		t.Fatalf("expected 407, got %d", w.Code)
-	}
-}
-
-func TestProxyRouter_RateLimitReject(t *testing.T) {
-	rlMw := NewRateLimitMiddleware(models.RateLimitSettings{
-		Enabled:     true,
-		Interval:    1,
-		MaxRequests: 1,
-	})
-
-	// Test rate limiting at the middleware level directly (without full router)
-	// to avoid nil pointer on selector/tracker.
-	req1, _ := http.NewRequest("GET", "http://example.com/", nil)
-	req1.RemoteAddr = "5.5.5.5:5555"
-
-	// First request passes rate limit
-	_, rlResp := rlMw.HandleRequest(req1)
-	if rlResp != nil {
-		t.Fatal("first request should pass rate limit")
-	}
-
-	// Second request should be blocked
-	req2, _ := http.NewRequest("GET", "http://example.com/", nil)
-	req2.RemoteAddr = "5.5.5.5:5555"
-	_, rlResp2 := rlMw.HandleRequest(req2)
-	if rlResp2 == nil || rlResp2.StatusCode != StatusProxyRateLimited {
-		t.Fatalf("expected 594, got %v", rlResp2)
 	}
 }
 

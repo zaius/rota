@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/api/handlers"
+	"github.com/alpkeskin/rota/core/internal/authlimit"
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/events"
@@ -40,7 +41,8 @@ type Deps struct {
 
 	// Metrics, when non-nil, is served at GET /metrics (Prometheus exposition
 	// format). It is nil when metrics are disabled.
-	Metrics http.Handler
+	Metrics     http.Handler
+	AuthLimiter *authlimit.Limiter
 }
 
 // Server represents the API server
@@ -54,9 +56,8 @@ type Server struct {
 	corsOrigins       []string
 	webDir            string
 	trustProxyHeaders bool
-	authRL            *authRateLimiter
-	controlRL         *authRateLimiter
-	userRepo          *repository.UserRepository
+	authLimiter       *authlimit.Limiter
+	userRepo          proxyUserAuthenticator
 	metricsHTTP       http.Handler
 
 	// Proxy server reference for reloading
@@ -111,31 +112,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	userHandler := handlers.NewUserHandler(deps.UserRepo, deps.PoolRepo, log)
 	proxyControlHandler := handlers.NewProxyControlHandler(deps.ProxyRepo, deps.PoolRepo, log)
 
-	// Auth rate limiter (per-IP block + global lockout)
-	authRL := newAuthRateLimiter(
-		cfg.AuthIPMaxAttempts,
-		cfg.AuthIPWindowMinutes,
-		cfg.AuthIPBlockMinutes,
-		cfg.AuthGlobalMaxPerMinute,
-		cfg.AuthGlobalLockoutMin,
-		cfg.TrustProxyHeaders,
-		log,
-	)
-
-	// A separate limiter instance protects the client-control endpoints (which
-	// accept proxy-user Basic credentials) so brute-forcing proxy passwords is
-	// blocked with the same thresholds — without heavy but legitimate control
-	// traffic ever tripping the login endpoint's global lockout.
-	controlRL := newAuthRateLimiter(
-		cfg.AuthIPMaxAttempts,
-		cfg.AuthIPWindowMinutes,
-		cfg.AuthIPBlockMinutes,
-		cfg.AuthGlobalMaxPerMinute,
-		cfg.AuthGlobalLockoutMin,
-		cfg.TrustProxyHeaders,
-		log,
-	)
-
 	s := &Server{
 		router:               chi.NewRouter(),
 		logger:               log,
@@ -145,8 +121,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		corsOrigins:          cfg.CORSAllowedOrigins,
 		webDir:               cfg.WebDir,
 		trustProxyHeaders:    cfg.TrustProxyHeaders,
-		authRL:               authRL,
-		controlRL:            controlRL,
+		authLimiter:          deps.AuthLimiter,
 		userRepo:             deps.UserRepo,
 		metricsHTTP:          deps.Metrics,
 		authHandler:          authHandler,
@@ -251,19 +226,17 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Auth: only login is public; everything else requires a valid JWT
-	// Auth rate limiter wraps the login handler — per-IP block + global lockout
-	s.router.With(s.authRL.Middleware()).Post("/api/v1/auth/login", s.authHandler.Login)
+	s.router.With(s.authLimiter.Login).Post("/api/v1/auth/login", s.authHandler.Login)
 
 	// ── Protected routes ───────────────────────────────────────────────────
 	s.router.Route("/api/v1", func(r chi.Router) {
 		// Client-control endpoints: accessible with an admin JWT or with
 		// proxy-user Basic credentials, so the client actually using the proxy
 		// can invalidate/release without holding an admin token. Handlers
-		// scope proxy-user calls to the user's own pools; the brute-force
-		// limiter guards the Basic path.
+		// scope proxy-user calls to the user's own pools. Authentication counts
+		// credential failures without limiting successful control traffic.
 		r.Group(func(cr chi.Router) {
-			cr.Use(s.controlRL.Middleware())
-			cr.Use(JWTOrProxyUserMiddleware(s.jwtSecret, s.userRepo, s.logger))
+			cr.Use(JWTOrProxyUserMiddleware(s.jwtSecret, s.userRepo, s.logger, s.authLimiter))
 
 			cr.Post("/proxies/{id}/invalidate", s.proxyControlHandler.InvalidateProxy)
 			cr.Post("/sessions/invalidate", s.proxyControlHandler.InvalidateSession)

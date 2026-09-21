@@ -43,9 +43,8 @@ func TestProxyRouter_CapacityResponse(t *testing.T) {
 				auth := newTestUserAuthMw()
 				cacheTestUser(auth, chain)
 				router := &proxyRouter{
-					userAuthMw:  auth,
-					rateLimitMw: NewRateLimitMiddleware(models.RateLimitSettings{}),
-					upstream:    NewUpstreamProxyHandler(nil, nil, logger.New("error")),
+					userAuthMw: auth,
+					upstream:   NewUpstreamProxyHandler(nil, nil, logger.New("error")),
 				}
 				target := "http://Example.COM/path"
 				if method == http.MethodConnect {

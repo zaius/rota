@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/authlimit"
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/metrics"
@@ -20,10 +21,9 @@ import (
 // It replaces the goproxy library with a minimal, zero-dependency implementation
 // that supports both HTTP forwarding and HTTPS CONNECT tunneling.
 type proxyRouter struct {
-	upstream    *UpstreamProxyHandler
-	userAuthMw  *UserAuthMiddleware
-	rateLimitMw *RateLimitMiddleware
-	logger      *logger.Logger
+	upstream   *UpstreamProxyHandler
+	userAuthMw *UserAuthMiddleware
+	logger     *logger.Logger
 }
 
 // ServeHTTP dispatches incoming requests through the middleware chain
@@ -36,20 +36,13 @@ func (p *proxyRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Rate limit middleware
-	r, reject = p.rateLimitMw.HandleRequest(r)
-	if reject != nil {
-		writeHTTPResponse(w, reject)
-		return
-	}
-
-	// 3. Attach the normalized target host so selection can honor
+	// 2. Attach the normalized target host so selection can honor
 	//    domain-scoped invalidations.
 	if host := normalizeHost(requestTargetHost(r.Method, r.URL.Host, r.Host)); host != "" {
 		r = r.WithContext(context.WithValue(r.Context(), TargetHostContextKey, host))
 	}
 
-	// 4. Dispatch based on method
+	// 3. Dispatch based on method
 	if r.Method == http.MethodConnect {
 		p.upstream.HandleConnectRequest(w, r)
 	} else {
@@ -85,13 +78,11 @@ type Server struct {
 	tracker       *UsageTracker
 	handler       *UpstreamProxyHandler
 	userAuthMw    *UserAuthMiddleware
-	rateLimitMw   *RateLimitMiddleware
 	proxyRepo     *repository.ProxyRepository
 	settingsRepo  *repository.SettingsRepository
 	sessionMgr    *SessionManager
 	domainCD      *DomainCooldownManager
 	refreshTicker *time.Ticker
-	cleanupTicker *time.Ticker
 	stopChan      chan struct{}
 	// Serialize live scope updates with DB snapshots, so a refresh started
 	// before an invalidation/reactivation cannot overwrite its live effect.
@@ -110,6 +101,7 @@ func New(
 	userRepo *repository.UserRepository,
 	settingsRepo *repository.SettingsRepository,
 	inspector *TLSInspector,
+	limiter *authlimit.Limiter,
 ) (*Server, error) {
 	// Load settings
 	ctx := context.Background()
@@ -134,9 +126,6 @@ func New(
 	// A nil inspector leaves every CONNECT tunnel opaque.
 	handler := NewUpstreamProxyHandler(&settings.Rotation, inspector, log)
 
-	// Create middlewares
-	rateLimitMw := NewRateLimitMiddleware(settings.RateLimit)
-
 	// Session manager for "session" rotation (process-wide, survives chain rebuilds)
 	sessionMgr := NewSessionManager()
 	if cooldowns, err := proxyRepo.ListActiveScopeCooldowns(ctx); err != nil {
@@ -146,14 +135,13 @@ func New(
 	}
 
 	// Create user-aware auth middleware (pool-based routing)
-	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, sessionMgr, domainCD, tracker, log)
+	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, sessionMgr, domainCD, tracker, log, limiter)
 
 	// Create the proxy router
 	router := &proxyRouter{
-		upstream:    handler,
-		userAuthMw:  userAuthMw,
-		rateLimitMw: rateLimitMw,
-		logger:      log,
+		upstream:   handler,
+		userAuthMw: userAuthMw,
+		logger:     log,
 	}
 
 	// WriteTimeout must be 0 for CONNECT tunnels (they are long-lived).
@@ -181,7 +169,6 @@ func New(
 		tracker:      tracker,
 		handler:      handler,
 		userAuthMw:   userAuthMw,
-		rateLimitMw:  rateLimitMw,
 		proxyRepo:    proxyRepo,
 		settingsRepo: settingsRepo,
 		sessionMgr:   sessionMgr,
@@ -232,20 +219,6 @@ func (s *Server) startBackgroundTasks() {
 			}
 		}
 	}()
-
-	// Cleanup rate limiters every 5 minutes
-	s.cleanupTicker = time.NewTicker(5 * time.Minute)
-	go func() {
-		for {
-			select {
-			case <-s.cleanupTicker.C:
-				s.rateLimitMw.CleanupLimiters()
-				s.logger.Debug("cleaned up rate limiters")
-			case <-s.stopChan:
-				return
-			}
-		}
-	}()
 }
 
 // Start starts the proxy server
@@ -266,9 +239,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	close(s.stopChan)
 	if s.refreshTicker != nil {
 		s.refreshTicker.Stop()
-	}
-	if s.cleanupTicker != nil {
-		s.cleanupTicker.Stop()
 	}
 	if s.sessionMgr != nil {
 		s.sessionMgr.Stop()
@@ -408,9 +378,6 @@ func (s *Server) ReloadSettings(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
-
-	// Update middleware settings
-	s.rateLimitMw.UpdateSettings(settings.RateLimit)
 
 	// Update handler settings (atomic publish; read concurrently on the hot path)
 	s.handler.setSettings(&settings.Rotation)

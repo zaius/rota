@@ -110,11 +110,6 @@ export interface Settings {
     follow_redirect: boolean
     timeout: number
   }
-  rate_limit: {
-    enabled: boolean
-    interval: number
-    max_requests: number
-  }
   healthcheck: {
     timeout: number
     workers: number
@@ -391,7 +386,6 @@ export interface ProxyUser {
   main_pool_name?: string
   fallback_pool_ids: number[]
   max_retries: number
-  requests_per_minute: number
   inspect_tls: boolean
   tls_profile: TLSProfile
   created_at: string
@@ -405,7 +399,6 @@ export interface CreateProxyUserRequest {
   main_pool_id?: number | null
   fallback_pool_ids: number[]
   max_retries: number
-  requests_per_minute?: number
   inspect_tls?: boolean
   tls_profile?: TLSProfile
 }
@@ -416,7 +409,6 @@ export interface UpdateProxyUserRequest {
   main_pool_id?: number | null
   fallback_pool_ids?: number[]
   max_retries?: number
-  requests_per_minute?: number
   inspect_tls?: boolean
   tls_profile?: TLSProfile
 }

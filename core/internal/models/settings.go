@@ -7,7 +7,6 @@ import "time"
 // global shared credential setting.
 type Settings struct {
 	Rotation     RotationSettings     `json:"rotation"`
-	RateLimit    RateLimitSettings    `json:"rate_limit"`
 	HealthCheck  HealthCheckSettings  `json:"healthcheck"`
 	ProxyCleanup ProxyCleanupSettings `json:"proxy_cleanup"`
 }
@@ -19,13 +18,6 @@ type Settings struct {
 type RotationSettings struct {
 	FollowRedirect bool `json:"follow_redirect"`
 	Timeout        int  `json:"timeout"` // upstream request timeout in seconds
-}
-
-// RateLimitSettings represents rate limiting configuration
-type RateLimitSettings struct {
-	Enabled     bool `json:"enabled"`
-	Interval    int  `json:"interval"` // in seconds
-	MaxRequests int  `json:"max_requests"`
 }
 
 // HealthCheckSettings represents health check configuration

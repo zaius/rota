@@ -67,16 +67,10 @@ type Config struct {
 	// deployments. (METRICS_BEARER_TOKEN)
 	MetricsBearerToken string
 
-	// Auth brute-force protection
-	// Per-IP: after AuthIPMaxAttempts failures within AuthIPWindowMinutes,
-	// that IP is blocked for AuthIPBlockMinutes.
-	// Global: if total login attempts across all IPs exceed AuthGlobalMaxPerMinute
-	// in a 1-minute window, the login endpoint is locked for AuthGlobalLockoutMin.
-	AuthIPMaxAttempts      int // failed attempts before IP block       (AUTH_IP_MAX_ATTEMPTS, default 10)
-	AuthIPWindowMinutes    int // sliding window to count attempts      (AUTH_IP_WINDOW_MINUTES, default 10)
-	AuthIPBlockMinutes     int // how long to block an IP               (AUTH_IP_BLOCK_MINUTES, default 30)
-	AuthGlobalMaxPerMinute int // max total attempts/min before lockout (AUTH_GLOBAL_MAX_PER_MINUTE, default 1000)
-	AuthGlobalLockoutMin   int // global lockout duration in minutes    (AUTH_GLOBAL_LOCKOUT_MINUTES, default 1)
+	// Failed-auth protection shares per-IP blocks across proxy and API auth.
+	AuthIPMaxAttempts   int // failures before IP block (AUTH_IP_MAX_ATTEMPTS, default 10)
+	AuthIPWindowMinutes int // sliding failure window (AUTH_IP_WINDOW_MINUTES, default 10)
+	AuthIPBlockMinutes  int // IP block duration (AUTH_IP_BLOCK_MINUTES, default 30)
 }
 
 // DatabaseConfig holds database configuration
@@ -167,11 +161,9 @@ func Load() (*Config, error) {
 		MetricsEnabled:     getEnvAsBool("METRICS_ENABLED", true),
 		MetricsBearerToken: getEnv("METRICS_BEARER_TOKEN", ""),
 
-		AuthIPMaxAttempts:      getEnvAsInt("AUTH_IP_MAX_ATTEMPTS", 10),
-		AuthIPWindowMinutes:    getEnvAsInt("AUTH_IP_WINDOW_MINUTES", 10),
-		AuthIPBlockMinutes:     getEnvAsInt("AUTH_IP_BLOCK_MINUTES", 30),
-		AuthGlobalMaxPerMinute: getEnvAsInt("AUTH_GLOBAL_MAX_PER_MINUTE", 1000),
-		AuthGlobalLockoutMin:   getEnvAsInt("AUTH_GLOBAL_LOCKOUT_MINUTES", 1),
+		AuthIPMaxAttempts:   getEnvAsInt("AUTH_IP_MAX_ATTEMPTS", 10),
+		AuthIPWindowMinutes: getEnvAsInt("AUTH_IP_WINDOW_MINUTES", 10),
+		AuthIPBlockMinutes:  getEnvAsInt("AUTH_IP_BLOCK_MINUTES", 30),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -205,6 +197,9 @@ func (c *Config) Validate() error {
 
 	if c.EventStore != "postgres" && c.EventStore != "clickhouse" {
 		return fmt.Errorf("invalid event store: %s (must be postgres or clickhouse)", c.EventStore)
+	}
+	if c.AuthIPMaxAttempts < 1 || c.AuthIPWindowMinutes < 1 || c.AuthIPBlockMinutes < 1 {
+		return fmt.Errorf("AUTH_IP_MAX_ATTEMPTS, AUTH_IP_WINDOW_MINUTES and AUTH_IP_BLOCK_MINUTES must be positive")
 	}
 
 	// Half a keypair means someone intended to enable interception and it

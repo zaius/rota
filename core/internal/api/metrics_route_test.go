@@ -19,7 +19,6 @@ func TestMetricsRouteRegistration(t *testing.T) {
 	withMetrics := &Server{
 		router:      chi.NewRouter(),
 		metricsHTTP: stub,
-		authRL:      newAuthRateLimiter(5, 1, 1, 60, 1, false, nil),
 	}
 	withMetrics.setupRoutes()
 
@@ -31,7 +30,6 @@ func TestMetricsRouteRegistration(t *testing.T) {
 
 	withoutMetrics := &Server{
 		router: chi.NewRouter(),
-		authRL: newAuthRateLimiter(5, 1, 1, 60, 1, false, nil),
 	}
 	withoutMetrics.setupRoutes()
 

@@ -750,6 +750,17 @@ var migrations = []Migration{
 		`,
 		Down: `ALTER TABLE proxy_requests DROP COLUMN target_failure;`,
 	},
+	{
+		Version:     33,
+		Description: "Remove request-volume rate limit settings",
+		Up: `
+			DELETE FROM settings WHERE key = 'rate_limit';
+			ALTER TABLE proxy_users DROP COLUMN IF EXISTS requests_per_minute;
+		`,
+		Down: `
+			ALTER TABLE proxy_users ADD COLUMN IF NOT EXISTS requests_per_minute INTEGER NOT NULL DEFAULT 0;
+		`,
+	},
 }
 
 // migrationLockKey serializes each migration transaction across instances.

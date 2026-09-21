@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/api"
+	"github.com/alpkeskin/rota/core/internal/authlimit"
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/events"
@@ -170,7 +171,8 @@ func run() error {
 	}
 
 	// Create servers
-	proxyServer, err := proxy.New(cfg.ProxyPort, log, db, eventStore, proxyRepo, poolRepo, userRepo, settingsRepo, inspector)
+	authLimiter := authlimit.New(cfg.AuthIPMaxAttempts, time.Duration(cfg.AuthIPWindowMinutes)*time.Minute, time.Duration(cfg.AuthIPBlockMinutes)*time.Minute)
+	proxyServer, err := proxy.New(cfg.ProxyPort, log, db, eventStore, proxyRepo, poolRepo, userRepo, settingsRepo, inspector, authLimiter)
 	if err != nil {
 		return fmt.Errorf("failed to create proxy server: %w", err)
 	}
@@ -187,6 +189,7 @@ func run() error {
 		SourceSvc:         sourceSvc,
 		PoolSvc:           poolSvc,
 		Metrics:           metricsHTTPHandler(metricsProvider),
+		AuthLimiter:       authLimiter,
 	})
 
 	// Set proxy server reference in API server for reload functionality
