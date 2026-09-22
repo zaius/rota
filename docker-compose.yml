@@ -26,6 +26,10 @@ services:
       - AUTH_IP_WINDOW_MINUTES=${AUTH_IP_WINDOW_MINUTES:-10}
       - AUTH_IP_BLOCK_MINUTES=${AUTH_IP_BLOCK_MINUTES:-30}
       - TRUST_PROXY_HEADERS=${TRUST_PROXY_HEADERS:-false}
+      # Mount the CA files with docker-compose.tls-inspect.yml when enabled.
+      - TLS_INSPECT_CA_CERT=${TLS_INSPECT_CA_CERT:-}
+      - TLS_INSPECT_CA_KEY=${TLS_INSPECT_CA_KEY:-}
+      - TLS_INSPECT_BYPASS_DOMAINS=${TLS_INSPECT_BYPASS_DOMAINS:-}
       # Event store: "postgres" (default) keeps request and tunnel history in the
       # primary database; "clickhouse" moves them to the clickhouse service
       # (start it with: docker compose --profile clickhouse up -d).

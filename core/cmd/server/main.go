@@ -168,6 +168,8 @@ func run() error {
 			"ca_expires", ca.NotAfter().Format(time.RFC3339),
 			"bypass_domains", len(cfg.TLSInspect.BypassDomains),
 		)
+	} else {
+		log.Info("HTTPS interception disabled: TLS_INSPECT_CA_CERT and TLS_INSPECT_CA_KEY are unset")
 	}
 
 	// Create servers

@@ -3,8 +3,10 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	fhttp "github.com/bogdanfinn/fhttp"
 	"golang.org/x/net/http2"
 
 	"github.com/alpkeskin/rota/core/internal/tlsprofile"
@@ -270,6 +273,161 @@ func TestDialUpstreamNegotiatesH2(t *testing.T) {
 	if string(body) != "hello from origin" {
 		t.Errorf("body = %q", body)
 	}
+}
+
+func TestH2SessionStreamsResponseBody(t *testing.T) {
+	for _, profile := range []string{"chrome", "firefox", "ios"} {
+		t.Run(profile, func(t *testing.T) {
+			payload := strings.Repeat("streamed response\n", 8192)
+			releaseBody := make(chan struct{}, 1)
+			srv := newOriginServer(t, []string{"h2"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				// Wait until RoundTrip returns headers before sending any body.
+				select {
+				case <-releaseBody:
+					io.WriteString(w, payload) //nolint:errcheck
+				case <-r.Context().Done():
+				}
+			}))
+			session := dialOrigin(t, srv, profile)
+			if session.Protocol() != "h2" {
+				t.Fatalf("negotiated %q, want h2", session.Protocol())
+			}
+
+			// Completing one body must leave the session usable for the next.
+			for n := 0; n < 2; n++ {
+				req := httpRequest(t, http.MethodGet, "/stream", nil)
+				resp, err := session.RoundTrip(req, "origin.test", 10*time.Second)
+				if err != nil {
+					t.Fatalf("request %d: %v", n, err)
+				}
+				releaseBody <- struct{}{}
+				body, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					t.Fatalf("request %d: read body: %v", n, err)
+				}
+				if resp.StatusCode != http.StatusOK || string(body) != payload {
+					t.Fatalf("request %d: status %d, body length %d, want 200 and %d bytes", n, resp.StatusCode, len(body), len(payload))
+				}
+			}
+		})
+	}
+}
+
+func TestH2SessionBodyCancellation(t *testing.T) {
+	for _, cause := range []string{"timeout", "parent cancellation"} {
+		t.Run(cause, func(t *testing.T) {
+			srv := newOriginServer(t, []string{"h2"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+			}))
+			session := dialOrigin(t, srv, "chrome")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			req := httpRequest(t, http.MethodGet, "/stall", nil).WithContext(ctx)
+			timeout := time.Second
+			wantErr := context.DeadlineExceeded
+			if cause == "parent cancellation" {
+				timeout = 0
+				wantErr = context.Canceled
+			}
+			resp, err := session.RoundTrip(req, "origin.test", timeout)
+			if err != nil {
+				t.Fatalf("RoundTrip: %v", err)
+			}
+			defer resp.Body.Close()
+			if cause == "parent cancellation" {
+				cancel()
+			}
+			if _, err := io.ReadAll(resp.Body); !errors.Is(err, wantErr) {
+				t.Fatalf("read body: %v, want %v", err, wantErr)
+			}
+			if cause == "timeout" && ctx.Err() != nil {
+				t.Fatalf("request timeout canceled parent: %v", ctx.Err())
+			}
+		})
+	}
+}
+
+type h2RoundTripFunc func(*fhttp.Request) (*fhttp.Response, error)
+
+func (f h2RoundTripFunc) RoundTrip(req *fhttp.Request) (*fhttp.Response, error) { return f(req) }
+func (f h2RoundTripFunc) Close() error                                          { return nil }
+
+func TestH2SessionReleasesRequestContext(t *testing.T) {
+	profile, err := tlsprofile.Lookup("chrome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finish := range []string{"EOF", "read error", "close", "round trip error"} {
+		t.Run(finish, func(t *testing.T) {
+			var requestCtx context.Context
+			body := &h2TestBody{Reader: strings.NewReader("body")}
+			if finish == "read error" {
+				body.readErr = io.ErrUnexpectedEOF
+			}
+			roundTripErr := errors.New("round trip failed")
+			session := &h2Session{
+				profile: profile,
+				cc: h2RoundTripFunc(func(req *fhttp.Request) (*fhttp.Response, error) {
+					requestCtx = req.Context()
+					if finish == "round trip error" {
+						return nil, roundTripErr
+					}
+					return &fhttp.Response{StatusCode: http.StatusOK, Body: body}, nil
+				}),
+			}
+			req := httpRequest(t, http.MethodGet, "/", nil)
+			resp, err := session.RoundTrip(req, "origin.test", time.Minute)
+			if finish == "round trip error" {
+				if !errors.Is(err, roundTripErr) {
+					t.Fatalf("RoundTrip: %v, want %v", err, roundTripErr)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				if err := requestCtx.Err(); err != nil {
+					t.Fatalf("context ended before body: %v", err)
+				}
+				if finish == "close" {
+					if err := resp.Body.Close(); err != nil {
+						t.Fatal(err)
+					}
+					if !body.closed {
+						t.Fatal("response body did not close the underlying body")
+					}
+				} else if _, err := io.ReadAll(resp.Body); !errors.Is(err, body.readErr) {
+					t.Fatalf("read body: %v, want %v", err, body.readErr)
+				}
+			}
+			if err := requestCtx.Err(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("context after %s: %v, want canceled", finish, err)
+			}
+		})
+	}
+}
+
+type h2TestBody struct {
+	*strings.Reader
+	readErr error
+	closed  bool
+}
+
+func (b *h2TestBody) Read(p []byte) (int, error) {
+	if b.readErr != nil {
+		return 0, b.readErr
+	}
+	return b.Reader.Read(p)
+}
+
+func (b *h2TestBody) Close() error {
+	b.closed = true
+	return nil
 }
 
 // TestPassthroughStaysOnHTTP1 pins the pre-profile behaviour: a user who never

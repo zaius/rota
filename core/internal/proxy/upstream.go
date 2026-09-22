@@ -305,24 +305,47 @@ func (s *h2Session) Upgradable() (net.Conn, *bufio.Reader, bool) { return nil, n
 func (s *h2Session) RoundTrip(req *http.Request, host string, timeout time.Duration) (*http.Response, error) {
 	// A deadline on the underlying connection would tear down the whole
 	// multiplexed session rather than the one request, so the timeout rides on
-	// the request context instead.
+	// the request context instead. Keep it alive until the caller finishes the
+	// response body: RoundTrip returns as soon as the headers arrive.
 	ctx := req.Context()
+	cancel := func() {}
 	if timeout > 0 {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
 	}
 
 	fReq, err := toFrameworkRequest(req, host, s.profile, ctx)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
 	fResp, err := s.cc.RoundTrip(fReq)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("http/2 round trip: %w", err)
 	}
-	return fromFrameworkResponse(fResp, req), nil
+	resp := fromFrameworkResponse(fResp, req)
+	resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// cancelBody releases the request's timeout when the body ends or closes.
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.cancel()
+	}
+	return n, err
+}
+
+func (b *cancelBody) Close() error {
+	defer b.cancel()
+	return b.ReadCloser.Close()
 }
 
 // toFrameworkRequest converts a request parsed off the client into the fork's

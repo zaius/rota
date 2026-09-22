@@ -1,0 +1,18 @@
+# Opt in with:
+# docker compose -f docker-compose.yml -f docker-compose.tls-inspect.yml up -d
+# Use absolute host paths in .env; mount each file at the same container path.
+services:
+  rota:
+    volumes:
+      - type: bind
+        source: ${TLS_INSPECT_CA_CERT:?Set TLS_INSPECT_CA_CERT to the absolute host path of the CA certificate}
+        target: ${TLS_INSPECT_CA_CERT:?Set TLS_INSPECT_CA_CERT to the absolute host path of the CA certificate}
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TLS_INSPECT_CA_KEY:?Set TLS_INSPECT_CA_KEY to the absolute host path of the CA key}
+        target: ${TLS_INSPECT_CA_KEY:?Set TLS_INSPECT_CA_KEY to the absolute host path of the CA key}
+        read_only: true
+        bind:
+          create_host_path: false

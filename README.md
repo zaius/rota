@@ -460,6 +460,18 @@ TLS_INSPECT_CA_KEY=/etc/rota/ca.key
 TLS_INSPECT_BYPASS_DOMAINS=accounts.google.com,api.pinned-service.com
 ```
 
+Use the actual paths to the generated files. For **Docker Compose**, put these
+settings in `.env` with **absolute host paths** and include the inspection overlay
+to mount both files read-only at those same paths inside the container:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.tls-inspect.yml up -d --build rota
+```
+
+The container runs as UID 1000 and must be able to read both files. Include the
+overlay on subsequent Compose commands so the mounts stay configured. For a
+standalone server, export the settings into its environment and restart it.
+
 **2. Enable it per proxy user** with **Inspect HTTPS** or `inspect_tls` via the API. Both the CA and user opt-in are required.
 
 Once on, each request inside the tunnel produces a normal request event with its method, URL, latency and **status code** — which is what makes blocks visible. A `429` or a `403` block page is an answer, not a transport failure, so it still counts as a successful attempt (matching the plain-HTTP path); query `proxy_requests.status_code` to see blocking, rather than the success rate.
@@ -490,16 +502,47 @@ With HTTPS inspection enabled, profiles control Rota's TLS ClientHello and HTTP/
 
 ```bash
 # Use the user's configured default
-curl -x http://alice:pass@localhost:8000 https://example.com
+curl --cacert ca.crt -x http://alice:pass@localhost:8000 https://example.com
 
 # Override for this connection
-curl -x http://alice-profile-ios:pass@localhost:8000 https://example.com
+curl --cacert ca.crt -x http://alice-profile-ios:pass@localhost:8000 https://example.com
 
 # Sticky session and a fingerprint together — profile goes last
-curl -x http://alice-session-abc123-profile-android:pass@localhost:8000 https://example.com
+curl --cacert ca.crt -x http://alice-session-abc123-profile-android:pass@localhost:8000 https://example.com
 ```
 
 Unknown profile names return `407` with `X-Rota-Error: invalid_tls_profile`.
+
+**Verify inspection before testing profiles:** startup logs must include
+`HTTPS interception available for opted-in proxy users`. Add `-v` to a curl
+command above and check that the target certificate's issuer is your inspection
+CA. If you still see the origin's issuer (such as Let's Encrypt), the tunnel is
+opaque: check the server's CA environment and mounts, the user's `inspect_tls`,
+and `TLS_INSPECT_BYPASS_DOMAINS`. A `-profile-...` suffix only selects a fingerprint;
+it does not enable inspection. With `LOG_LEVEL=debug`, an inspected connection
+logs `intercepted tunnel established` with its profile and upstream protocol.
+
+For aiohttp, load the inspection CA into the SSL context used by the session:
+
+```python
+import asyncio
+import ssl
+import aiohttp
+
+async def main():
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile="ca.crt")
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=context)) as session:
+        async with session.get(
+            "https://example.com",
+            proxy="http://localhost:8000",
+            proxy_auth=aiohttp.BasicAuth("alice-profile-chrome", "pass"),
+        ) as response:
+            body = await response.read()
+            print(response.status, len(body))
+
+asyncio.run(main())
+```
 
 Profiles reorder headers but do not change their values, including `User-Agent`; configure the client to match. TCP/IP fingerprints come from the upstream proxy, and captured TLS/HTTP profiles can become outdated.
 
