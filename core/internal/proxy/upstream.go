@@ -412,8 +412,9 @@ func fromFrameworkResponse(resp *fhttp.Response, req *http.Request) *http.Respon
 	}
 
 	// The client connection is HTTP/1.1, so the response is relabelled as
-	// such. An unknown length becomes a chunked body on the way out, which is
-	// how net/http frames ContentLength -1 for a 1.1 client.
+	// such. ContentLength is -1 whenever the target sent no content-length,
+	// which HTTP/2 never needs because END_STREAM ends the body. writeResponse
+	// decides the HTTP/1.1 framing for that body when it goes to the client.
 	return &http.Response{
 		Status:        resp.Status,
 		StatusCode:    resp.StatusCode,

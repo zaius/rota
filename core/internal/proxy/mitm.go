@@ -243,7 +243,7 @@ func (i *TLSInspector) pump(
 		}
 
 		serverWantsClose := resp.Close
-		if err := resp.Write(clientTLS); err != nil {
+		if err := writeResponse(clientTLS, resp); err != nil {
 			resp.Body.Close() //nolint:errcheck
 			i.logger.Debug("intercepted tunnel: write response failed",
 				"source", "proxy", "host", host, "error", err)
@@ -255,6 +255,27 @@ func (i *TLSInspector) pump(
 			return requests
 		}
 	}
+}
+
+// writeResponse relays an upstream response to the client with framing the
+// connection survives.
+//
+// Response.Write frames a body of unknown length the HTTP/1.0 way unless the
+// response already declares chunking: it adds Connection: close and lets EOF
+// mark the end. That header promises a close the pump never delivers, since it
+// holds the connection open for the next request, so the client reads the
+// whole body and then waits forever. Declaring the body chunked first keeps
+// the framing self-delimiting and leaves resp.Close as the only reason the
+// connection ends. An h2 upstream produces such bodies routinely, because
+// HTTP/2 needs no length: END_STREAM marks the end. An HTTP/1.1 upstream
+// produces one only for a HEAD response without a Content-Length.
+func writeResponse(w io.Writer, resp *http.Response) error {
+	unframed := resp.ContentLength < 0 && !resp.Close &&
+		!(len(resp.TransferEncoding) > 0 && resp.TransferEncoding[0] == "chunked")
+	if unframed {
+		resp.TransferEncoding = []string{"chunked"}
+	}
+	return resp.Write(w)
 }
 
 // relayUpgrade forwards a 101 response and then copies the two connections
