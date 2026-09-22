@@ -153,9 +153,8 @@ func run() error {
 	svcManager := services.NewManager(log, backgroundSvcs...)
 
 	// Optional HTTPS interception. Without a configured CA the inspector is
-	// nil and every CONNECT tunnel stays opaque, regardless of what any proxy
-	// user has set — the per-user inspect_tls flag can only narrow this, never
-	// enable it.
+	// nil and requests for inspection fail. The per-user inspect_tls flag
+	// requires a server-side CA; other CONNECT tunnels stay opaque.
 	var inspector *proxy.TLSInspector
 	if cfg.TLSInspect.Enabled() {
 		ca, err := proxy.LoadCertAuthority(cfg.TLSInspect.CACertFile, cfg.TLSInspect.CAKeyFile)

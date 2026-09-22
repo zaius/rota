@@ -275,6 +275,7 @@ Rota uses these custom codes on the **proxy listener**. Match the number and `X-
 | --- | --- | --- |
 | **592** | Forwarding/tunnel failure; reason in `X-Rota-Error` below. | Inspect the reason. The target may have received the request; retry only if safe to repeat. |
 | **593** | `no_proxy_available`: eligible proxies are empty, reserved, or on cooldown. | Wait `Retry-After` seconds (currently 5), then retry with the same session/scope. |
+| **594** | Requested TLS inspection/profile cannot run; see [TLS fingerprint profiles](#tls-fingerprint-profiles) for `X-Rota-Error` reasons. | Correct the inspection configuration before retrying. Rota rejects the CONNECT before selecting or contacting an upstream proxy. |
 
 Rota returns `593` before forwarding. Its `Retry-After` is a polling delay, not a guarantee of availability.
 
@@ -479,7 +480,7 @@ Once on, each request inside the tunnel produces a normal request event with its
 > **Before enabling, understand the trade-offs:**
 > - The client must **trust the CA**, or every intercepted request fails its certificate check.
 > - **The target sees Rota's handshake, not the client's.** Which handshake that is depends on the user's TLS fingerprint profile — see below. The default is Go's, which is recognizable.
-> - **Certificate-pinning targets will fail** regardless of trust. Add them to `TLS_INSPECT_BYPASS_DOMAINS`.
+> - **Certificate-pinning targets will fail** regardless of trust. `TLS_INSPECT_BYPASS_DOMAINS` prevents inspection of those targets; inspection requests to them return `594`. Use an opted-out proxy user without a profile override for opaque access.
 > - The CA key can mint a certificate for **any** host. Treat it like any other signing key.
 
 ### TLS fingerprint profiles
@@ -521,6 +522,35 @@ opaque: check the server's CA environment and mounts, the user's `inspect_tls`,
 and `TLS_INSPECT_BYPASS_DOMAINS`. A `-profile-...` suffix only selects a fingerprint;
 it does not enable inspection. With `LOG_LEVEL=debug`, an inspected connection
 logs `intercepted tunnel established` with its profile and upstream protocol.
+
+When requested inspection or a TLS profile cannot run, Rota rejects CONNECT with
+**594** before DNS lookup, proxy selection, or session reservation. This covers
+`inspect_tls=true` and explicit `-profile-...` overrides (including `go`). Rota
+logs an **error** with the username, target host,
+effective profile, reason, and corrective action. The response includes an
+`X-Rota-Error` code and an actionable text body:
+
+```text
+HTTP/1.1 594
+X-Rota-Error: tls_inspection_ca_not_configured
+
+TLS inspection required for profile ios but unavailable: Set TLS_INSPECT_CA_CERT and TLS_INSPECT_CA_KEY, mount readable CA files, and restart Rota
+```
+
+| `594` reason | Corrective action |
+|--------|-------------------|
+| `tls_inspection_ca_not_configured` | Set both `TLS_INSPECT_CA_CERT` and `TLS_INSPECT_CA_KEY`, mount readable CA files, and restart Rota. |
+| `tls_inspection_disabled` | Enable `inspect_tls` for the proxy user. A profile suffix alone does not enable inspection. |
+| `tls_inspection_bypassed` | Check `TLS_INSPECT_BYPASS_DOMAINS`; the error identifies the matching entry. |
+| `tls_inspection_invalid_host` | Use a valid CONNECT target host. |
+
+Rota never silently falls back to an opaque tunnel for these requests, including
+on bypass domains. Ordinary clients without inspection or profile requests keep
+their opaque tunnels. A `594` carries no `Retry-After`: waiting or rotating
+proxies does not fix the configuration. TLS handshake failures after CONNECT
+succeeds close the connection and log the user, host, profile, and error.
+A stored profile stays dormant while `inspect_tls=false`; only a per-connection
+override requests a replacement TLS stack in that case.
 
 For aiohttp, load the inspection CA into the SSL context used by the session:
 

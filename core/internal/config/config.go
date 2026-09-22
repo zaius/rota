@@ -86,9 +86,8 @@ type DatabaseConfig struct {
 // TLSInspectConfig holds the server-side half of HTTPS interception.
 //
 // Interception requires this AND the per-user inspect_tls flag: a CA here only
-// makes interception possible, never automatic. With no CA configured every
-// CONNECT tunnel stays opaque no matter what any user has set, so clients keep
-// owning their own TLS by default.
+// makes interception possible, never automatic. With no CA configured, requests
+// for inspection fail; other CONNECT tunnels stay opaque.
 type TLSInspectConfig struct {
 	// CACertFile / CAKeyFile are PEM paths for the CA that signs the
 	// certificates presented to intercepted clients. Both or neither.

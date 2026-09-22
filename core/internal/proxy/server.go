@@ -123,7 +123,7 @@ func New(
 	}
 
 	// Create upstream proxy handler (forwards through the request's PoolChain).
-	// A nil inspector leaves every CONNECT tunnel opaque.
+	// A nil inspector rejects inspection requests and leaves other tunnels opaque.
 	handler := NewUpstreamProxyHandler(&settings.Rotation, inspector, log)
 
 	// Session manager for "session" rotation (process-wide, survives chain rebuilds)

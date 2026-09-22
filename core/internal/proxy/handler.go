@@ -43,7 +43,7 @@ type UpstreamProxyHandler struct {
 }
 
 // NewUpstreamProxyHandler creates a new upstream proxy handler. inspector may
-// be nil, in which case CONNECT tunnels are always passed through opaquely.
+// be nil, in which case requests for TLS inspection fail before forwarding.
 func NewUpstreamProxyHandler(
 	settings *models.RotationSettings,
 	inspector *TLSInspector,
@@ -152,6 +152,27 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// Reject unmet inspection requirements before DNS, proxy selection, or
+	// session reservation can consume an upstream attempt.
+	profile := tlsProfileFor(reqCtx, chain)
+	skipReason, action := "tls_inspection_disabled", "Enable inspect_tls for this proxy user; a -profile- suffix only selects a fingerprint"
+	if chain.InspectTLS() {
+		skipReason, action = h.inspector.skipReason(host)
+	}
+	profileOverride, _ := reqCtx.Value(TLSProfileContextKey).(*tlsprofile.Profile)
+	// A stored profile stays dormant until the user opts in; an explicit
+	// connection override always requests a replacement TLS stack.
+	inspectionRequested := chain.InspectTLS() || profileOverride != nil
+	if skipReason != "" && inspectionRequested {
+		h.logger.Error("CONNECT rejected: requested TLS inspection is unavailable",
+			"source", "proxy", "username", chain.username, "host", host,
+			"profile", profile.Name, "inspect_tls", chain.InspectTLS(),
+			"reason", skipReason, "action", action)
+		writeRotaError(w, StatusTLSInspectionUnavailable, skipReason,
+			"TLS inspection required for profile "+profile.Name+" but unavailable: "+action)
+		return
+	}
+
 	upstreamConn, binding, err := chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
 	if err != nil {
 		h.logger.Error("CONNECT upstream failed",
@@ -200,12 +221,13 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		clientStream = &prefixConn{Conn: clientConn, prefix: buffered}
 	}
 
-	if h.inspector != nil && chain.InspectTLS() && h.inspector.ShouldInspect(host) {
-		counts, requests, err := h.inspector.Serve(clientStream, upstreamConn, host, binding, tlsProfileFor(reqCtx, chain), h.tunnelTimeout())
+	if skipReason == "" {
+		counts, requests, err := h.inspector.Serve(clientStream, upstreamConn, host, binding, profile, h.tunnelTimeout())
 		binding.RecordClose(counts, requests, err)
 		if err != nil {
 			h.logger.Warn("tunnel interception failed",
-				"source", "proxy", "host", host, "error", err)
+				"source", "proxy", "username", chain.username, "host", host,
+				"profile", profile.Name, "error", err)
 		} else {
 			h.logger.Debug("intercepted tunnel closed",
 				"source", "proxy", "host", host,

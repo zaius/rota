@@ -11,9 +11,10 @@ import (
 // These application-specific statuses distinguish Rota-generated failures from
 // HTTP responses received upstream. Keep their meanings in sync with README.md.
 const (
-	StatusForwardingFailed = 592
-	StatusNoProxyAvailable = 593
-	ProxyErrorHeader       = "X-Rota-Error"
+	StatusForwardingFailed         = 592
+	StatusNoProxyAvailable         = 593
+	StatusTLSInspectionUnavailable = 594
+	ProxyErrorHeader               = "X-Rota-Error"
 )
 
 // upstreamFailure records the stage we can actually identify. A CONNECT

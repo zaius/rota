@@ -33,7 +33,8 @@ import (
 //
 //   - The client must trust the configured CA, or every intercepted request
 //     fails its certificate check. Hosts that pin certificates will fail
-//     regardless of trust — put those in the bypass list.
+//     regardless of trust. The bypass list blocks inspection of those hosts;
+//     clients need an opted-out user without a profile override to reach them.
 //   - The target sees Rota's handshake, not the client's. Which handshake that
 //     is depends on the user's TLS profile: by default Go's, or the
 //     fingerprint of a real device. See package tlsprofile.
@@ -76,19 +77,26 @@ func NewTLSInspector(ca *CertAuthority, bypassDomains []string, log *logger.Logg
 // ShouldInspect reports whether host (a CONNECT authority, with or without a
 // port) may be intercepted.
 func (i *TLSInspector) ShouldInspect(host string) bool {
+	reason, _ := i.skipReason(host)
+	return reason == ""
+}
+
+// skipReason explains why the inspector cannot handle a host and how to enable
+// inspection. An empty reason means the inspector can handle the host.
+func (i *TLSInspector) skipReason(host string) (reason, action string) {
 	if i == nil || i.ca == nil {
-		return false
+		return "tls_inspection_ca_not_configured", "Set TLS_INSPECT_CA_CERT and TLS_INSPECT_CA_KEY, mount readable CA files, and restart Rota"
 	}
 	h := normalizeHost(host)
 	if h == "" {
-		return false
+		return "tls_inspection_invalid_host", "Use a valid CONNECT target host"
 	}
 	for _, d := range i.bypass {
 		if hostMatchesDomain(h, d) {
-			return false
+			return "tls_inspection_bypassed", "TLS_INSPECT_BYPASS_DOMAINS excludes " + d + "; remove that entry to inspect this target"
 		}
 	}
-	return true
+	return "", ""
 }
 
 // Serve intercepts an established tunnel: it terminates TLS toward the client
