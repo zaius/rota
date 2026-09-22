@@ -99,6 +99,15 @@ func TestControlAuthSharesFailureBlocksAndAllowsValidJWT(t *testing.T) {
 	h := JWTOrProxyUserMiddleware("test", repo, logger.New("error"), l)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(204)
 	}))
+	// A request without credentials gets the challenge without consuming
+	// budget: Basic clients often send credentials only after a 401.
+	for range 1500 {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/release", nil))
+		if w.Code != 401 || w.Header().Get("Retry-After") != "" {
+			t.Fatalf("bare request counted as a failure: %d %v", w.Code, w.Header())
+		}
+	}
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/release", nil)
 	r.SetBasicAuth("alice", "wrong")
 	// A login failure and a control-API failure share one IP budget.

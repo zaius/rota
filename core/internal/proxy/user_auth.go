@@ -163,6 +163,11 @@ func NewUserAuthMiddleware(
 // it in the request context so the handler can use it. Anything that does not
 // resolve to an enabled proxy user — missing credentials, wrong credentials,
 // or a deployment with no proxy users at all — is rejected with 407.
+//
+// Only rejected credentials count toward the per-IP failed-auth block. A
+// request with no Proxy-Authorization header is not a guess: many clients send
+// credentials only after this 407 challenge, so counting the challenge would
+// block a well-behaved scraper partway through a run.
 func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *http.Response) {
 	if seconds := m.authLimiter.RetryAfter(req); seconds > 0 {
 		resp := unauthorized("proxy_auth_rate_limited")
@@ -208,7 +213,6 @@ func (m *UserAuthMiddleware) HandleRequest(req *http.Request) (*http.Request, *h
 		}
 	}
 	metrics.RecordAuthRejection(req.Context(), "missing_credentials")
-	m.authLimiter.Failed(req)
 	return req, unauthorized("proxy_auth_required")
 }
 

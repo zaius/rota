@@ -660,7 +660,7 @@ Rota limits **failed authentication only**. Successful proxy traffic and release
 
 Proxy authentication, admin login, and client-control API authentication share a per-IP failure counter within each process. By default, **10 failures within 10 minutes block password authentication from that IP for 30 minutes**. The threshold-reaching request receives the normal authentication failure; subsequent attempts skip credential verification until the block expires. Correct passwords from a blocked IP must also wait; valid admin JWTs remain usable.
 
-Missing/invalid proxy credentials, failed admin logins, and missing/invalid client-control credentials count as failures. Handler-level `403`s, malformed request bodies, invalid TLS-profile options, and database/server errors do not. Successes do not add or reset failures. Blocks do not extend when clients retry, and expiry starts a fresh failure window.
+Invalid proxy credentials, failed admin logins, and invalid client-control credentials count as failures. Requests that present no credentials do not: many clients send credentials only after the `407`/`401` challenge, so a challenge is not a failed guess. Handler-level `403`s, malformed request bodies, invalid TLS-profile options, and database/server errors do not count either. Successes do not add or reset failures. Blocks do not extend when clients retry, and expiry starts a fresh failure window.
 
 Blocked API authentication returns `429`; blocked proxy authentication retains `407` with `X-Rota-Error: proxy_auth_rate_limited`. Both include `Retry-After` in whole seconds. Proxy auth metrics record these blocks under `rota_proxy_auth_rejections_total{reason="rate_limited"}`.
 

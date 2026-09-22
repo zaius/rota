@@ -55,6 +55,15 @@ func TestUserAuthLimitsOnlyCredentialFailures(t *testing.T) {
 			t.Fatalf("successful traffic exhausted limiter: %v", resp)
 		}
 	}
+	// Challenge-response clients send their first request bare and add
+	// credentials only after the 407, so challenges must not consume budget.
+	for range 1500 {
+		r := httptest.NewRequest(http.MethodConnect, "http://example.com", nil)
+		_, resp := m.HandleRequest(r)
+		if resp == nil || resp.StatusCode != 407 || resp.Header.Get(ProxyErrorHeader) != "proxy_auth_required" || resp.Header.Get("Retry-After") != "" {
+			t.Fatalf("auth challenge counted as a failure: %v", resp)
+		}
+	}
 	calls := 0
 	m.userRepo = testUserAuthenticator(func(context.Context, string, string) (*models.ProxyUser, error) {
 		calls++

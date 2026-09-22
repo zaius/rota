@@ -112,6 +112,10 @@ type proxyUserAuthenticator interface {
 // A present-but-invalid credential of either kind is rejected outright rather
 // than falling through to the other scheme. Rejected credentials return 401;
 // authentication infrastructure errors return 500 and are not counted as bad logins.
+//
+// Only rejected credentials count toward the per-IP failed-auth block. A
+// request that presents none gets the 401 without consuming budget, since
+// Basic clients commonly send credentials only after a challenge.
 func JWTOrProxyUserMiddleware(secret string, userRepo proxyUserAuthenticator, log *logger.Logger, limiter *authlimit.Limiter) func(next http.Handler) http.Handler {
 	key := []byte(secret)
 	return func(next http.Handler) http.Handler {
@@ -161,7 +165,6 @@ func JWTOrProxyUserMiddleware(secret string, userRepo proxyUserAuthenticator, lo
 				return
 			}
 
-			limiter.Failed(r)
 			w.Header().Set("Content-Type", "application/json")
 			http.Error(w, `{"error":"authorization required"}`, http.StatusUnauthorized)
 		})

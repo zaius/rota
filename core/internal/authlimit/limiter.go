@@ -53,7 +53,8 @@ func (l *Limiter) RetryAfter(r *http.Request) int {
 	return max(0, int(math.Ceil(remaining.Seconds())))
 }
 
-// Failed records only rejected credentials, never authorization or server errors.
+// Failed records only rejected credentials, never absent credentials,
+// authorization failures or server errors.
 func (l *Limiter) Failed(r *http.Request) {
 	if l == nil {
 		return
