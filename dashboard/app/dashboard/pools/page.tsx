@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback, useRef } from "react"
 import {
   Plus, Trash2, RefreshCw,
   Pencil, Loader2, Layers, ShieldCheck, Globe,
-  Download, Bell, BellOff, Tag,
+  Download, Bell, BellOff, Tag, X,
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
@@ -30,7 +30,9 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
+import { Checkbox } from "@/components/ui/checkbox"
 import { GeoSelector } from "@/components/geo-selector"
+import { TagInput } from "@/components/tag-input"
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types & helpers
@@ -112,6 +114,26 @@ export default function PoolsPage() {
   const [newGeoCountry, setNewGeoCountry] = useState("")
   const [newGeoCity, setNewGeoCity] = useState("")
 
+  // Suggestions for the tag and ISP filter inputs (best-effort)
+  const tagListQuery = useResourceQuery(["proxy-tags"], () => api.getTagList())
+  const ispListQuery = useResourceQuery(["isp-list"], () => api.getISPList())
+
+  // Manual "add proxies to pool" picker
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerSearch, setPickerSearch] = useState("")
+  const [pickerQuery, setPickerQuery] = useState("")
+  const [pickerSelected, setPickerSelected] = useState<number[]>([])
+  const [addingProxies, setAddingProxies] = useState(false)
+  useEffect(() => {
+    const timer = setTimeout(() => setPickerQuery(pickerSearch.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [pickerSearch])
+  const pickerResults = useResourceQuery(
+    ["pool-picker", pickerQuery],
+    () => api.getProxies({ page: 1, limit: 50, search: pickerQuery || undefined }).then(r => r.proxies),
+    { enabled: pickerOpen },
+  )
+
   // Alert rules
   const [alertRules, setAlertRules] = useState<PoolAlertRule[]>([])
   const [alertDialogOpen, setAlertDialogOpen] = useState(false)
@@ -127,6 +149,8 @@ export default function PoolsPage() {
     setForm({ ...DEFAULT_POOL_FORM, geo_filters: [] })
     setNewGeoCountry("")
     setNewGeoCity("")
+    tagListQuery.invalidate()
+    ispListQuery.invalidate()
     setDialogOpen(true)
   }
 
@@ -153,6 +177,8 @@ export default function PoolsPage() {
     })
     setNewGeoCountry("")
     setNewGeoCity("")
+    tagListQuery.invalidate()
+    ispListQuery.invalidate()
     setDialogOpen(true)
   }
 
@@ -290,6 +316,50 @@ export default function PoolsPage() {
     }
   }
 
+  // ── Manual pool membership ────────────────────────────────────────────────
+
+  const openPicker = () => {
+    setPickerSearch("")
+    setPickerQuery("")
+    setPickerSelected([])
+    setPickerOpen(true)
+  }
+
+  const handleAddProxiesToPool = async () => {
+    if (!selectedPool || pickerSelected.length === 0) return
+    setAddingProxies(true)
+    try {
+      const res = await api.addPoolProxies(selectedPool.id, pickerSelected)
+      toast.success(`Added ${res.added} ${res.added === 1 ? "proxy" : "proxies"} to the pool`)
+      setPickerOpen(false)
+      handleSelectPool(selectedPool)
+      loadAll()
+    } catch {
+      toast.error("Failed to add proxies to the pool")
+    } finally {
+      setAddingProxies(false)
+    }
+  }
+
+  const handleRemoveProxyFromPool = async (proxyId: number) => {
+    if (!selectedPool) return
+    try {
+      await api.removePoolProxies(selectedPool.id, [proxyId])
+      setPoolProxies(prev => prev.filter(p => p.proxy_id !== proxyId))
+      toast.success("Proxy removed from the pool")
+      loadAll()
+    } catch {
+      toast.error("Failed to remove proxy from the pool")
+    }
+  }
+
+  // A pool whose filters rebuild its membership on sync drops manual
+  // additions that don't match them.
+  const rebuildsFromFilters = (p: ProxyPool) =>
+    p.sync_mode !== "manual" &&
+    ((p.geo_filters?.length ?? 0) > 0 || (p.isp_filters?.length ?? 0) > 0 ||
+      (p.tag_filters?.length ?? 0) > 0 || !!p.country_code)
+
   const stopHcPoll = useCallback(() => {
     if (hcPollRef.current) {
       clearInterval(hcPollRef.current)
@@ -346,7 +416,7 @@ export default function PoolsPage() {
         <div>
           <h1 className="text-2xl font-bold">Proxy Pools</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Named groups of proxies with geo filters and independent rotation strategies
+            Named groups of proxies with geo, ISP or tag filters and independent rotation strategies
           </p>
         </div>
         <Button size="sm" onClick={openCreate}>
@@ -463,7 +533,7 @@ export default function PoolsPage() {
                             variant="outline" size="sm"
                             onClick={handleSync}
                             disabled={syncing}
-                            title="Re-sync proxies from geo filters"
+                            title="Re-sync proxies from pool filters"
                           >
                             {syncing
                               ? <Loader2 className="h-3 w-3 animate-spin mr-1" />
@@ -595,9 +665,14 @@ export default function PoolsPage() {
                   {/* Proxies in pool */}
                   <Card>
                     <CardHeader className="pb-2">
-                      <CardTitle className="text-sm">
-                        Proxies in pool ({poolProxies.length})
-                      </CardTitle>
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-sm">
+                          Proxies in pool ({poolProxies.length})
+                        </CardTitle>
+                        <Button size="sm" variant="outline" onClick={openPicker}>
+                          <Plus className="h-3 w-3 mr-1" />Add Proxies
+                        </Button>
+                      </div>
                     </CardHeader>
                     <CardContent className="p-0">
                       {poolProxiesLoading ? (
@@ -606,7 +681,7 @@ export default function PoolsPage() {
                         </div>
                       ) : poolProxies.length === 0 ? (
                         <p className="text-center py-6 text-sm text-muted-foreground">
-                          No proxies. Use Sync to populate from geo filters.
+                          No proxies. Use Sync to populate from the pool&apos;s filters, or add proxies manually.
                         </p>
                       ) : (
                         <div className="max-h-80 overflow-auto">
@@ -617,6 +692,7 @@ export default function PoolsPage() {
                                 <TableHead className="text-xs">Geo</TableHead>
                                 <TableHead className="text-xs">Status</TableHead>
                                 <TableHead className="text-xs text-right">RT</TableHead>
+                                <TableHead className="w-8" />
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -638,6 +714,17 @@ export default function PoolsPage() {
                                   </TableCell>
                                   <TableCell className="text-xs text-right text-muted-foreground">
                                     {pp.avg_response_time ? `${pp.avg_response_time}ms` : "—"}
+                                  </TableCell>
+                                  <TableCell className="p-0 pr-2 text-right">
+                                    <Button
+                                      variant="ghost" size="icon"
+                                      className="h-6 w-6 text-muted-foreground hover:text-red-500"
+                                      title="Remove from pool"
+                                      aria-label={`Remove ${pp.address} from pool`}
+                                      onClick={() => handleRemoveProxyFromPool(pp.proxy_id)}
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </Button>
                                   </TableCell>
                                 </TableRow>
                               ))}
@@ -783,7 +870,7 @@ export default function PoolsPage() {
                     <div className="flex flex-wrap gap-1.5 min-h-[28px]">
                       {formGeoCount === 0 && (
                         <span className="text-xs text-muted-foreground italic">
-                          No country filters yet — this pool will not sync any proxies. Add one below, or pick All countries.
+                          No country filters. Add one below, pick All countries, or select proxies by ISP or tag.
                         </span>
                       )}
                       {(form.geo_filters ?? []).map((f, idx) => (
@@ -914,6 +1001,50 @@ export default function PoolsPage() {
                 )}
               </div>
 
+              {/* Tag filters — proxies carrying every listed tag join, including
+                  ones without GeoIP data (local or VPN proxies) */}
+              <div className="col-span-2 flex flex-col gap-2 border rounded-md p-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium flex items-center gap-1.5">
+                    <Tag className="h-3.5 w-3.5" />Tag filters
+                  </Label>
+                  <span className="text-xs text-muted-foreground">
+                    {form.tag_filters?.length ?? 0} filter{(form.tag_filters?.length ?? 0) === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <TagInput
+                  value={form.tag_filters ?? []}
+                  onChange={tag_filters => setForm({ ...form, tag_filters })}
+                  suggestions={tagListQuery.data ?? []}
+                  placeholder="e.g. residential"
+                  emptyText="No tag filters"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Proxies carrying <strong>all</strong> of these tags join the pool. Tag proxies on the Proxy Management page.
+                </p>
+              </div>
+
+              {/* ISP filters — substring match against the proxy's GeoIP ISP */}
+              <div className="col-span-2 flex flex-col gap-2 border rounded-md p-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">ISP filters</Label>
+                  <span className="text-xs text-muted-foreground">
+                    {form.isp_filters?.length ?? 0} filter{(form.isp_filters?.length ?? 0) === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <TagInput
+                  value={form.isp_filters ?? []}
+                  onChange={isp_filters => setForm({ ...form, isp_filters })}
+                  suggestions={ispListQuery.data ?? []}
+                  placeholder="e.g. Comcast"
+                  emptyText="No ISP filters"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Proxies whose ISP contains <strong>any</strong> of these names join the pool.
+                  A proxy matching any country, ISP or tag filter becomes a member.
+                </p>
+              </div>
+
               {/* Full-width: the session label is too long for half the dialog */}
               <div className="col-span-2 flex flex-col gap-1.5 min-w-0">
                 <Label>Rotation strategy</Label>
@@ -1025,6 +1156,78 @@ export default function PoolsPage() {
             <Button onClick={handleSave} disabled={saving}>
               {saving && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
               {editPool ? "Save Changes" : "Create Pool"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add proxies to pool dialog */}
+      <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add proxies to {selectedPool?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 py-2">
+            {selectedPool && rebuildsFromFilters(selectedPool) && (
+              <p className="text-xs rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-yellow-600 dark:text-yellow-400">
+                This pool rebuilds its members from its filters on every sync, which drops
+                added proxies that don&apos;t match them. Switch the pool to manual sync mode,
+                or tag the proxies and add a matching tag filter, to keep them.
+              </p>
+            )}
+            <Input
+              placeholder="Search by address…"
+              value={pickerSearch}
+              onChange={e => setPickerSearch(e.target.value)}
+            />
+            <div className="border rounded-md max-h-64 overflow-auto">
+              {pickerResults.isLoading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : (pickerResults.data ?? []).length === 0 ? (
+                <p className="text-center py-6 text-sm text-muted-foreground">No proxies found</p>
+              ) : (
+                <div className="divide-y">
+                  {(pickerResults.data ?? []).map(p => {
+                    const inPool = poolProxies.some(pp => pp.proxy_id === p.id)
+                    const checked = pickerSelected.includes(p.id)
+                    return (
+                      <label
+                        key={p.id}
+                        className={`flex items-center gap-2 px-3 py-1.5 text-xs ${inPool ? "opacity-50" : "cursor-pointer hover:bg-muted/50"}`}
+                      >
+                        <Checkbox
+                          checked={inPool || checked}
+                          disabled={inPool}
+                          onCheckedChange={v => setPickerSelected(prev =>
+                            v ? [...prev, p.id] : prev.filter(id => id !== p.id)
+                          )}
+                        />
+                        <span className="font-mono flex-1 truncate">{p.address}</span>
+                        <Badge variant="outline" className="text-xs uppercase">{p.protocol}</Badge>
+                        {(p.tags ?? []).slice(0, 2).map(t => (
+                          <Badge key={t} variant="secondary" className="text-xs">{t}</Badge>
+                        ))}
+                        <span className={statusColor(p.status)}>{inPool ? "in pool" : p.status}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">Showing up to 50 matches; search to narrow the list.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPickerOpen(false)} disabled={addingProxies}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAddProxiesToPool}
+              disabled={addingProxies || pickerSelected.length === 0}
+            >
+              {addingProxies && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+              Add {pickerSelected.length || ""} {pickerSelected.length === 1 ? "Proxy" : "Proxies"}
             </Button>
           </DialogFooter>
         </DialogContent>
