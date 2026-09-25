@@ -171,5 +171,16 @@ func (h *SettingsHandler) validateSettings(s *models.Settings) error {
 		return fmt.Errorf("healthcheck.workers must be between 1 and 100")
 	}
 
+	// Validate proxy cleanup
+	if s.ProxyCleanup.MaxFailedDays < 0 {
+		return fmt.Errorf("proxy_cleanup.max_failed_days must not be negative")
+	}
+	if s.ProxyCleanup.MinSuccessRate < 0 || s.ProxyCleanup.MinSuccessRate > 100 {
+		return fmt.Errorf("proxy_cleanup.min_success_rate must be between 0 and 100")
+	}
+	if s.ProxyCleanup.CleanupIntervalHours < 0 {
+		return fmt.Errorf("proxy_cleanup.cleanup_interval_hours must not be negative")
+	}
+
 	return nil
 }

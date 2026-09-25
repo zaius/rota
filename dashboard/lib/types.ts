@@ -117,6 +117,12 @@ export interface Settings {
     status: number
     headers: string[]
   }
+  proxy_cleanup: {
+    enabled: boolean
+    max_failed_days: number
+    min_success_rate: number
+    cleanup_interval_hours: number
+  }
 }
 
 export interface AuthResponse {

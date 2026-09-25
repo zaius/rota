@@ -14,6 +14,7 @@ import {
   KeyRound,
   Eye,
   EyeOff,
+  Trash2,
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { Settings } from "@/lib/types"
@@ -368,6 +369,99 @@ export default function SettingsPage() {
               <p className="text-xs text-muted-foreground">
                 One header per line in format: Key: Value
               </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Dead proxy cleanup */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Trash2 className="h-5 w-5" />
+              <CardTitle>Proxy Cleanup</CardTitle>
+            </div>
+            <CardDescription>
+              Periodically delete proxies that stay dead or keep failing
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="cleanup-enabled">Automatic Cleanup</Label>
+                <p className="text-xs text-muted-foreground">
+                  Deleted proxies are removed from every pool
+                </p>
+              </div>
+              <Switch
+                id="cleanup-enabled"
+                checked={settings.proxy_cleanup.enabled}
+                onCheckedChange={(checked) =>
+                  setSettings({
+                    ...settings,
+                    proxy_cleanup: { ...settings.proxy_cleanup, enabled: checked },
+                  })
+                }
+              />
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="space-y-2">
+                <Label htmlFor="cleanup-failed-days">Failed For (days)</Label>
+                <Input
+                  id="cleanup-failed-days"
+                  type="number"
+                  min={0}
+                  value={settings.proxy_cleanup.max_failed_days}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      proxy_cleanup: { ...settings.proxy_cleanup, max_failed_days: parseInt(e.target.value) || 0 },
+                    })
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  Delete failed proxies not checked for this long. 0 disables.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="cleanup-min-success">Minimum Success Rate (%)</Label>
+                <Input
+                  id="cleanup-min-success"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={settings.proxy_cleanup.min_success_rate}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      proxy_cleanup: { ...settings.proxy_cleanup, min_success_rate: parseFloat(e.target.value) || 0 },
+                    })
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  Delete proxies below this rate over the last 7 days (at least 10 requests). 0 disables.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="cleanup-interval">Run Every (hours)</Label>
+                <Input
+                  id="cleanup-interval"
+                  type="number"
+                  min={0}
+                  value={settings.proxy_cleanup.cleanup_interval_hours}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      proxy_cleanup: { ...settings.proxy_cleanup, cleanup_interval_hours: parseInt(e.target.value) || 0 },
+                    })
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  0 uses the default of 24 hours.
+                </p>
+              </div>
             </div>
           </CardContent>
         </Card>
