@@ -7,20 +7,26 @@ import (
 	"net/http"
 
 	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
+// settingsStore is the subset of the settings repository the handler uses.
+type settingsStore interface {
+	GetAll(ctx context.Context) (*models.Settings, error)
+	UpdateAll(ctx context.Context, settings *models.Settings) error
+	Reset(ctx context.Context) error
+}
+
 // SettingsHandler handles settings endpoints
 type SettingsHandler struct {
-	settingsRepo     *repository.SettingsRepository
+	settingsRepo     settingsStore
 	logger           *logger.Logger
 	onSettingsUpdate func(ctx context.Context) // called after settings are persisted
 }
 
 // NewSettingsHandler creates a new SettingsHandler.
 // onUpdate is an optional callback invoked after settings are saved (e.g. to reload the proxy server).
-func NewSettingsHandler(settingsRepo *repository.SettingsRepository, log *logger.Logger, onUpdate func(ctx context.Context)) *SettingsHandler {
+func NewSettingsHandler(settingsRepo settingsStore, log *logger.Logger, onUpdate func(ctx context.Context)) *SettingsHandler {
 	return &SettingsHandler{
 		settingsRepo:     settingsRepo,
 		logger:           log,
@@ -66,7 +72,16 @@ func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 //	@Failure		500		{object}	models.ErrorResponse
 //	@Router			/settings [put]
 func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
-	var settings models.Settings
+	// Decode over the current values: UpdateAll writes every section back, so
+	// a client that omits a section or field (an older dashboard, a partial API
+	// call) must keep the stored value rather than reset it to zero.
+	current, err := h.settingsRepo.GetAll(r.Context())
+	if err != nil {
+		h.logger.Error("failed to load current settings", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to load settings")
+		return
+	}
+	settings := *current
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
