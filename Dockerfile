@@ -6,8 +6,12 @@
 #
 # Build from the repo root:  docker build -t rota .
 
+# The build stages run on the build host's own platform: the dashboard is
+# platform-independent static files and Go cross-compiles, so a multi-arch
+# build never runs Node or the Go toolchain under QEMU emulation.
+
 # Stage 1: Build the dashboard (static SPA)
-FROM node:22-alpine AS dashboard-builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS dashboard-builder
 WORKDIR /src
 RUN corepack enable && corepack prepare pnpm@10.19.0 --activate
 COPY dashboard/package.json dashboard/pnpm-lock.yaml ./
@@ -16,7 +20,7 @@ COPY dashboard/ .
 RUN pnpm run build
 
 # Stage 2: Build the Go core
-FROM golang:1.26.8-alpine AS core-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine AS core-builder
 RUN apk add --no-cache git ca-certificates tzdata
 WORKDIR /src
 COPY core/go.mod core/go.sum ./
