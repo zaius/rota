@@ -26,10 +26,9 @@ type Config struct {
 	// data either way.
 	ClickHouse ClickHouseConfig
 
-	// JWTSecret signs dashboard session tokens. Leave empty to generate a
-	// random secret on each boot (fine for single-node dev, but logs everyone
-	// out on restart and cannot work behind more than one replica). Set a
-	// stable value (JWT_SECRET) in production / multi-replica deployments.
+	// JWTSecret, when set, signs dashboard session tokens in place of the key
+	// the server generates once and stores in the database. Set it only to
+	// manage or rotate the key yourself; changing it logs every session out.
 	JWTSecret string
 
 	// CORSAllowedOrigins lists browser origins allowed to call the API.

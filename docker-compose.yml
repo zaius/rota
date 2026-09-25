@@ -20,7 +20,7 @@ services:
       - DB_SSLMODE=${DB_SSLMODE:-disable}
       - ROTA_ADMIN_USER=${ROTA_ADMIN_USER:-admin}
       - ROTA_ADMIN_PASSWORD=${ROTA_ADMIN_PASSWORD:-admin}
-      # Set a stable value in production so dashboard sessions survive restarts.
+      # Optional: unset means a key generated once and stored in the database.
       - JWT_SECRET=${JWT_SECRET:-}
       - AUTH_IP_MAX_ATTEMPTS=${AUTH_IP_MAX_ATTEMPTS:-10}
       - AUTH_IP_WINDOW_MINUTES=${AUTH_IP_WINDOW_MINUTES:-10}

@@ -94,8 +94,9 @@ For production, set at minimum:
 # .env
 DB_PASSWORD=a-strong-random-password
 ROTA_ADMIN_PASSWORD=a-strong-password
-JWT_SECRET=a-stable-random-secret  # so dashboard sessions survive restarts
 ```
+
+Dashboard sessions survive restarts without further setup: the server generates its JWT signing key once and stores it in the database. Set `JWT_SECRET` only to manage or rotate that key yourself.
 
 Start with `docker compose up -d`; the Compose file already sets `restart: unless-stopped`.
 
