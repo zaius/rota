@@ -569,6 +569,39 @@ func (r *ProxyRepository) BulkDeleteByFilter(ctx context.Context, filter models.
 	return int(result.RowsAffected()), nil
 }
 
+// BulkUpdateTags adds and removes tags on the proxies with the given IDs, or on
+// every proxy matching filter when it is non-nil. Removal wins when a tag is in
+// both lists, and each resulting tag list comes out deduplicated and sorted.
+func (r *ProxyRepository) BulkUpdateTags(ctx context.Context, ids []int, filter *models.ProxyFilter, add, remove []string) (int, error) {
+	if add == nil {
+		add = []string{}
+	}
+	if remove == nil {
+		remove = []string{}
+	}
+	where := "WHERE id = ANY($3::int[])"
+	args := []any{add, remove, ids}
+	if filter != nil {
+		var filterArgs []any
+		where, filterArgs = buildProxyWhere(filter.Search, filter.Status, filter.Protocol, 3)
+		args = append(args[:2], filterArgs...)
+	}
+	query := `
+		UPDATE proxies
+		SET tags = (
+		        SELECT COALESCE(array_agg(DISTINCT t ORDER BY t), '{}')
+		        FROM unnest(tags || $1::text[]) AS t
+		        WHERE t <> ALL($2::text[])
+		    ),
+		    updated_at = NOW()
+		` + where
+	result, err := r.db.Pool.Exec(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("failed to bulk update proxy tags: %w", err)
+	}
+	return int(result.RowsAffected()), nil
+}
+
 // scanProxies scans rows selecting the full proxy columns (including password)
 // needed to build a transport for testing.
 func scanProxies(rows pgx.Rows) ([]*models.Proxy, error) {

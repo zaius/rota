@@ -275,6 +275,7 @@ func (s *Server) setupRoutes() {
 			r.Post("/proxies", s.proxyHandler.Create)
 			r.Post("/proxies/bulk", s.proxyHandler.BulkCreate)
 			r.Post("/proxies/bulk-delete", s.proxyHandler.BulkDelete)
+			r.Post("/proxies/bulk-tags", s.proxyHandler.BulkTag)
 			r.Post("/proxies/bulk-test", s.proxyHandler.BulkTest)
 			r.Get("/proxies/bulk-test", s.proxyHandler.BulkTestLatest)
 			r.Get("/proxies/bulk-test/{job_id}", s.proxyHandler.BulkTestStatus)

@@ -148,6 +148,16 @@ type BulkDeleteProxyRequest struct {
 	Filter *ProxyFilter `json:"filter,omitempty"`
 }
 
+// BulkTagProxyRequest adds and removes tags on multiple proxies, either an
+// explicit list of IDs or every proxy matching a filter (All=true).
+type BulkTagProxyRequest struct {
+	IDs    []int        `json:"ids,omitempty"`
+	All    bool         `json:"all,omitempty"`
+	Filter *ProxyFilter `json:"filter,omitempty"`
+	Add    []string     `json:"add,omitempty"`
+	Remove []string     `json:"remove,omitempty"`
+}
+
 // BulkTestProxyRequest represents a request to test multiple proxies, either an
 // explicit list of IDs or every proxy matching a filter (All=true).
 type BulkTestProxyRequest struct {
