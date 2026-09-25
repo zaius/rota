@@ -54,6 +54,10 @@ type Config struct {
 	// TLSInspect configures optional HTTPS interception (TLS_INSPECT_*).
 	TLSInspect TLSInspectConfig
 
+	// GeoIP selects local MaxMind databases for proxy geolocation in place of
+	// the ip-api.com web service (GEOIP_*, MAXMIND_*).
+	GeoIP GeoIPConfig
+
 	// MetricsEnabled controls the OpenTelemetry metrics pipeline: the
 	// Prometheus /metrics endpoint on the API port and, when the standard
 	// OTEL_EXPORTER_OTLP_* env vars are set, OTLP push. (METRICS_ENABLED,
@@ -102,6 +106,28 @@ type TLSInspectConfig struct {
 func (t *TLSInspectConfig) Enabled() bool {
 	return t.CACertFile != "" && t.CAKeyFile != ""
 }
+
+// GeoIPConfig points geolocation at local MaxMind databases. With no City
+// database configured, lookups go to the ip-api.com web service instead.
+type GeoIPConfig struct {
+	// CityDB is a GeoLite2/GeoIP2 City .mmdb for country, region, city and
+	// coordinates (GEOIP_CITY_DB).
+	CityDB string
+	// ASNDB is an optional GeoLite2 ASN .mmdb; its AS organization fills the
+	// ISP that pool ISP filters match (GEOIP_ASN_DB).
+	ASNDB string
+	// LicenseKey enables downloading the databases from MaxMind when they are
+	// missing or older than UpdateHours (MAXMIND_LICENSE_KEY). AccountID
+	// selects MaxMind's authenticated download endpoint (MAXMIND_ACCOUNT_ID).
+	LicenseKey string
+	AccountID  string
+	// UpdateHours is the download age limit (GEOIP_UPDATE_HOURS, default 168).
+	UpdateHours int
+}
+
+// defaultGeoIPDir holds downloaded databases when the environment names no
+// database paths.
+const defaultGeoIPDir = "data/geoip"
 
 // ClickHouseConfig holds the ClickHouse connection settings (native protocol).
 type ClickHouseConfig struct {
@@ -156,12 +182,31 @@ func Load() (*Config, error) {
 			BypassDomains: getEnvAsSlice("TLS_INSPECT_BYPASS_DOMAINS", nil),
 		},
 
+		GeoIP: GeoIPConfig{
+			CityDB:      getEnv("GEOIP_CITY_DB", ""),
+			ASNDB:       getEnv("GEOIP_ASN_DB", ""),
+			LicenseKey:  getEnv("MAXMIND_LICENSE_KEY", ""),
+			AccountID:   getEnv("MAXMIND_ACCOUNT_ID", ""),
+			UpdateHours: getEnvAsInt("GEOIP_UPDATE_HOURS", 168),
+		},
+
 		MetricsEnabled:     getEnvAsBool("METRICS_ENABLED", true),
 		MetricsBearerToken: getEnv("METRICS_BEARER_TOKEN", ""),
 
 		AuthIPMaxAttempts:   getEnvAsInt("AUTH_IP_MAX_ATTEMPTS", 10),
 		AuthIPWindowMinutes: getEnvAsInt("AUTH_IP_WINDOW_MINUTES", 10),
 		AuthIPBlockMinutes:  getEnvAsInt("AUTH_IP_BLOCK_MINUTES", 30),
+	}
+
+	// A license key alone is enough: download both databases to the default
+	// location.
+	if cfg.GeoIP.LicenseKey != "" {
+		if cfg.GeoIP.CityDB == "" {
+			cfg.GeoIP.CityDB = defaultGeoIPDir + "/GeoLite2-City.mmdb"
+		}
+		if cfg.GeoIP.ASNDB == "" {
+			cfg.GeoIP.ASNDB = defaultGeoIPDir + "/GeoLite2-ASN.mmdb"
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -205,6 +250,14 @@ func (c *Config) Validate() error {
 	// through absent data.
 	if (c.TLSInspect.CACertFile == "") != (c.TLSInspect.CAKeyFile == "") {
 		return fmt.Errorf("TLS_INSPECT_CA_CERT and TLS_INSPECT_CA_KEY must be set together")
+	}
+
+	// An ASN database only adds ISP names to City lookups.
+	if c.GeoIP.ASNDB != "" && c.GeoIP.CityDB == "" {
+		return fmt.Errorf("GEOIP_ASN_DB requires GEOIP_CITY_DB")
+	}
+	if c.GeoIP.UpdateHours < 1 {
+		return fmt.Errorf("GEOIP_UPDATE_HOURS must be positive")
 	}
 
 	return nil

@@ -202,7 +202,20 @@ After proxies are geolocated, open the **Proxy Pools → Geo Distribution** tab:
 - Check individual countries or cities; mix them freely
 - Click **Create Pool from selection** — the pool is created and filled instantly
 
-Pools also support **ISP filters** (substring match, OR logic) and **tag filters** (AND logic — proxy must carry all specified tags). Combine geo + ISP + tags in any combination.
+Pools also support **ISP filters** (substring match, OR logic) and **tag filters** (AND logic — proxy must carry all specified tags). Combine geo + ISP + tags in any combination. Tag proxies on the **Proxy Management** page, one at a time or in bulk; tags let pools hold proxies that have no GeoIP data, such as local or VPN proxies. Proxies can also be added to and removed from a pool by hand.
+
+#### GeoIP Source
+
+Locations come from the free [ip-api.com](https://ip-api.com) web service unless local MaxMind databases are configured. Local lookups avoid ip-api.com's rate limit and keep proxy addresses on your server:
+
+| Variable | Purpose |
+|---|---|
+| `MAXMIND_LICENSE_KEY` | Download GeoLite2-City and GeoLite2-ASN into `data/geoip/` and keep them current (free [MaxMind account](https://www.maxmind.com/en/geolite2/signup)) |
+| `MAXMIND_ACCOUNT_ID` | Optional; downloads through MaxMind's account-authenticated endpoint |
+| `GEOIP_CITY_DB` / `GEOIP_ASN_DB` | Paths to existing `.mmdb` files, e.g. kept current by `geoipupdate`; a replaced file is reloaded within the hour |
+| `GEOIP_UPDATE_HOURS` | Re-download age for managed databases (default `168`) |
+
+The ASN database supplies the ISP names that ISP filters match. Until the City database loads, lookups keep using ip-api.com, as do proxies given by hostname rather than IP address.
 
 #### Pool Sync Modes
 

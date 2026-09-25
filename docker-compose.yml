@@ -30,6 +30,12 @@ services:
       - TLS_INSPECT_CA_CERT=${TLS_INSPECT_CA_CERT:-}
       - TLS_INSPECT_CA_KEY=${TLS_INSPECT_CA_KEY:-}
       - TLS_INSPECT_BYPASS_DOMAINS=${TLS_INSPECT_BYPASS_DOMAINS:-}
+      # Local MaxMind geolocation instead of ip-api.com; see .env.example.
+      - MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY:-}
+      - MAXMIND_ACCOUNT_ID=${MAXMIND_ACCOUNT_ID:-}
+      - GEOIP_CITY_DB=${GEOIP_CITY_DB:-}
+      - GEOIP_ASN_DB=${GEOIP_ASN_DB:-}
+      - GEOIP_UPDATE_HOURS=${GEOIP_UPDATE_HOURS:-168}
       # Event store: "postgres" (default) keeps request and tunnel history in the
       # primary database; "clickhouse" moves them to the clickhouse service
       # (start it with: docker compose --profile clickhouse up -d).
@@ -49,6 +55,9 @@ services:
       - OTEL_METRIC_EXPORT_INTERVAL=${OTEL_METRIC_EXPORT_INTERVAL:-}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-}
       - OTEL_RESOURCE_ATTRIBUTES=${OTEL_RESOURCE_ATTRIBUTES:-}
+    volumes:
+      # Keeps downloaded GeoIP databases across container recreation.
+      - rota-data:/app/data
     networks:
       - rota-network
     healthcheck:
@@ -129,6 +138,8 @@ services:
       retries: 5
 
 volumes:
+  rota-data:
+    driver: local
   timescaledb-data:
     driver: local
   clickhouse-data:

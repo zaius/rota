@@ -158,7 +158,7 @@ func run() error {
 	// Build background services once and hand their lifecycle to a single
 	// manager, so they start and stop with the process instead of leaking on a
 	// never-cancelled context.Background().
-	geoSvc := services.NewGeoIPService(log)
+	geoSvc := services.NewGeoIPService(log, services.NewLocalGeoDB(cfg.GeoIP, log))
 	sourceSvc := services.NewSourceService(sourceRepo, proxyRepo, poolRepo, geoSvc, log)
 	poolSvc := services.NewPoolService(poolRepo, proxyRepo, settingsRepo, log)
 	alertWatcher := services.NewAlertWatcher(poolRepo, log)

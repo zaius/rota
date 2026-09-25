@@ -78,3 +78,26 @@ func TestGetEnvAsBoolKeepsTrueDefaultOnGarbage(t *testing.T) {
 		t.Fatal("expected an unparseable value to preserve the default")
 	}
 }
+
+func TestGeoIPLicenseKeyDefaultsDatabasePaths(t *testing.T) {
+	t.Setenv("MAXMIND_LICENSE_KEY", "k3y")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeoIP.CityDB != "data/geoip/GeoLite2-City.mmdb" || cfg.GeoIP.ASNDB != "data/geoip/GeoLite2-ASN.mmdb" {
+		t.Errorf("paths = %q, %q", cfg.GeoIP.CityDB, cfg.GeoIP.ASNDB)
+	}
+
+	t.Setenv("GEOIP_CITY_DB", "/srv/city.mmdb")
+	if cfg, _ := Load(); cfg.GeoIP.CityDB != "/srv/city.mmdb" {
+		t.Errorf("explicit city path overridden: %q", cfg.GeoIP.CityDB)
+	}
+}
+
+func TestGeoIPASNDatabaseRequiresCity(t *testing.T) {
+	t.Setenv("GEOIP_ASN_DB", "/srv/asn.mmdb")
+	if _, err := Load(); err == nil {
+		t.Fatal("accepted GEOIP_ASN_DB without GEOIP_CITY_DB")
+	}
+}

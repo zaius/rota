@@ -46,7 +46,9 @@ COPY --from=dashboard-builder /src/dist /app/web
 # Serve the dashboard from /app/web on the API port (same origin as the API).
 ENV WEB_DIR=/app/web
 
-RUN adduser -D -u 1000 rota && chown -R rota:rota /app
+# /app/data holds downloaded GeoIP databases; creating it here lets a volume
+# mounted there inherit the rota user's ownership.
+RUN adduser -D -u 1000 rota && mkdir -p /app/data && chown -R rota:rota /app
 USER rota
 
 EXPOSE 8000 8001
