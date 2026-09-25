@@ -27,8 +27,11 @@ COPY core/go.mod core/go.sum ./
 RUN go mod download
 COPY core/ .
 ARG TARGETARCH
+# The build context has no .git, so pass the version in, e.g.
+#   --build-arg VERSION=$(git describe --tags --always --dirty)
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
-    -ldflags='-w -s -extldflags "-static"' \
+    -ldflags="-w -s -extldflags '-static' -X github.com/alpkeskin/rota/core/internal/version.Version=${VERSION}" \
     -o /out/server \
     ./cmd/server/main.go
 
