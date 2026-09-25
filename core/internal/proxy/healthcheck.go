@@ -14,10 +14,15 @@ import (
 	"github.com/gammazero/workerpool"
 )
 
+// settingsSource reads the stored settings.
+type settingsSource interface {
+	GetAll(ctx context.Context) (*models.Settings, error)
+}
+
 // HealthChecker manages proxy health checking
 type HealthChecker struct {
 	proxyRepo    *repository.ProxyRepository
-	settingsRepo *repository.SettingsRepository
+	settingsRepo settingsSource
 	tracker      *UsageTracker
 	logger       *logger.Logger
 
@@ -83,8 +88,11 @@ func (h *HealthChecker) reloadSettings(ctx context.Context) (*models.HealthCheck
 	return hc, nil
 }
 
-// CheckProxy tests a single proxy using the configured health-check timeout.
+// CheckProxy tests a single proxy using the current health-check settings.
 func (h *HealthChecker) CheckProxy(ctx context.Context, proxy *models.Proxy) (*models.ProxyTestResult, error) {
+	if _, err := h.reloadSettings(ctx); err != nil {
+		return nil, err
+	}
 	return h.checkProxy(ctx, proxy, 0)
 }
 
@@ -210,11 +218,6 @@ func (h *HealthChecker) recordResult(proxyID int, success bool, duration int, er
 
 // CheckAllProxies tests all proxies concurrently
 func (h *HealthChecker) CheckAllProxies(ctx context.Context) ([]models.ProxyTestResult, error) {
-	// Pick up any settings change since the last run.
-	if _, err := h.reloadSettings(ctx); err != nil {
-		return nil, err
-	}
-
 	// Get all proxies (including failed ones for re-testing)
 	proxies, err := h.proxyRepo.ListAll(ctx)
 	if err != nil {
@@ -225,9 +228,9 @@ func (h *HealthChecker) CheckAllProxies(ctx context.Context) ([]models.ProxyTest
 }
 
 // CheckProxies tests the provided proxies concurrently using the configured
-// worker pool and returns one result per proxy (in the same order). It loads
-// health-check settings if they have not been cached yet, so it is safe to call
-// without a prior CheckAllProxies. If timeoutSecs > 0 it overrides the
+// worker pool and returns one result per proxy (in the same order). It reads
+// the current health-check settings first, so a change made in the dashboard
+// applies to the next test. If timeoutSecs > 0 it overrides the
 // per-proxy health-check timeout for this run only. If progressFn is non-nil it
 // is invoked after each proxy finishes with the running (checked, active,
 // failed) counts; the values passed are computed under a lock so they are safe.
@@ -236,9 +239,7 @@ func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Prox
 		return []models.ProxyTestResult{}, nil
 	}
 
-	// Ensure settings are loaded (checkProxy also lazy-loads, but we read
-	// Workers here to size the pool).
-	settings, err := h.ensureSettings(ctx)
+	settings, err := h.reloadSettings(ctx)
 	if err != nil {
 		return nil, err
 	}

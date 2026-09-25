@@ -99,10 +99,21 @@ func newCONNECTProxy(t *testing.T) string {
 	return strings.TrimPrefix(srv.URL, "http://")
 }
 
+// fakeSettings serves health-check settings the test can change between
+// checks, as an admin would in the dashboard.
+type fakeSettings struct{ hc models.HealthCheckSettings }
+
+func (f *fakeSettings) GetAll(context.Context) (*models.Settings, error) {
+	return &models.Settings{HealthCheck: f.hc}, nil
+}
+
+// Each check reads the settings afresh, so toggling Strict TLS applies to the
+// next test without a restart.
 func TestHealthCheckStrictTLS(t *testing.T) {
 	target := newExpiredTLSServer(t)
 	proxyAddr := newCONNECTProxy(t)
-	h := &HealthChecker{logger: logger.New("error")}
+	settings := &fakeSettings{}
+	h := &HealthChecker{settingsRepo: settings, logger: logger.New("error")}
 
 	tests := []struct {
 		name    string
@@ -115,9 +126,9 @@ func TestHealthCheckStrictTLS(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			h.setSettings(&models.HealthCheckSettings{
+			settings.hc = models.HealthCheckSettings{
 				Timeout: 5, Workers: 1, URL: target.URL, Status: http.StatusOK, StrictTLS: tc.strict,
-			})
+			}
 			result, err := h.CheckProxy(context.Background(), &models.Proxy{ID: 1, Address: proxyAddr, Protocol: "http"})
 			if err != nil {
 				t.Fatalf("CheckProxy: %v", err)
