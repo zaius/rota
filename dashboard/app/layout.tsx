@@ -6,12 +6,12 @@ export default function RootLayout() {
   return (
     <ThemeProvider
       attribute="class"
-      defaultTheme="dark"
+      defaultTheme="system"
       enableSystem
       disableTransitionOnChange
     >
       <Outlet />
-      <Toaster />
+      <Toaster position="bottom-right" />
     </ThemeProvider>
   )
 }
