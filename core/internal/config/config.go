@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -39,8 +40,9 @@ type Config struct {
 
 	// WebDir, if set (WEB_DIR), is a directory of built dashboard assets that the
 	// API server serves at "/" with SPA fallback — so the Go binary serves both
-	// the UI and the API on one port, with no separate Node/Next runtime. Empty
-	// in dev, where the dashboard runs under the Vite dev server.
+	// the UI and the API on one port, with no separate Node/Next runtime. It
+	// defaults to a "web" directory beside the executable, and is empty in dev,
+	// where the dashboard runs under the Vite dev server.
 	WebDir string
 
 	// TrustProxyHeaders controls whether X-Forwarded-For / X-Real-IP are used to
@@ -177,7 +179,7 @@ func Load() (*Config, error) {
 		},
 
 		CORSAllowedOrigins: getEnvAsSlice("CORS_ALLOWED_ORIGINS", []string{"*"}),
-		WebDir:             getEnv("WEB_DIR", ""),
+		WebDir:             getEnv("WEB_DIR", defaultWebDir()),
 		TrustProxyHeaders:  getEnvAsBool("TRUST_PROXY_HEADERS", false),
 
 		TLSInspect: TLSInspectConfig{
@@ -332,6 +334,21 @@ func getEnvAsSlice(key string, defaultValue []string) []string {
 		return defaultValue
 	}
 	return result
+}
+
+// defaultWebDir returns the "web" directory beside the executable when there
+// is one — where release archives put the dashboard — so a standalone binary
+// serves it without configuration.
+func defaultWebDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(filepath.Dir(exe), "web")
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return dir
+	}
+	return ""
 }
 
 // loadDotEnv sets KEY=VALUE pairs from path for keys the environment leaves

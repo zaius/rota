@@ -148,6 +148,20 @@ pnpm install
 pnpm run dev  # http://localhost:3000, proxies API calls to the core on :8001
 ```
 
+### Standalone Binary (no Docker)
+
+Every release attaches archives for Linux (amd64, arm64), macOS (arm64, amd64) and Windows (amd64), with `checksums.txt`. Each holds the `rota` binary and the dashboard in `web/`, which the binary serves on the API port. You still need a PostgreSQL 14+ database.
+
+```bash
+# Unpack the archive for your platform, then configure it
+cp .env.example .env   # set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, ROTA_ADMIN_PASSWORD
+
+# The binary reads .env from its working directory; real environment variables win
+./rota                 # Windows: rota.exe
+```
+
+To build the archives yourself, run `scripts/release-binaries.sh <version>`; they land in `dist/`.
+
 ### Testing the Proxy
 
 The proxy only serves authenticated proxy users — create one first in the dashboard (**Proxy Users → Add User**), then:
