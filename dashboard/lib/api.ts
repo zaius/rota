@@ -513,7 +513,10 @@ class ApiClient {
   // The dashboard socket reconnects with a capped exponential backoff. The
   // server closes it on restart, and without this the stats silently stop
   // updating until the page is reloaded.
-  createDashboardWebSocket(onMessage: (data: DashboardStats) => void): SocketHandle {
+  createDashboardWebSocket(
+    onMessage: (data: DashboardStats) => void,
+    onConnectedChange?: (connected: boolean) => void,
+  ): SocketHandle {
     let ws: WebSocket | null = null
     let closedByCaller = false
     let attempt = 0
@@ -526,6 +529,7 @@ class ApiClient {
 
       ws.onopen = () => {
         attempt = 0
+        onConnectedChange?.(true)
       }
       ws.onmessage = (event) => {
         const message = parseSocketMessage<{ type?: string; data?: DashboardStats }>(event.data)
@@ -539,6 +543,7 @@ class ApiClient {
       }
       ws.onclose = () => {
         if (closedByCaller) return
+        onConnectedChange?.(false)
         const delay = Math.min(30_000, 1_000 * 2 ** attempt)
         attempt += 1
         retryTimer = setTimeout(connect, delay)
