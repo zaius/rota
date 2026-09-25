@@ -7,6 +7,8 @@ import {
 } from "@/lib/lineformat"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { controlClass } from "@/components/controls"
+import { cn } from "@/lib/utils"
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
@@ -72,7 +74,7 @@ export function LineFormatField({
           value={value}
           spellCheck={false}
           autoComplete="off"
-          className="font-mono text-xs"
+          className="font-mono text-[0.75rem]"
           placeholder={FORMAT_URL}
           onChange={e => onChange(e.target.value)}
           disabled={disabled}
@@ -81,19 +83,19 @@ export function LineFormatField({
         <DropdownMenu>
           <DropdownMenuTrigger
             disabled={disabled}
-            className="inline-flex items-center gap-1 rounded-md border bg-transparent px-3 text-sm shadow-xs whitespace-nowrap hover:bg-accent disabled:opacity-50"
+            className={cn(controlClass, "hover:bg-accent inline-flex items-center gap-1 px-2.5 whitespace-nowrap")}
           >
-            Presets <ChevronDown className="h-4 w-4" />
+            Presets <ChevronDown className="text-muted-foreground size-3.5" aria-hidden />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="max-w-[min(90vw,26rem)]">
             <DropdownMenuLabel>Presets</DropdownMenuLabel>
             {FORMAT_PRESETS.map(p => (
               <DropdownMenuItem key={p.value} onSelect={() => pick(p.value)} className="flex-col items-start gap-0.5">
                 <span className="flex w-full items-center gap-2">
-                  {value.trim() === p.value && <Check className="h-3 w-3 shrink-0" />}
-                  <code className="text-xs">{p.label}</code>
+                  {value.trim() === p.value && <Check className="size-3 shrink-0" />}
+                  <code className="font-mono text-[0.75rem]">{p.label}</code>
                 </span>
-                <span className="text-[11px] text-muted-foreground">{p.hint}</span>
+                <span className="text-muted-foreground text-[0.6875rem] leading-4">{p.hint}</span>
               </DropdownMenuItem>
             ))}
             {history.length > 0 && (
@@ -107,16 +109,17 @@ export function LineFormatField({
                     className="flex items-center justify-between gap-2"
                   >
                     <span className="flex items-center gap-2 min-w-0">
-                      {value.trim() === h.format && <Check className="h-3 w-3 shrink-0" />}
-                      <code className="text-xs truncate">{h.format}</code>
+                      {value.trim() === h.format && <Check className="size-3 shrink-0" />}
+                      <code className="truncate font-mono text-[0.75rem]">{h.format}</code>
                     </span>
                     <button
                       type="button"
                       onClick={e => removeHistory(e, h.id)}
-                      className="text-muted-foreground hover:text-red-500 shrink-0"
+                      className="text-muted-foreground hover:text-destructive shrink-0"
                       title="Remove from history"
+                      aria-label="Remove from history"
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <Trash2 className="size-3" />
                     </button>
                   </DropdownMenuItem>
                 ))}
@@ -128,13 +131,13 @@ export function LineFormatField({
 
       {/* Validation + preview */}
       {invalid ? (
-        <p className="flex items-center gap-1.5 text-xs text-red-500">
-          <AlertCircle className="h-3 w-3 shrink-0" />
+        <p className="text-critical flex items-center gap-1.5 text-[0.6875rem] leading-4">
+          <AlertCircle className="size-3 shrink-0" aria-hidden />
           {compiled.error}
         </p>
       ) : preview && preview.parsed ? (
-        <p className="text-xs text-muted-foreground">
-          <code className="text-[11px]">{preview.line}</code>
+        <p className="text-muted-foreground text-[0.6875rem] leading-4">
+          <code className="font-mono">{preview.line}</code>
           {" → "}
           <span className="text-foreground">
             {preview.parsed.protocol ? `${preview.parsed.protocol}://` : ""}
@@ -143,12 +146,14 @@ export function LineFormatField({
           </span>
         </p>
       ) : preview && !preview.parsed ? (
-        <p className="flex items-center gap-1.5 text-xs text-amber-500">
-          <AlertCircle className="h-3 w-3 shrink-0" />
-          This format doesn't match <code className="text-[11px]">{preview.line}</code>
+        <p className="text-warning flex items-center gap-1.5 text-[0.6875rem] leading-4">
+          <AlertCircle className="size-3 shrink-0" aria-hidden />
+          <span>
+            This format doesn&apos;t match <code className="font-mono">{preview.line}</code>
+          </span>
         </p>
       ) : (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-muted-foreground text-[0.6875rem] leading-4">
           {isPresetFormat(value)
             ? "Fields host, port, user, pass, protocol, separated by any characters. Wrap optional parts in […]; use * to skip a column."
             : "Custom template — e.g. host:port:user:pass or host:port:*:user:pass."}
