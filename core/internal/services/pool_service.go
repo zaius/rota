@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/proxy"
 	"github.com/alpkeskin/rota/core/internal/repository"
@@ -260,14 +261,16 @@ func (ps *PoolService) checkOneProxyTimeout(ctx context.Context, p *models.Proxy
 		Address:  p.Address,
 		TestedAt: start,
 	}
+	fail := func(msg string) models.ProxyTestResult {
+		result.Status = "failed"
+		result.Error = &msg
+		ps.recordCheckResult(ctx, p.ID, false, int(time.Since(start).Milliseconds()), msg)
+		return result
+	}
 
 	transport, err := proxy.CreateProxyTransport(p)
 	if err != nil {
-		result.Status = "failed"
-		msg := err.Error()
-		result.Error = &msg
-		ps.updateProxyStatus(ctx, p.ID, "failed")
-		return result
+		return fail(err.Error())
 	}
 
 	// Use a fresh context with per-proxy timeout (don't inherit caller's ctx deadline)
@@ -283,42 +286,32 @@ func (ps *PoolService) checkOneProxyTimeout(ctx context.Context, p *models.Proxy
 	}
 	req, err := http.NewRequestWithContext(proxyCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		result.Status = "failed"
-		msg := err.Error()
-		result.Error = &msg
-		ps.updateProxyStatus(ctx, p.ID, "failed")
-		return result
+		return fail(err.Error())
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Rota/1.0)")
 
 	resp, err := client.Do(req)
 	dur := int(time.Since(start).Milliseconds())
 	if err != nil {
-		result.Status = "failed"
-		msg := err.Error()
-		result.Error = &msg
-		ps.updateProxyStatus(ctx, p.ID, "failed")
-		return result
+		return fail(err.Error())
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		result.Status = "active"
-		result.ResponseTime = &dur
-		ps.updateProxyStatus(ctx, p.ID, "active")
-	} else {
-		result.Status = "failed"
-		msg := fmt.Sprintf("HTTP %d", resp.StatusCode)
-		result.Error = &msg
-		ps.updateProxyStatus(ctx, p.ID, "failed")
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return fail(fmt.Sprintf("HTTP %d", resp.StatusCode))
 	}
+	result.Status = "active"
+	result.ResponseTime = &dur
+	ps.recordCheckResult(ctx, p.ID, true, dur, "")
 	return result
 }
 
-// updateProxyStatus writes the new status to the DB
-func (ps *PoolService) updateProxyStatus(ctx context.Context, proxyID int, status string) {
-	if err := ps.proxyRepo.UpdateStatus(ctx, proxyID, status); err != nil {
-		ps.logger.Warn("failed to update proxy status", "proxy_id", proxyID, "error", err)
+// recordCheckResult applies a check result to the proxy: status, failure
+// streak and last error.
+func (ps *PoolService) recordCheckResult(ctx context.Context, proxyID int, success bool, elapsedMs int, errMsg string) {
+	metrics.RecordHealthCheck(ctx, success, elapsedMs)
+	if err := ps.proxyRepo.RecordCheckResult(ctx, proxyID, success, errMsg); err != nil {
+		ps.logger.Warn("failed to record proxy check result", "proxy_id", proxyID, "error", err)
 	}
 }
 

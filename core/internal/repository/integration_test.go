@@ -305,14 +305,36 @@ func TestIntegration_ProxyRepoMethods(t *testing.T) {
 		t.Fatalf("expected 2 distinct tags, got %d (%v)", len(tags), tags)
 	}
 
-	// UpdateStatus flips a proxy's status.
-	if err := proxyRepo.UpdateStatus(ctx, taggedID, "failed"); err != nil {
-		t.Fatalf("UpdateStatus: %v", err)
+	// A failed check marks the proxy failed at once and extends its streak;
+	// a passing check reactivates it and clears the streak and error.
+	var (
+		status  string
+		streak  int
+		lastErr *string
+	)
+	readState := func() {
+		t.Helper()
+		if err := db.Pool.QueryRow(ctx,
+			`SELECT status, failed_requests, last_error FROM proxies WHERE id=$1`, taggedID,
+		).Scan(&status, &streak, &lastErr); err != nil {
+			t.Fatalf("read proxy state: %v", err)
+		}
 	}
-	var status string
-	db.Pool.QueryRow(ctx, `SELECT status FROM proxies WHERE id=$1`, taggedID).Scan(&status)
-	if status != "failed" {
-		t.Fatalf("expected status failed, got %q", status)
+	for i := 1; i <= 2; i++ {
+		if err := proxyRepo.RecordCheckResult(ctx, taggedID, false, "connection refused"); err != nil {
+			t.Fatalf("RecordCheckResult(fail): %v", err)
+		}
+		readState()
+		if status != "failed" || streak != i || lastErr == nil || *lastErr != "connection refused" {
+			t.Fatalf("after failed check %d: status=%q streak=%d last_error=%v", i, status, streak, lastErr)
+		}
+	}
+	if err := proxyRepo.RecordCheckResult(ctx, taggedID, true, ""); err != nil {
+		t.Fatalf("RecordCheckResult(success): %v", err)
+	}
+	readState()
+	if status != "active" || streak != 0 || lastErr != nil {
+		t.Fatalf("after passing check: status=%q streak=%d last_error=%v", status, streak, lastErr)
 	}
 }
 

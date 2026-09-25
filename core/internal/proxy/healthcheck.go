@@ -121,6 +121,7 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 		result.Status = "failed"
 		errMsg := fmt.Sprintf("failed to create transport: %v", err)
 		result.Error = &errMsg
+		h.recordResult(proxy.ID, false, int(time.Since(startTime).Milliseconds()), errMsg)
 		return result, nil
 	}
 	defer transport.CloseIdleConnections()
@@ -181,14 +182,7 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 		}
 
 		result.Error = &errMsg
-
-		// Record health check failure
-		go func() {
-			recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			h.tracker.RecordHealthCheck(recordCtx, proxy.ID, false, duration, errMsg)
-		}()
-
+		h.recordResult(proxy.ID, false, duration, errMsg)
 		return result, nil
 	}
 	defer resp.Body.Close()
@@ -198,29 +192,30 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 		result.Status = "failed"
 		errMsg := fmt.Sprintf("unexpected status code: got %d, expected %d", resp.StatusCode, settings.Status)
 		result.Error = &errMsg
-
-		// Record health check failure
-		go func() {
-			recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			h.tracker.RecordHealthCheck(recordCtx, proxy.ID, false, duration, errMsg)
-		}()
-
+		h.recordResult(proxy.ID, false, duration, errMsg)
 		return result, nil
 	}
 
 	// Success!
 	result.Status = "active"
 	result.ResponseTime = &duration
-
-	// Record health check success
-	go func() {
-		recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		h.tracker.RecordHealthCheck(recordCtx, proxy.ID, true, duration, "")
-	}()
-
+	h.recordResult(proxy.ID, true, duration, "")
 	return result, nil
+}
+
+// recordResult persists a check result before the check returns, so a caller
+// that re-reads the proxy afterwards sees its new status. It runs on a
+// detached, bounded context: a client that disconnects mid-test must not
+// discard a result the check already paid for.
+func (h *HealthChecker) recordResult(proxyID int, success bool, duration int, errMsg string) {
+	if h.tracker == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.tracker.RecordHealthCheck(ctx, proxyID, success, duration, errMsg); err != nil {
+		h.logger.Error("failed to record health check result", "proxy_id", proxyID, "error", err)
+	}
 }
 
 // CheckAllProxies tests all proxies concurrently

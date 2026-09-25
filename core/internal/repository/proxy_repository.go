@@ -686,13 +686,26 @@ func (r *ProxyRepository) UpdateGeo(ctx context.Context, address string, geo mod
 	return nil
 }
 
-// UpdateStatus sets a proxy's status and bumps last_check.
-func (r *ProxyRepository) UpdateStatus(ctx context.Context, id int, status string) error {
-	_, err := r.db.Pool.Exec(ctx,
-		`UPDATE proxies SET status = $1, last_check = NOW(), updated_at = NOW() WHERE id = $2`,
-		status, id)
+// RecordCheckResult applies an explicit health-check result to a proxy. A
+// check is a deliberate probe, so its verdict takes effect at once: success
+// marks the proxy active and resets its consecutive-failure streak, failure
+// marks it failed and extends the streak.
+func (r *ProxyRepository) RecordCheckResult(ctx context.Context, id int, success bool, errMsg string) error {
+	var lastError *string
+	if !success && errMsg != "" {
+		lastError = &errMsg
+	}
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE proxies SET
+			status          = CASE WHEN $2 THEN 'active' ELSE 'failed' END,
+			failed_requests = CASE WHEN $2 THEN 0 ELSE failed_requests + 1 END,
+			last_error      = $3,
+			last_check      = NOW(),
+			updated_at      = NOW()
+		WHERE id = $1`,
+		id, success, lastError)
 	if err != nil {
-		return fmt.Errorf("failed to update proxy status: %w", err)
+		return fmt.Errorf("failed to record proxy check result: %w", err)
 	}
 	return nil
 }
