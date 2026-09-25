@@ -13,6 +13,7 @@ import {
   PoolAlertRule, CreatePoolAlertRuleRequest, GEO_FILTER_ALL,
 } from "@/lib/types"
 import { useResourceQuery } from "@/hooks/use-resource-query"
+import { useUrlState } from "@/hooks/use-url-state"
 import { EmptyState } from "@/components/crud/empty-state"
 import { PageSpinner } from "@/components/crud/page-spinner"
 import { Button } from "@/components/ui/button"
@@ -76,6 +77,9 @@ const DEFAULT_POOL_FORM: CreatePoolRequest = {
   tag_filters: [],
 }
 
+// The open tab and selected pool, kept in the URL.
+const URL_DEFAULTS = { tab: "pools", pool: "" }
+
 // ────────────────────────────────────────────────────────────────────────────
 // Main page
 // ────────────────────────────────────────────────────────────────────────────
@@ -87,11 +91,16 @@ export default function PoolsPage() {
   const geoCountries = geoQuery.data ?? []
   const loading = poolsQuery.isLoading || geoQuery.isLoading
   const loadAll = () => { poolsQuery.invalidate(); geoQuery.invalidate() }
-  const [activeTab, setActiveTab] = useState<"pools" | "geo">("pools")
+  const [url, setUrl] = useUrlState(URL_DEFAULTS)
+  const activeTab = url.tab === "geo" ? "geo" : "pools"
+  const setActiveTab = (tab: "pools" | "geo") => setUrl({ tab })
 
 
   // Pool detail panel
-  const [selectedPool, setSelectedPool] = useState<ProxyPool | null>(null)
+  // The page reads the selected pool from the live list, so edits and syncs
+  // show up in the detail panel without reselecting it.
+  const selectedPoolId = Number(url.pool) || 0
+  const selectedPool = pools.find(p => p.id === selectedPoolId) ?? null
   const [poolProxies, setPoolProxies] = useState<PoolProxy[]>([])
   const [poolProxiesLoading, setPoolProxiesLoading] = useState(false)
   // Identifies the most recent pool selection, so a slow response for a pool
@@ -208,22 +217,25 @@ export default function PoolsPage() {
     try {
       await api.deletePool(id)
       toast.success("Pool deleted")
-      if (selectedPool?.id === id) setSelectedPool(null)
+      if (selectedPoolId === id) setUrl({ pool: "" })
       loadAll()
     } catch {
       toast.error("Failed to delete pool")
     }
   }
 
-  const handleSelectPool = async (pool: ProxyPool) => {
+  const handleSelectPool = (pool: ProxyPool) => {
+    if (pool.id !== selectedPoolId) setUrl({ pool: String(pool.id) })
+  }
+
+  // loadPoolDetail fetches the members and alert rules of one pool.
+  const loadPoolDetail = useCallback(async (poolId: number) => {
     const reqId = ++selectedPoolReq.current
-    setSelectedPool(pool)
-    setHcJob(null)
     setPoolProxiesLoading(true)
     try {
       const [proxiesRes, rules] = await Promise.all([
-        api.getPoolProxies(pool.id),
-        api.getAlertRules(pool.id).catch(() => []),
+        api.getPoolProxies(poolId),
+        api.getAlertRules(poolId).catch(() => []),
       ])
       if (selectedPoolReq.current !== reqId) return
       setPoolProxies(proxiesRes.proxies)
@@ -234,7 +246,26 @@ export default function PoolsPage() {
     } finally {
       if (selectedPoolReq.current === reqId) setPoolProxiesLoading(false)
     }
-  }
+  }, [])
+
+  // A running check's progress belongs to the pool that started it, so a new
+  // selection stops following it.
+  const selectedPoolIdRef = useRef(selectedPoolId)
+  useEffect(() => {
+    selectedPoolIdRef.current = selectedPoolId
+    if (hcPollRef.current) {
+      clearInterval(hcPollRef.current)
+      hcPollRef.current = null
+    }
+    setHcRunning(false)
+    setHcJob(null)
+    if (selectedPoolId) {
+      loadPoolDetail(selectedPoolId)
+    } else {
+      setPoolProxies([])
+      setAlertRules([])
+    }
+  }, [selectedPoolId, loadPoolDetail])
 
   const handleExport = async (format: "txt" | "csv") => {
     if (!selectedPool) return
@@ -308,7 +339,7 @@ export default function PoolsPage() {
     try {
       const res = await api.syncPool(selectedPool.id)
       toast.success(`Synced ${res.synced} proxies into pool`)
-      handleSelectPool(selectedPool)
+      loadPoolDetail(selectedPool.id)
       loadAll()
     } catch {
       toast.error("Sync failed")
@@ -333,7 +364,7 @@ export default function PoolsPage() {
       const res = await api.addPoolProxies(selectedPool.id, pickerSelected)
       toast.success(`Added ${res.added} ${res.added === 1 ? "proxy" : "proxies"} to the pool`)
       setPickerOpen(false)
-      handleSelectPool(selectedPool)
+      loadPoolDetail(selectedPool.id)
       loadAll()
     } catch {
       toast.error("Failed to add proxies to the pool")
@@ -374,12 +405,14 @@ export default function PoolsPage() {
     setHcJob(null)
     stopHcPoll()
     try {
-      const res = await api.healthCheckPool(selectedPool.id, selectedPool.health_check_url, 20)
-      // Start polling job status
       const poolId = selectedPool.id
+      const res = await api.healthCheckPool(poolId, selectedPool.health_check_url, 20)
+      if (selectedPoolIdRef.current !== poolId) return
+      // Start polling job status
       hcPollRef.current = setInterval(async () => {
         try {
           const job = await api.getHealthCheckJob(poolId, res.job_id)
+          if (selectedPoolIdRef.current !== poolId) return
           setHcJob(job)
           if (job.status === "done" || job.status === "failed") {
             stopHcPoll()
@@ -389,7 +422,7 @@ export default function PoolsPage() {
             } else {
               toast.error(`Health check failed: ${job.error}`)
             }
-            if (selectedPool) handleSelectPool(selectedPool)
+            loadPoolDetail(poolId)
             loadAll()
           }
         } catch {

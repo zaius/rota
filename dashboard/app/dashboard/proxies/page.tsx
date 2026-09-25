@@ -4,6 +4,7 @@ import {
   ColumnDef,
   ColumnFiltersState,
   SortingState,
+  Updater,
   VisibilityState,
   flexRender,
   getCoreRowModel,
@@ -76,6 +77,7 @@ import { compileLineFormat, FORMAT_URL } from "@/lib/lineformat"
 import { LineFormatField } from "@/components/line-format-field"
 import { Progress } from "@/components/ui/progress"
 import { TagInput } from "@/components/tag-input"
+import { useUrlState } from "@/hooks/use-url-state"
 import { toast } from "@/lib/toast"
 
 // parseImportLine parses one bulk-import line into a proxy request using the
@@ -95,25 +97,45 @@ function parseImportLine(
   }
 }
 
+const PAGE_SIZE = 10
+
+// The list's search, filters, sort and page, kept in the URL.
+const URL_DEFAULTS = { q: "", status: "all", protocol: "all", sort: "", order: "asc", page: "1" }
+
 export default function ProxiesPage() {
   const [isAddDialogOpen, setIsAddDialogOpen] = React.useState(false)
   const [isEditDialogOpen, setIsEditDialogOpen] = React.useState(false)
   const [isImportDialogOpen, setIsImportDialogOpen] = React.useState(false)
   const [editingProxy, setEditingProxy] = React.useState<Proxy | null>(null)
-  const [sorting, setSorting] = React.useState<SortingState>([])
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([])
   const [columnVisibility, setColumnVisibility] = React.useState<VisibilityState>({})
   const [rowSelection, setRowSelection] = React.useState({})
-  const [pagination, setPagination] = React.useState({
-    page: 1,
-    limit: 10,
-    total: 0,
-    total_pages: 0,
-  })
-  const [searchQuery, setSearchQuery] = React.useState("")
-  const [debouncedSearchQuery, setDebouncedSearchQuery] = React.useState("")
-  const [statusFilter, setStatusFilter] = React.useState<string>("all")
-  const [protocolFilter, setProtocolFilter] = React.useState<string>("all")
+  const [url, setUrl] = useUrlState(URL_DEFAULTS)
+  const page = Math.max(1, Number(url.page) || 1)
+  const debouncedSearchQuery = url.q
+  const statusFilter = url.status
+  const protocolFilter = url.protocol
+  const sorting: SortingState = React.useMemo(
+    () => (url.sort ? [{ id: url.sort, desc: url.order === "desc" }] : []),
+    [url.sort, url.order],
+  )
+  const setSorting = (updater: Updater<SortingState>) => {
+    const next = typeof updater === "function" ? updater(sorting) : updater
+    setUrl({ sort: next[0]?.id ?? "", order: next[0]?.desc ? "desc" : "asc", page: "1" })
+  }
+  const setPage = (p: number) => setUrl({ page: String(p) })
+
+  // The search box edits local state and reaches the URL after a pause, so
+  // typing never waits on navigation. It re-reads the URL only when
+  // back/forward changes the query to something this page did not write.
+  const [searchQuery, setSearchQuery] = React.useState(url.q)
+  const writtenSearch = React.useRef(url.q)
+  React.useEffect(() => {
+    if (url.q !== writtenSearch.current) {
+      writtenSearch.current = url.q
+      setSearchQuery(url.q)
+    }
+  }, [url.q])
 
   const [newProxy, setNewProxy] = React.useState({
     address: "",
@@ -151,13 +173,13 @@ export default function ProxiesPage() {
 
   // Debounce search query
   React.useEffect(() => {
+    if (searchQuery === url.q) return
     const timer = setTimeout(() => {
-      setDebouncedSearchQuery(searchQuery)
-      setPagination(prev => ({ ...prev, page: 1 }))
+      writtenSearch.current = searchQuery
+      setUrl({ q: searchQuery, page: "1" }, { replace: true })
     }, 500)
-
     return () => clearTimeout(timer)
-  }, [searchQuery])
+  }, [searchQuery, url.q, setUrl])
 
   // Server-side paginated/filtered/sorted list. The query key carries every
   // parameter, so changing a filter/page/sort refetches automatically — no
@@ -165,13 +187,13 @@ export default function ProxiesPage() {
   // empty table while the next page loads.
   const queryClient = useQueryClient()
   const proxiesQuery = useQuery({
-    queryKey: ["proxies", pagination.page, pagination.limit, debouncedSearchQuery, statusFilter, protocolFilter, sorting],
+    queryKey: ["proxies", page, PAGE_SIZE, debouncedSearchQuery, statusFilter, protocolFilter, sorting],
     queryFn: () => {
       const sortField = sorting.length > 0 ? sorting[0].id : undefined
       const sortOrder = sorting.length > 0 ? (sorting[0].desc ? "desc" : "asc") : undefined
       return api.getProxies({
-        page: pagination.page,
-        limit: pagination.limit,
+        page,
+        limit: PAGE_SIZE,
         search: debouncedSearchQuery || undefined,
         status: statusFilter === "all" ? undefined : statusFilter,
         protocol: protocolFilter === "all" ? undefined : protocolFilter,
@@ -205,19 +227,16 @@ export default function ProxiesPage() {
     queryClient.invalidateQueries({ queryKey: ["proxy-tags"] })
   }, [queryClient])
 
-  // Mirror the server-reported totals into the pagination state used by the
-  // UI, stepping back when deletes leave the current page past the last one.
+  const total = proxiesQuery.data?.pagination.total ?? 0
+  const totalPages = proxiesQuery.data?.pagination.total_pages ?? 0
+
+  // Step back when deletes leave the current page past the last one.
   React.useEffect(() => {
-    const d = proxiesQuery.data
-    if (d) {
-      setPagination(prev => ({
-        ...prev,
-        page: Math.min(prev.page, Math.max(d.pagination.total_pages, 1)),
-        total: d.pagination.total,
-        total_pages: d.pagination.total_pages,
-      }))
+    const lastPage = Math.max(totalPages, 1)
+    if (proxiesQuery.data && page > lastPage) {
+      setUrl({ page: String(lastPage) }, { replace: true })
     }
-  }, [proxiesQuery.data])
+  }, [proxiesQuery.data, totalPages, page, setUrl])
 
   const handleAddProxy = async () => {
     try {
@@ -859,7 +878,7 @@ export default function ProxiesPage() {
     manualPagination: true,
     manualSorting: true,
     manualFiltering: true,
-    pageCount: pagination.total_pages,
+    pageCount: totalPages,
     state: {
       sorting,
       columnFilters,
@@ -871,9 +890,9 @@ export default function ProxiesPage() {
   // Selection helpers for the Gmail-style "select all that match" behaviour.
   const pageSelectedCount = Object.keys(rowSelection).length
   const pageAllSelected = data.length > 0 && pageSelectedCount === data.length
-  const hasMoreMatches = pagination.total > data.length
+  const hasMoreMatches = total > data.length
   // Effective number of proxies the bulk actions will operate on.
-  const selectedCount = selectAllMatching ? pagination.total : pageSelectedCount
+  const selectedCount = selectAllMatching ? total : pageSelectedCount
 
   const isBulkTesting = bulkTestJob?.status === "pending" || bulkTestJob?.status === "running"
 
@@ -899,7 +918,7 @@ export default function ProxiesPage() {
   // it, so it can never apply to a filter/page the user is no longer viewing.
   React.useEffect(() => {
     setSelectAllMatching(false)
-  }, [debouncedSearchQuery, statusFilter, protocolFilter, pagination.page, pagination.limit])
+  }, [debouncedSearchQuery, statusFilter, protocolFilter, page])
 
   if (isLoading && data.length === 0) {
     return (
@@ -926,7 +945,7 @@ export default function ProxiesPage() {
             <div>
               <CardTitle>Proxies</CardTitle>
               <CardDescription>
-                {pagination.total} total proxies
+                {total} total proxies
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
@@ -1033,10 +1052,7 @@ export default function ProxiesPage() {
                     <Label className="text-xs text-muted-foreground mb-2 block">Status</Label>
                     <Select
                       value={statusFilter}
-                      onValueChange={(value) => {
-                        setStatusFilter(value)
-                        setPagination(prev => ({ ...prev, page: 1 }))
-                      }}
+                      onValueChange={(value) => setUrl({ status: value, page: "1" })}
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="All statuses" />
@@ -1054,10 +1070,7 @@ export default function ProxiesPage() {
                     <Label className="text-xs text-muted-foreground mb-2 block">Protocol</Label>
                     <Select
                       value={protocolFilter}
-                      onValueChange={(value) => {
-                        setProtocolFilter(value)
-                        setPagination(prev => ({ ...prev, page: 1 }))
-                      }}
+                      onValueChange={(value) => setUrl({ protocol: value, page: "1" })}
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="All protocols" />
@@ -1138,7 +1151,7 @@ export default function ProxiesPage() {
                 {selectAllMatching ? (
                   <>
                     <span>
-                      All <strong>{pagination.total.toLocaleString()}</strong> proxies that match this search are selected.
+                      All <strong>{total.toLocaleString()}</strong> proxies that match this search are selected.
                     </span>
                     <Button
                       variant="link"
@@ -1161,7 +1174,7 @@ export default function ProxiesPage() {
                       className="h-auto p-0"
                       onClick={() => setSelectAllMatching(true)}
                     >
-                      Select all {pagination.total.toLocaleString()} proxies that match this search
+                      Select all {total.toLocaleString()} proxies that match this search
                     </Button>
                   </>
                 )}
@@ -1220,27 +1233,27 @@ export default function ProxiesPage() {
             <div className="flex items-center justify-between space-x-2">
               <div className="flex-1 text-sm text-muted-foreground">
                 {selectAllMatching
-                  ? `All ${pagination.total.toLocaleString()} matching proxies selected.`
+                  ? `All ${total.toLocaleString()} matching proxies selected.`
                   : `${pageSelectedCount} of ${data.length} row(s) selected.`}
               </div>
               <div className="flex items-center gap-4">
                 <div className="text-sm text-muted-foreground">
-                  Page {pagination.page} of {pagination.total_pages} ({pagination.total} total proxies)
+                  Page {page} of {totalPages} ({total} total proxies)
                 </div>
                 <div className="flex items-center space-x-2">
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setPagination(prev => ({ ...prev, page: prev.page - 1 }))}
-                    disabled={pagination.page <= 1}
+                    onClick={() => setPage(page - 1)}
+                    disabled={page <= 1}
                   >
                     Previous
                   </Button>
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setPagination(prev => ({ ...prev, page: prev.page + 1 }))}
-                    disabled={pagination.page >= pagination.total_pages}
+                    onClick={() => setPage(page + 1)}
+                    disabled={page >= totalPages}
                   >
                     Next
                   </Button>
