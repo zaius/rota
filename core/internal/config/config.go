@@ -146,8 +146,12 @@ func (d *DatabaseConfig) DSN() string {
 	)
 }
 
-// Load reads configuration from environment variables
+// Load reads configuration from environment variables. For runs outside
+// Docker, it first reads a .env file in the working directory; variables
+// already set in the environment take precedence over it.
 func Load() (*Config, error) {
+	loadDotEnv(".env")
+
 	cfg := &Config{
 		ProxyPort: getEnvAsInt("PROXY_PORT", 8000),
 		APIPort:   getEnvAsInt("API_PORT", 8001),
@@ -328,4 +332,49 @@ func getEnvAsSlice(key string, defaultValue []string) []string {
 		return defaultValue
 	}
 	return result
+}
+
+// loadDotEnv sets KEY=VALUE pairs from path for keys the environment leaves
+// unset or empty. It reads the subset of the format Docker Compose does: it
+// skips blank lines and # comments, allows an "export " prefix, keeps
+// everything between a quoted value's quotes, and ends an unquoted value at a
+// " #" comment. It ignores a missing file.
+func loadDotEnv(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			continue
+		}
+		value = dotEnvValue(strings.TrimSpace(value))
+		// Empty counts as unset, matching getEnv.
+		if os.Getenv(key) != "" {
+			continue
+		}
+		os.Setenv(key, value)
+	}
+}
+
+// dotEnvValue unquotes a .env value or strips its trailing comment.
+func dotEnvValue(v string) string {
+	if len(v) > 0 && (v[0] == '"' || v[0] == '\'') {
+		if end := strings.IndexByte(v[1:], v[0]); end >= 0 {
+			return v[1 : end+1]
+		}
+	}
+	for i := 1; i < len(v); i++ {
+		if v[i] == '#' && (v[i-1] == ' ' || v[i-1] == '\t') {
+			return strings.TrimSpace(v[:i])
+		}
+	}
+	return v
 }
