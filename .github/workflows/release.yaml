@@ -46,7 +46,10 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          # The job's packages: write permission scopes GITHUB_TOKEN, so the job
+          # needs no hand-maintained PAT. The ghcr.io package must grant this
+          # repository write access (Package settings → Manage Actions access).
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels)
         id: meta
