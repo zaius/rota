@@ -205,11 +205,17 @@ export default function ProxiesPage() {
     queryClient.invalidateQueries({ queryKey: ["proxy-tags"] })
   }, [queryClient])
 
-  // Mirror the server-reported totals into the pagination state used by the UI.
+  // Mirror the server-reported totals into the pagination state used by the
+  // UI, stepping back when deletes leave the current page past the last one.
   React.useEffect(() => {
     const d = proxiesQuery.data
     if (d) {
-      setPagination(prev => ({ ...prev, total: d.pagination.total, total_pages: d.pagination.total_pages }))
+      setPagination(prev => ({
+        ...prev,
+        page: Math.min(prev.page, Math.max(d.pagination.total_pages, 1)),
+        total: d.pagination.total,
+        total_pages: d.pagination.total_pages,
+      }))
     }
   }, [proxiesQuery.data])
 
