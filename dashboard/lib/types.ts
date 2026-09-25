@@ -407,6 +407,7 @@ export interface ProxyUser {
   max_retries: number
   inspect_tls: boolean
   tls_profile: TLSProfile
+  allow_proxy_export: boolean
   created_at: string
   updated_at: string
 }
@@ -420,6 +421,7 @@ export interface CreateProxyUserRequest {
   max_retries: number
   inspect_tls?: boolean
   tls_profile?: TLSProfile
+  allow_proxy_export?: boolean
 }
 
 export interface UpdateProxyUserRequest {
@@ -430,6 +432,7 @@ export interface UpdateProxyUserRequest {
   max_retries?: number
   inspect_tls?: boolean
   tls_profile?: TLSProfile
+  allow_proxy_export?: boolean
 }
 
 export interface CreatePoolRequest {

@@ -402,11 +402,12 @@ Inspect active cooldowns and permanent exclusions with admin-authenticated `GET 
 
 ### Invalidating with proxy-user credentials
 
-The scraping client usually holds proxy-user credentials, not an admin JWT. Three control endpoints therefore also accept **HTTP Basic auth with proxy-user credentials**:
+The scraping client usually holds proxy-user credentials, not an admin JWT. These client-control endpoints therefore also accept **HTTP Basic auth with proxy-user credentials**:
 
 - `POST /api/v1/proxies/{id}/invalidate`
 - `POST /api/v1/sessions/invalidate`
 - `POST /api/v1/sessions/release`
+- `GET /api/v1/proxies/working`
 
 ```bash
 # Same credentials the client already uses on the proxy port
@@ -417,6 +418,20 @@ curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
 ```
 
 Proxy-user calls are scoped to the user's own pools: only proxies that belong to the user's main/fallback pools can be invalidated, and session operations only match that user's own bindings in those pools. The endpoints share the same brute-force protection as the login endpoint. Reactivation stays admin-only. Temporary cooldowns expire automatically; permanent exclusions after repeated session invalidations require admin reactivation.
+
+### Exporting working proxies
+
+A client that connects to upstream proxies directly, rather than through Rota, can download them from `GET /api/v1/proxies/working`, one per line with their credentials. A proxy user needs **Allow proxy export** turned on in its settings, and can only read its own pools:
+
+```bash
+# The user's main pool, fastest first, as protocol://user:pass@host:port
+curl -u "myuser:mypassword" "http://localhost:8001/api/v1/proxies/working"
+
+# A fallback pool, at most 20 proxies, as host:port:user:pass
+curl -u "myuser:mypassword" "http://localhost:8001/api/v1/proxies/working?pool=3&limit=20&format=colon"
+```
+
+By default only active proxies outside a cooldown are listed; `status=all` includes the rest. Admins can read any pool with a JWT, but must pass `pool`.
 
 ### Per-domain statistics
 

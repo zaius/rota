@@ -116,3 +116,70 @@ func TestIntegration_ProxyBulkUpdateTags(t *testing.T) {
 		t.Errorf("proxy 1 tags after filter removal = %v, want [res]", got)
 	}
 }
+
+func TestIntegration_PoolWorkingProxies(t *testing.T) {
+	db := testDB(t)
+	cleanTables(t, db)
+	proxies := NewProxyRepository(db)
+	pools := NewPoolRepository(db)
+	ctx := context.Background()
+
+	pool, err := pools.Create(ctx, models.CreatePoolRequest{Name: "export", RotationMethod: "roundrobin", Enabled: true})
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	user, pass := "u", "p"
+	var ids []int
+	for i, state := range []struct {
+		status   string
+		latency  int
+		cooldown bool
+	}{
+		{"active", 300, false}, {"active", 0, false}, {"active", 100, false},
+		{"failed", 50, false}, {"active", 10, true},
+	} {
+		p, err := proxies.Create(ctx, models.CreateProxyRequest{
+			Address: fmt.Sprintf("10.0.2.%d:8080", i+1), Protocol: "http", Username: &user, Password: &pass,
+		})
+		if err != nil {
+			t.Fatalf("create proxy: %v", err)
+		}
+		if _, err := db.Pool.Exec(ctx,
+			`UPDATE proxies SET status=$2, avg_response_time=$3, cooldown_until = CASE WHEN $4 THEN NOW() + INTERVAL '1 hour' END WHERE id=$1`,
+			p.ID, state.status, state.latency, state.cooldown); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, p.ID)
+	}
+	if err := pools.AddProxies(ctx, pool.ID, ids); err != nil {
+		t.Fatalf("add proxies: %v", err)
+	}
+
+	addresses := func(ps []models.Proxy) []string {
+		out := make([]string, len(ps))
+		for i, p := range ps {
+			out[i] = p.Address
+		}
+		return out
+	}
+
+	working, err := pools.WorkingProxies(ctx, pool.ID, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Active and outside a cooldown, fastest first, unmeasured last.
+	if got, want := addresses(working), []string{"10.0.2.3:8080", "10.0.2.1:8080", "10.0.2.2:8080"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("working = %v, want %v", got, want)
+	}
+	if working[0].Password == nil || *working[0].Password != "p" {
+		t.Errorf("credentials missing: %+v", working[0])
+	}
+
+	all, err := pools.WorkingProxies(ctx, pool.ID, 2, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := addresses(all), []string{"10.0.2.5:8080", "10.0.2.4:8080"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("all, limit 2 = %v, want %v", got, want)
+	}
+}

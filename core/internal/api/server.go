@@ -248,6 +248,7 @@ func (s *Server) setupRoutes() {
 			cr.Post("/proxies/{id}/invalidate", s.proxyControlHandler.InvalidateProxy)
 			cr.Post("/sessions/invalidate", s.proxyControlHandler.InvalidateSession)
 			cr.Post("/sessions/release", s.proxyControlHandler.ReleaseSession)
+			cr.Get("/proxies/working", s.proxyControlHandler.ExportWorkingProxies)
 		})
 
 		// Everything else requires an admin JWT.

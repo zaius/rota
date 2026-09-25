@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -53,6 +55,7 @@ func ProxyUserFrom(ctx context.Context) *models.ProxyUser {
 type ProxyControlHandler struct {
 	proxyRepo   proxyControlRepository
 	poolRepo    *repository.PoolRepository
+	exportPools workingProxySource
 	logger      *logger.Logger
 	proxyServer ProxyServer
 	// Keep database commits and their live updates in the same order.
@@ -74,7 +77,121 @@ type proxyControlRepository interface {
 // reference is attached later via SetProxyServer, since it is constructed after
 // the API server.
 func NewProxyControlHandler(proxyRepo *repository.ProxyRepository, poolRepo *repository.PoolRepository, log *logger.Logger) *ProxyControlHandler {
-	return &ProxyControlHandler{proxyRepo: proxyRepo, poolRepo: poolRepo, logger: log}
+	return &ProxyControlHandler{proxyRepo: proxyRepo, poolRepo: poolRepo, exportPools: poolRepo, logger: log}
+}
+
+// workingProxySource lists a pool's proxies for export.
+type workingProxySource interface {
+	GetByID(ctx context.Context, id int) (*models.ProxyPool, error)
+	WorkingProxies(ctx context.Context, poolID, limit int, all bool) ([]models.Proxy, error)
+}
+
+// ExportWorkingProxies lists one pool's proxies as plain text, one per line,
+// credentials included, for clients that connect to upstream proxies
+// directly. Proxy users need allow_proxy_export and may only read their own
+// pools, their main pool by default; admins must name a pool.
+//
+// Query: pool (ID), limit, status (active — the default, active and outside a
+// cooldown — or all), format (url — protocol://user:pass@host:port, the
+// default — or colon — host:port:user:pass).
+func (h *ProxyControlHandler) ExportWorkingProxies(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var poolID int
+	if v := q.Get("pool"); v != "" {
+		id, err := strconv.Atoi(v)
+		if err != nil || id <= 0 {
+			writeError(w, http.StatusBadRequest, "pool must be a pool ID")
+			return
+		}
+		poolID = id
+	}
+	limit := 0
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "limit must be a non-negative integer")
+			return
+		}
+		limit = n
+	}
+	status := q.Get("status")
+	if status != "" && status != "active" && status != "all" {
+		writeError(w, http.StatusBadRequest, "status must be active or all")
+		return
+	}
+	format := q.Get("format")
+	if format != "" && format != "url" && format != "colon" {
+		writeError(w, http.StatusBadRequest, "format must be url or colon")
+		return
+	}
+
+	if pu := ProxyUserFrom(r.Context()); pu != nil {
+		if !pu.AllowProxyExport {
+			writeError(w, http.StatusForbidden, "proxy export is not enabled for this user")
+			return
+		}
+		if poolID == 0 {
+			if pu.MainPoolID == nil {
+				writeError(w, http.StatusBadRequest, "pool is required: this user has no main pool")
+				return
+			}
+			poolID = *pu.MainPoolID
+		}
+		if !slices.Contains(pu.PoolIDs(), poolID) {
+			writeError(w, http.StatusForbidden, "pool is not in your pools")
+			return
+		}
+	} else {
+		if poolID == 0 {
+			writeError(w, http.StatusBadRequest, "pool is required")
+			return
+		}
+		pool, err := h.exportPools.GetByID(r.Context(), poolID)
+		if err != nil {
+			h.logger.Error("failed to get pool", "pool_id", poolID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to get pool")
+			return
+		}
+		if pool == nil {
+			writeError(w, http.StatusNotFound, "pool not found")
+			return
+		}
+	}
+
+	proxies, err := h.exportPools.WorkingProxies(r.Context(), poolID, limit, status == "all")
+	if err != nil {
+		h.logger.Error("failed to list working proxies", "pool_id", poolID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list proxies")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	for _, p := range proxies {
+		fmt.Fprintln(w, exportLine(p, format))
+	}
+}
+
+// exportLine renders one proxy with its credentials in the requested format.
+func exportLine(p models.Proxy, format string) string {
+	user, pass := "", ""
+	if p.Username != nil {
+		user = *p.Username
+	}
+	if p.Password != nil {
+		pass = *p.Password
+	}
+	if format == "colon" {
+		if user == "" {
+			return p.Address
+		}
+		return p.Address + ":" + user + ":" + pass
+	}
+	u := url.URL{Scheme: p.Protocol, Host: p.Address}
+	if user != "" {
+		u.User = url.UserPassword(user, pass)
+	}
+	return u.String()
 }
 
 // SetProxyServer attaches the running proxy server.

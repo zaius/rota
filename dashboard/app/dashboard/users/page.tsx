@@ -39,6 +39,7 @@ const DEFAULT_FORM: CreateProxyUserRequest = {
   max_retries: 5,
   inspect_tls: false,
   tls_profile: "go",
+  allow_proxy_export: false,
 }
 
 export default function UsersPage() {
@@ -78,6 +79,7 @@ export default function UsersPage() {
       max_retries: u.max_retries,
       inspect_tls: u.inspect_tls ?? false,
       tls_profile: u.tls_profile || "go",
+      allow_proxy_export: u.allow_proxy_export ?? false,
     })
     setShowPass(false)
     setDialogOpen(true)
@@ -96,6 +98,7 @@ export default function UsersPage() {
           max_retries: form.max_retries,
           inspect_tls: form.inspect_tls,
           tls_profile: form.tls_profile,
+          allow_proxy_export: form.allow_proxy_export,
         }
         if (form.password) upd.password = form.password
         await api.updateProxyUser(editUser.id, upd)
@@ -447,6 +450,24 @@ export default function UsersPage() {
                 Only applies while Inspect HTTPS is on &mdash; without interception the client
                 makes its own handshake and Rota never sees it. Otherwise Rota presents this
                 client&apos;s ClientHello and HTTP/2 settings to the target instead of Go&apos;s.
+              </p>
+            </div>
+
+            {/* Proxy export */}
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="user-allow-export"
+                  checked={form.allow_proxy_export ?? false}
+                  onCheckedChange={v => setForm({ ...form, allow_proxy_export: v })}
+                />
+                <Label htmlFor="user-allow-export">Allow proxy export</Label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Lets this user download the working proxies of its own pools, upstream
+                credentials included, from <code>GET /api/v1/proxies/working</code> with its
+                proxy credentials &mdash; for clients that connect to proxies directly
+                instead of through Rota.
               </p>
             </div>
 

@@ -773,6 +773,15 @@ var migrations = []Migration{
 		`,
 		Down: `DROP TABLE IF EXISTS system_secrets;`,
 	},
+	{
+		Version:     35,
+		Description: "Let proxy users opt in to exporting their pools' proxies",
+		Up: `
+			ALTER TABLE proxy_users
+			  ADD COLUMN IF NOT EXISTS allow_proxy_export BOOLEAN NOT NULL DEFAULT FALSE;
+		`,
+		Down: `ALTER TABLE proxy_users DROP COLUMN IF EXISTS allow_proxy_export;`,
+	},
 }
 
 // migrationLockKey serializes each migration transaction across instances.
