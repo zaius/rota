@@ -6,7 +6,8 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
-import { ProxyUser, CreateProxyUserRequest, TLS_PROFILES } from "@/lib/types"
+import { errorMessage } from "@/lib/utils"
+import { ProxyUser, CreateProxyUserRequest, UpdateProxyUserRequest, TLS_PROFILES } from "@/lib/types"
 import { useResourceQuery } from "@/hooks/use-resource-query"
 import { StatCard } from "@/components/crud/stat-card"
 import { EmptyState } from "@/components/crud/empty-state"
@@ -25,7 +26,7 @@ import {
 } from "@/components/ui/table"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -91,7 +92,7 @@ export default function UsersPage() {
     setSaving(true)
     try {
       if (editUser) {
-        const upd: any = {
+        const upd: UpdateProxyUserRequest = {
           enabled: form.enabled,
           main_pool_id: form.main_pool_id,
           fallback_pool_ids: form.fallback_pool_ids,
@@ -109,8 +110,8 @@ export default function UsersPage() {
       }
       setDialogOpen(false)
       reload()
-    } catch (e: any) {
-      toast.error(e.message || "Failed to save user")
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to save user"))
     } finally {
       setSaving(false)
     }

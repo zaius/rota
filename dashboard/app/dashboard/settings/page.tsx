@@ -17,6 +17,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { api } from "@/lib/api"
+import { errorMessage } from "@/lib/utils"
 import { Settings } from "@/lib/types"
 import { toast } from "sonner"
 
@@ -62,7 +63,7 @@ export default function SettingsPage() {
 
     setChangingPass(true)
     try {
-      const opts: any = { current_password: currentPass, new_password: newPass }
+      const opts: Parameters<typeof api.changePassword>[0] = { current_password: currentPass, new_password: newPass }
       if (newUsername && newUsername !== adminUsername) {
         opts.new_username = newUsername
       }
@@ -73,8 +74,8 @@ export default function SettingsPage() {
       setNewPass("")
       setConfirmPass("")
       toast.success("Credentials updated successfully")
-    } catch (e: any) {
-      toast.error(e.message || "Failed to change password")
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to change password"))
     } finally {
       setChangingPass(false)
     }

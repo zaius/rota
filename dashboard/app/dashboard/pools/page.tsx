@@ -7,6 +7,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
+import { errorMessage } from "@/lib/utils"
 import {
   ProxyPool, PoolProxy, Job, CreatePoolRequest, GeoFilter,
   PoolAlertRule, CreatePoolAlertRuleRequest, GEO_FILTER_ALL,
@@ -195,8 +196,8 @@ export default function PoolsPage() {
       }
       setDialogOpen(false)
       loadAll()
-    } catch (e: any) {
-      toast.error(e.message || "Failed to save pool")
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to save pool"))
     } finally {
       setSaving(false)
     }
@@ -1050,7 +1051,7 @@ export default function PoolsPage() {
                 <Label>Rotation strategy</Label>
                 <Select
                   value={form.rotation_method}
-                  onValueChange={v => setForm({ ...form, rotation_method: v as any })}
+                  onValueChange={v => setForm({ ...form, rotation_method: v as CreatePoolRequest["rotation_method"] })}
                 >
                   <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>

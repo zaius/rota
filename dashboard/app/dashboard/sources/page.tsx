@@ -2,10 +2,11 @@
 import { useState } from "react"
 import {
   Plus, Trash2, RefreshCw, Globe, Clock, CheckCircle2,
-  XCircle, Pencil, Download, Loader2, AlertCircle,
+  Pencil, Download, Loader2, AlertCircle,
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
+import { errorMessage } from "@/lib/utils"
 import { ProxySource, CreateSourceRequest, PROTOCOLS } from "@/lib/types"
 import { FORMAT_URL, compileLineFormat } from "@/lib/lineformat"
 import { useQueryClient } from "@tanstack/react-query"
@@ -28,7 +29,7 @@ import {
 } from "@/components/ui/table"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 
 const DEFAULT_FORM: CreateSourceRequest = {
   name: "",
@@ -100,8 +101,8 @@ export default function SourcesPage() {
       reload()
       // A custom format may now be in history — refresh the picker.
       queryClient.invalidateQueries({ queryKey: ["format-history"] })
-    } catch (e: any) {
-      toast.error(e.message || "Failed to save source")
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to save source"))
     } finally {
       setSaving(false)
     }
@@ -124,8 +125,8 @@ export default function SourcesPage() {
       const res = await api.fetchSourceNow(id)
       toast.success(`Fetched ${res.imported} proxies from source`)
       reload()
-    } catch (e: any) {
-      toast.error(e.message || "Fetch failed")
+    } catch (e) {
+      toast.error(errorMessage(e, "Fetch failed"))
     } finally {
       setFetchingId(null)
     }
@@ -357,7 +358,7 @@ export default function SourcesPage() {
               <Label>Protocol</Label>
               <Select
                 value={form.protocol}
-                onValueChange={v => setForm({ ...form, protocol: v as any })}
+                onValueChange={v => setForm({ ...form, protocol: v as CreateSourceRequest["protocol"] })}
               >
                 <SelectTrigger>
                   <SelectValue />

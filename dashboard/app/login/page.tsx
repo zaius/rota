@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
+import { errorMessage } from "@/lib/utils";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -34,8 +35,8 @@ export default function LoginPage() {
     try {
       await api.login(username, password);
       navigate("/dashboard");
-    } catch (err: any) {
-      setError(err.message || "Invalid credentials. Please try again.");
+    } catch (err) {
+      setError(errorMessage(err, "Invalid credentials. Please try again."));
       console.error("Login failed:", err);
     } finally {
       setIsLoading(false);

@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   Network,
   Settings,
-  ChevronRight,
   Moon,
   Sun,
   Command,
@@ -29,12 +28,6 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 
 const navigation = [

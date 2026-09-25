@@ -7,9 +7,6 @@ import {
   VisibilityState,
   flexRender,
   getCoreRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table"
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query"
@@ -53,7 +50,6 @@ import {
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Status, StatusIndicator, StatusLabel } from "@/components/ui/shadcn-io/status"
 import {
   Dialog,
   DialogContent,
@@ -75,7 +71,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api } from "@/lib/api"
-import { Proxy, AddProxyRequest, ProxyFilter, Job, PROTOCOLS } from "@/lib/types"
+import { Proxy, AddProxyRequest, ProxyFilter, Job, Protocol } from "@/lib/types"
 import { compileLineFormat, FORMAT_URL } from "@/lib/lineformat"
 import { LineFormatField } from "@/components/line-format-field"
 import { Progress } from "@/components/ui/progress"
@@ -121,7 +117,7 @@ export default function ProxiesPage() {
 
   const [newProxy, setNewProxy] = React.useState({
     address: "",
-    protocol: "http" as "http" | "https" | "socks5",
+    protocol: "http" as Protocol,
     username: "",
     password: "",
     tags: [] as string[],
@@ -454,7 +450,7 @@ export default function ProxiesPage() {
       setRowSelection({})
       toast.success(`${res.deleted} proxies deleted`)
       refetchProxies()
-    } catch (error) {
+    } catch {
       toast.error("Failed to delete all proxies")
     } finally {
       setDeleteAllConfirm(false)
@@ -714,11 +710,6 @@ export default function ProxiesPage() {
       },
       cell: ({ row }) => {
         const status = row.getValue("status") as string
-        const statusMap = {
-          active: "online" as const,
-          failed: "offline" as const,
-          idle: "idle" as const,
-        }
         const statusColors = {
           active: "text-green-600",
           failed: "text-red-600",
@@ -1278,7 +1269,7 @@ export default function ProxiesPage() {
               <Label htmlFor="protocol">Protocol</Label>
               <Select
                 value={newProxy.protocol}
-                onValueChange={(value: any) => setNewProxy({ ...newProxy, protocol: value })}
+                onValueChange={(value) => setNewProxy({ ...newProxy, protocol: value as Protocol })}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -1358,7 +1349,7 @@ export default function ProxiesPage() {
                 <Label htmlFor="edit-protocol">Protocol</Label>
                 <Select
                   value={editingProxy.protocol}
-                  onValueChange={(value: any) => setEditingProxy({ ...editingProxy, protocol: value })}
+                  onValueChange={(value) => setEditingProxy({ ...editingProxy, protocol: value as Protocol })}
                 >
                   <SelectTrigger>
                     <SelectValue />
