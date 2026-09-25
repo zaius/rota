@@ -17,6 +17,7 @@ export interface Proxy {
   cooldown_until?: string
   cooldown_reason?: string
   username?: string
+  tags: string[]
   created_at: string
   updated_at: string
 }
@@ -144,13 +145,16 @@ export interface AddProxyRequest {
   protocol: Protocol
   username?: string
   password?: string
+  tags?: string[]
 }
 
+// Omitted credentials and tags keep their stored values; null or "" clears them.
 export interface UpdateProxyRequest {
   address?: string
   protocol?: Protocol
-  username?: string
-  password?: string
+  username?: string | null
+  password?: string | null
+  tags?: string[]
 }
 
 export interface BulkProxyRequest {
@@ -169,6 +173,14 @@ export interface BulkDeleteRequest {
   ids?: number[]
   all?: boolean
   filter?: ProxyFilter
+}
+
+export interface BulkTagRequest {
+  ids?: number[]
+  all?: boolean
+  filter?: ProxyFilter
+  add?: string[]
+  remove?: string[]
 }
 
 export interface BulkTestRequest {

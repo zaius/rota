@@ -28,6 +28,7 @@ import {
   AlertCircle,
   Filter,
   Activity,
+  Tag,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -78,6 +79,7 @@ import { Proxy, AddProxyRequest, ProxyFilter, Job, PROTOCOLS } from "@/lib/types
 import { compileLineFormat, FORMAT_URL } from "@/lib/lineformat"
 import { LineFormatField } from "@/components/line-format-field"
 import { Progress } from "@/components/ui/progress"
+import { TagInput } from "@/components/tag-input"
 import { toast } from "@/lib/toast"
 
 // parseImportLine parses one bulk-import line into a proxy request using the
@@ -122,7 +124,17 @@ export default function ProxiesPage() {
     protocol: "http" as "http" | "https" | "socks5",
     username: "",
     password: "",
+    tags: [] as string[],
   })
+  // A stored password is never sent to the dashboard, so the edit form only
+  // sends one the user typed; blank keeps the current password.
+  const [editPassword, setEditPassword] = React.useState("")
+
+  // Bulk tag dialog
+  const [isTagDialogOpen, setIsTagDialogOpen] = React.useState(false)
+  const [bulkAddTags, setBulkAddTags] = React.useState<string[]>([])
+  const [bulkRemoveTags, setBulkRemoveTags] = React.useState<string[]>([])
+  const [isTagging, setIsTagging] = React.useState(false)
 
   // Import modal states
   const [importFile, setImportFile] = React.useState<File | null>(null)
@@ -176,6 +188,11 @@ export default function ProxiesPage() {
   const data = proxiesQuery.data?.proxies ?? []
   const isLoading = proxiesQuery.isLoading
 
+  // Tags already in use, offered as one-click suggestions. Best-effort:
+  // tagging works without them.
+  const tagListQuery = useQuery({ queryKey: ["proxy-tags"], queryFn: () => api.getTagList() })
+  const allTags = tagListQuery.data ?? []
+
   // rowSelection is keyed by row index. A refetch can shrink `data` while a
   // selection is still held, so indexing it blindly throws on the missing rows.
   const selectedProxyIds = () =>
@@ -187,10 +204,10 @@ export default function ProxiesPage() {
   // refetchProxies is stable (it doesn't close over the filters), so the
   // bulk-test poller can call it on completion without being torn down when
   // filters change — this replaces the old fetchProxiesRef workaround.
-  const refetchProxies = React.useCallback(
-    () => queryClient.invalidateQueries({ queryKey: ["proxies"] }),
-    [queryClient],
-  )
+  const refetchProxies = React.useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["proxies"] })
+    queryClient.invalidateQueries({ queryKey: ["proxy-tags"] })
+  }, [queryClient])
 
   // Mirror the server-reported totals into the pagination state used by the UI.
   React.useEffect(() => {
@@ -204,7 +221,7 @@ export default function ProxiesPage() {
     try {
       await api.addProxy(newProxy)
       setIsAddDialogOpen(false)
-      setNewProxy({ address: "", protocol: "http", username: "", password: "" })
+      setNewProxy({ address: "", protocol: "http", username: "", password: "", tags: [] })
       toast.success("Proxy added successfully")
       refetchProxies()
     } catch (error) {
@@ -216,19 +233,57 @@ export default function ProxiesPage() {
   const handleEditProxy = async () => {
     if (!editingProxy) return
 
+    // Without a username there is no authentication, so a cleared username
+    // drops the stored password too.
+    const username = editingProxy.username?.trim() ?? ""
+    let password: string | null | undefined
+    if (editPassword) {
+      password = editPassword
+    } else if (!username) {
+      password = null
+    }
+
     try {
       await api.updateProxy(editingProxy.id, {
         address: editingProxy.address,
         protocol: editingProxy.protocol,
-        username: editingProxy.username,
+        username: username || null,
+        password,
+        tags: editingProxy.tags ?? [],
       })
       setIsEditDialogOpen(false)
       setEditingProxy(null)
+      setEditPassword("")
       toast.success("Proxy updated successfully")
       refetchProxies()
     } catch (error) {
       console.error("Failed to update proxy:", error)
       toast.error("Failed to update proxy", error instanceof Error ? error.message : "Unknown error")
+    }
+  }
+
+  const handleBulkTag = async () => {
+    if (bulkAddTags.length === 0 && bulkRemoveTags.length === 0) {
+      toast.error("Nothing to change", "Add or remove at least one tag")
+      return
+    }
+
+    setIsTagging(true)
+    try {
+      const target = selectAllMatching
+        ? { all: true, filter: currentFilter() }
+        : { ids: selectedProxyIds() }
+      const res = await api.bulkTagProxies({ ...target, add: bulkAddTags, remove: bulkRemoveTags })
+      toast.success(`Updated tags on ${res.updated.toLocaleString()} proxies`)
+      setIsTagDialogOpen(false)
+      setBulkAddTags([])
+      setBulkRemoveTags([])
+      refetchProxies()
+    } catch (error) {
+      console.error("Failed to update tags:", error)
+      toast.error("Failed to update tags", error instanceof Error ? error.message : "Unknown error")
+    } finally {
+      setIsTagging(false)
     }
   }
 
@@ -622,6 +677,29 @@ export default function ProxiesPage() {
       ),
     },
     {
+      accessorKey: "tags",
+      header: "Tags",
+      enableSorting: false,
+      cell: ({ row }) => {
+        const tags = (row.getValue("tags") as string[] | undefined) ?? []
+        if (tags.length === 0) {
+          return <span className="text-muted-foreground">—</span>
+        }
+        return (
+          <div className="flex min-w-[140px] max-w-[220px] flex-wrap gap-1">
+            {tags.slice(0, 3).map(tag => (
+              <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
+            ))}
+            {tags.length > 3 && (
+              <Badge variant="outline" className="text-xs" title={tags.slice(3).join(", ")}>
+                +{tags.length - 3}
+              </Badge>
+            )}
+          </div>
+        )
+      },
+    },
+    {
       accessorKey: "status",
       header: ({ column }) => {
         return (
@@ -755,6 +833,7 @@ export default function ProxiesPage() {
               )}
               <DropdownMenuItem onClick={() => {
                 setEditingProxy(proxy)
+                setEditPassword("")
                 setIsEditDialogOpen(true)
               }}>
                 Edit
@@ -902,6 +981,13 @@ export default function ProxiesPage() {
                       <Activity className="mr-2 h-4 w-4" />
                     )}
                     Test selected ({selectedCount.toLocaleString()})
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setIsTagDialogOpen(true)}
+                    disabled={selectedCount === 0}
+                  >
+                    <Tag className="mr-2 h-4 w-4" />
+                    Edit tags of selected ({selectedCount.toLocaleString()})
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
@@ -1223,6 +1309,18 @@ export default function ProxiesPage() {
                 onChange={(e) => setNewProxy({ ...newProxy, password: e.target.value })}
               />
             </div>
+            <div className="grid gap-2">
+              <Label htmlFor="tags">Tags (optional)</Label>
+              <TagInput
+                id="tags"
+                value={newProxy.tags}
+                onChange={(tags) => setNewProxy({ ...newProxy, tags })}
+                suggestions={allTags}
+              />
+              <p className="text-xs text-muted-foreground">
+                Pools can select proxies by tag, including ones without GeoIP data
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>
@@ -1282,6 +1380,27 @@ export default function ProxiesPage() {
                   onChange={(e) => setEditingProxy({ ...editingProxy, username: e.target.value })}
                 />
               </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-password">Password</Label>
+                <Input
+                  id="edit-password"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={editingProxy.username ? "Leave blank to keep the current password" : "Set a username to use a password"}
+                  disabled={!editingProxy.username}
+                  value={editPassword}
+                  onChange={(e) => setEditPassword(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-tags">Tags</Label>
+                <TagInput
+                  id="edit-tags"
+                  value={editingProxy.tags ?? []}
+                  onChange={(tags) => setEditingProxy({ ...editingProxy, tags })}
+                  suggestions={allTags}
+                />
+              </div>
             </div>
           )}
           <DialogFooter>
@@ -1290,6 +1409,60 @@ export default function ProxiesPage() {
             </Button>
             <Button onClick={handleEditProxy}>
               Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Tag Dialog */}
+      <Dialog open={isTagDialogOpen} onOpenChange={(open) => {
+        setIsTagDialogOpen(open)
+        if (!open) {
+          setBulkAddTags([])
+          setBulkRemoveTags([])
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit tags of {selectedCount.toLocaleString()} proxies</DialogTitle>
+            <DialogDescription>
+              {selectAllMatching
+                ? "Applies to every proxy that matches the current search and filters. "
+                : ""}
+              Added tags join each proxy&apos;s existing tags; removed tags are stripped.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="bulk-add-tags">Add tags</Label>
+              <TagInput
+                id="bulk-add-tags"
+                value={bulkAddTags}
+                onChange={setBulkAddTags}
+                suggestions={allTags}
+                emptyText="None"
+                disabled={isTagging}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="bulk-remove-tags">Remove tags</Label>
+              <TagInput
+                id="bulk-remove-tags"
+                value={bulkRemoveTags}
+                onChange={setBulkRemoveTags}
+                suggestions={allTags}
+                emptyText="None"
+                disabled={isTagging}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsTagDialogOpen(false)} disabled={isTagging}>
+              Cancel
+            </Button>
+            <Button onClick={handleBulkTag} disabled={isTagging}>
+              {isTagging && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Apply Tags
             </Button>
           </DialogFooter>
         </DialogContent>

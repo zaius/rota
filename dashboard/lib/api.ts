@@ -11,6 +11,7 @@ import {
   UpdateProxyRequest,
   BulkProxyRequest,
   BulkDeleteRequest,
+  BulkTagRequest,
   BulkTestRequest,
   ProxyFilter,
   ProxyTestResult,
@@ -230,6 +231,13 @@ class ApiClient {
     })
   }
 
+  async bulkTagProxies(request: BulkTagRequest): Promise<{ updated: number; message: string }> {
+    return this.request("/api/v1/proxies/bulk-tags", {
+      method: "POST",
+      body: JSON.stringify(request),
+    })
+  }
+
   async deleteAllProxies(): Promise<{ deleted: number }> {
     return this.request("/api/v1/proxies", { method: "DELETE" })
   }
@@ -398,6 +406,17 @@ class ApiClient {
       method: "DELETE",
       body: JSON.stringify({ proxy_ids: proxyIds }),
     })
+  }
+
+  async getTagList(): Promise<string[]> {
+    const res = await this.request<{ tags: string[] | null }>("/api/v1/pools/tag-list")
+    return res.tags ?? []
+  }
+
+  async getISPList(query = ""): Promise<string[]> {
+    const qs = query ? `?q=${encodeURIComponent(query)}` : ""
+    const res = await this.request<{ isps: string[] | null }>(`/api/v1/pools/isp-list${qs}`)
+    return res.isps ?? []
   }
 
   async syncPool(id: number): Promise<{ synced: number }> {
