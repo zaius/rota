@@ -7,7 +7,7 @@
 # Build from the repo root:  docker build -t rota .
 
 # Stage 1: Build the dashboard (static SPA)
-FROM node:20-alpine AS dashboard-builder
+FROM node:22-alpine AS dashboard-builder
 WORKDIR /src
 RUN corepack enable && corepack prepare pnpm@10.19.0 --activate
 COPY dashboard/package.json dashboard/pnpm-lock.yaml ./
@@ -16,7 +16,7 @@ COPY dashboard/ .
 RUN pnpm run build
 
 # Stage 2: Build the Go core
-FROM golang:1.25.3-alpine AS core-builder
+FROM golang:1.26.8-alpine AS core-builder
 RUN apk add --no-cache git ca-certificates tzdata
 WORKDIR /src
 COPY core/go.mod core/go.sum ./
@@ -29,7 +29,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     ./cmd/server/main.go
 
 # Stage 3: Runner — just the static binary + the built SPA. No Node.
-FROM alpine:3.20 AS runner
+FROM alpine:3.24 AS runner
 RUN apk --no-cache add ca-certificates tzdata wget
 WORKDIR /app
 
