@@ -132,11 +132,12 @@ func defaultSettings() map[string]map[string]any {
 			"timeout":         90,
 		},
 		"healthcheck": {
-			"timeout": 60,
-			"workers": 20,
-			"url":     "https://api.ipify.org",
-			"status":  200,
-			"headers": []string{"User-Agent: Rota-HealthCheck/1.0"},
+			"timeout":    60,
+			"workers":    20,
+			"url":        "https://api.ipify.org",
+			"status":     200,
+			"headers":    []string{"User-Agent: Rota-HealthCheck/1.0"},
+			"strict_tls": false,
 		},
 		"proxy_cleanup": {
 			"enabled":                false,

@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -85,6 +87,59 @@ func ClearTransportCache() {
 		dropTransport(k)
 		return true
 	})
+}
+
+// ConfigureCheckTLS prepares a proxy transport for a health check. Strict mode
+// verifies the target's certificate chain, so a proxy that intercepts TLS with
+// an expired or forged certificate fails; otherwise any certificate passes.
+// Either way checks use Go's default TLS versions and cipher suites, not the
+// TLS 1.0 minimum proxied traffic keeps for legacy upstreams.
+//
+// net/http applies TLSClientConfig to the hop to an https proxy as well as to
+// the target, so this dials an https proxy's own hop itself, with the lenient
+// handshake proxied traffic uses, and the check settings reach the target only.
+func ConfigureCheckTLS(t *http.Transport, p *models.Proxy, strict bool) {
+	if t.TLSClientConfig == nil {
+		t.TLSClientConfig = &tls.Config{}
+	}
+	c := t.TLSClientConfig
+	c.MinVersion = 0
+	c.MaxVersion = 0
+	c.CipherSuites = nil
+	c.InsecureSkipVerify = !strict
+	c.VerifyPeerCertificate = nil
+
+	if p.Protocol != "https" {
+		return
+	}
+	proxyURL := &url.URL{Scheme: "http", Host: p.Address}
+	if p.Username != nil && *p.Username != "" {
+		pass := ""
+		if p.Password != nil {
+			pass = *p.Password
+		}
+		proxyURL.User = url.UserPassword(*p.Username, pass)
+	}
+	t.Proxy = http.ProxyURL(proxyURL)
+	serverName, _, _ := net.SplitHostPort(p.Address)
+	var dialer net.Dialer
+	// Every request goes through the proxy, so every dial is to the proxy.
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName:         serverName,
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS10,
+		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("proxy TLS handshake: %w", err)
+		}
+		return tlsConn, nil
+	}
 }
 
 // CreateProxyTransport creates an HTTP transport configured for the given proxy

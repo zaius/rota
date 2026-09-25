@@ -23,9 +23,10 @@ var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month 
 
 // PoolService manages proxy pools: auto-sync by geo, health checks, rotation state
 type PoolService struct {
-	poolRepo  *repository.PoolRepository
-	proxyRepo *repository.ProxyRepository
-	logger    *logger.Logger
+	poolRepo     *repository.PoolRepository
+	proxyRepo    *repository.ProxyRepository
+	settingsRepo *repository.SettingsRepository
+	logger       *logger.Logger
 
 	// per-pool rotation state (roundrobin index, stick counters)
 	mu         sync.Mutex
@@ -38,15 +39,17 @@ type PoolService struct {
 func NewPoolService(
 	poolRepo *repository.PoolRepository,
 	proxyRepo *repository.ProxyRepository,
+	settingsRepo *repository.SettingsRepository,
 	log *logger.Logger,
 ) *PoolService {
 	return &PoolService{
-		poolRepo:   poolRepo,
-		proxyRepo:  proxyRepo,
-		logger:     log,
-		rrIndex:    make(map[int]int),
-		stickCur:   make(map[int]int),
-		stickCount: make(map[int]int),
+		poolRepo:     poolRepo,
+		proxyRepo:    proxyRepo,
+		settingsRepo: settingsRepo,
+		logger:       log,
+		rrIndex:      make(map[int]int),
+		stickCur:     make(map[int]int),
+		stickCount:   make(map[int]int),
 	}
 }
 
@@ -175,11 +178,12 @@ func (ps *PoolService) checkProxiesByIDs(ctx context.Context, checkURL string, p
 		return nil
 	}
 
+	strict := ps.strictTLS(ctx)
 	wp := workerpool.New(workers)
 	for _, p := range proxies {
 		p := p
 		wp.Submit(func() {
-			ps.checkOneProxy(ctx, p, checkURL)
+			ps.checkOneProxy(ctx, p, checkURL, strict)
 		})
 	}
 	wp.StopWait()
@@ -210,6 +214,7 @@ func (ps *PoolService) HealthCheckPool(ctx context.Context, poolID int, checkURL
 	}
 
 	startedAt := time.Now()
+	strict := ps.strictTLS(ctx)
 	wp := workerpool.New(workers)
 	type resultSlot struct {
 		result models.ProxyTestResult
@@ -220,7 +225,7 @@ func (ps *PoolService) HealthCheckPool(ctx context.Context, poolID int, checkURL
 		i := i
 		pp := pp
 		wp.Submit(func() {
-			res := ps.checkOneProxy(ctx, pp.ToProxy(), url)
+			res := ps.checkOneProxy(ctx, pp.ToProxy(), url, strict)
 			slots[i].result = res
 		})
 	}
@@ -248,13 +253,28 @@ func (ps *PoolService) HealthCheckPool(ctx context.Context, poolID int, checkURL
 	return result, nil
 }
 
-// checkOneProxy performs a single proxy health check against the given URL.
-// Uses a 10 second timeout (enough for alive proxies, fast fail for dead ones).
-func (ps *PoolService) checkOneProxy(ctx context.Context, p *models.Proxy, targetURL string) models.ProxyTestResult {
-	return ps.checkOneProxyTimeout(ctx, p, targetURL, 10*time.Second)
+// strictTLS reports whether health checks verify target certificates. A
+// settings read failure falls back to lenient checks rather than failing
+// every proxy in the pool.
+func (ps *PoolService) strictTLS(ctx context.Context) bool {
+	if ps.settingsRepo == nil {
+		return false
+	}
+	settings, err := ps.settingsRepo.GetAll(ctx)
+	if err != nil {
+		ps.logger.Warn("failed to load health check settings", "error", err)
+		return false
+	}
+	return settings.HealthCheck.StrictTLS
 }
 
-func (ps *PoolService) checkOneProxyTimeout(ctx context.Context, p *models.Proxy, targetURL string, timeout time.Duration) models.ProxyTestResult {
+// checkOneProxy performs a single proxy health check against the given URL.
+// Uses a 10 second timeout (enough for alive proxies, fast fail for dead ones).
+func (ps *PoolService) checkOneProxy(ctx context.Context, p *models.Proxy, targetURL string, strictTLS bool) models.ProxyTestResult {
+	return ps.checkOneProxyTimeout(ctx, p, targetURL, 10*time.Second, strictTLS)
+}
+
+func (ps *PoolService) checkOneProxyTimeout(ctx context.Context, p *models.Proxy, targetURL string, timeout time.Duration, strictTLS bool) models.ProxyTestResult {
 	start := time.Now()
 	result := models.ProxyTestResult{
 		ID:       p.ID,
@@ -272,6 +292,8 @@ func (ps *PoolService) checkOneProxyTimeout(ctx context.Context, p *models.Proxy
 	if err != nil {
 		return fail(err.Error())
 	}
+	defer transport.CloseIdleConnections()
+	proxy.ConfigureCheckTLS(transport, p, strictTLS)
 
 	// Use a fresh context with per-proxy timeout (don't inherit caller's ctx deadline)
 	proxyCtx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -343,6 +365,7 @@ func (ps *PoolService) HealthCheckPoolWithProgress(
 	}
 
 	startedAt := time.Now()
+	strict := ps.strictTLS(ctx)
 	wp := workerpool.New(workers)
 	slots := make([]models.ProxyTestResult, len(proxies))
 
@@ -352,7 +375,7 @@ func (ps *PoolService) HealthCheckPoolWithProgress(
 	for i, pp := range proxies {
 		i, pp := i, pp
 		wp.Submit(func() {
-			res := ps.checkOneProxyTimeout(ctx, pp.ToProxy(), url, 10*time.Second)
+			res := ps.checkOneProxy(ctx, pp.ToProxy(), url, strict)
 			slots[i] = res
 
 			mu.Lock()

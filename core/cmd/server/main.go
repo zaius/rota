@@ -140,7 +140,7 @@ func run() error {
 	// never-cancelled context.Background().
 	geoSvc := services.NewGeoIPService(log)
 	sourceSvc := services.NewSourceService(sourceRepo, proxyRepo, poolRepo, geoSvc, log)
-	poolSvc := services.NewPoolService(poolRepo, proxyRepo, log)
+	poolSvc := services.NewPoolService(poolRepo, proxyRepo, settingsRepo, log)
 	alertWatcher := services.NewAlertWatcher(poolRepo, log)
 	cleanupSvc := services.NewProxyCleanupService(proxyRepo, settingsRepo, eventStore, log)
 	historyCleanupSvc := services.NewHistoryCleanupService(eventStore, log)

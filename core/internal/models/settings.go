@@ -27,6 +27,9 @@ type HealthCheckSettings struct {
 	URL     string   `json:"url"`
 	Status  int      `json:"status"`
 	Headers []string `json:"headers"`
+	// StrictTLS verifies the check target's certificate, so a proxy that
+	// intercepts TLS with an expired or forged certificate fails its check.
+	StrictTLS bool `json:"strict_tls"`
 }
 
 // ProxyCleanupSettings represents dead proxy auto-removal configuration

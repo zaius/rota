@@ -116,6 +116,7 @@ export interface Settings {
     url: string
     status: number
     headers: string[]
+    strict_tls: boolean
   }
   proxy_cleanup: {
     enabled: boolean
