@@ -4,12 +4,12 @@ go 1.25.3
 
 require (
 	github.com/gammazero/workerpool v1.1.3
-	github.com/go-chi/chi/v5 v5.2.3
+	github.com/go-chi/chi/v5 v5.3.1
 	github.com/go-chi/cors v1.2.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/jackc/pgx/v5 v5.7.6
+	github.com/jackc/pgx/v5 v5.10.0
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
 	h12.io/socks v1.0.3
