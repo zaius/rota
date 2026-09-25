@@ -13,6 +13,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/tlsprofile"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
 // chainFailureThreshold is how many consecutive failures a proxy must
@@ -112,13 +113,13 @@ func (c *PoolChain) recordAttempt(record RequestRecord) {
 		return
 	}
 	record.Username = c.username
-	go func() {
+	safeworker.Go(c.logger, "record_request", func() {
 		recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := c.tracker.RecordRequest(recordCtx, record); err != nil {
 			c.logger.Error("failed to record proxy request", "error", err)
 		}
-	}()
+	})
 }
 
 // recordFailure records a failed upstream attempt. Without this the pool path
@@ -406,13 +407,13 @@ func (b *TunnelBinding) RecordClose(counts TunnelCounts, requests int, cause err
 	}
 
 	chain := b.chain
-	go func() {
+	safeworker.Go(chain.logger, "record_tunnel", func() {
 		recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := chain.tracker.RecordTunnel(recordCtx, record); err != nil {
 			chain.logger.Error("failed to record proxy tunnel", "error", err)
 		}
-	}()
+	})
 }
 
 // ConnectWithRetry establishes a TCP tunnel (HTTPS CONNECT) through the chain.

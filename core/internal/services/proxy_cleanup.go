@@ -9,6 +9,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
 // Low-success cleanup judges proxies on their trailing week, not lifetime
@@ -62,7 +63,7 @@ func (s *ProxyCleanupService) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.run(ctx)
+			safeworker.Call(s.log, "proxy_cleanup", func() { s.run(ctx) })
 			// Pick up interval changes made via the API since the last cycle.
 			if next := s.cleanupInterval(ctx); next != interval {
 				interval = next

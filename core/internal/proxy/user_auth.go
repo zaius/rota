@@ -17,6 +17,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/tlsprofile"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
 type proxyUserAuthenticator interface {
@@ -328,12 +329,24 @@ func (m *UserAuthMiddleware) refreshLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		now := time.Now()
+		safeworker.Call(m.logger, "user_chain_refresh", m.refreshChains)
+	}
+}
 
+// refreshChains refreshes every live cached chain and evicts expired ones.
+func (m *UserAuthMiddleware) refreshChains() {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	now := time.Now()
+
+	var (
+		live    []userEntry
+		expired []string
+	)
+	func() {
 		m.mu.RLock()
-		live := make([]userEntry, 0, len(m.cache))
-		var expired []string
+		defer m.mu.RUnlock()
+		live = make([]userEntry, 0, len(m.cache))
 		for k, v := range m.cache {
 			if now.After(v.expiresAt) {
 				expired = append(expired, k)
@@ -341,10 +354,12 @@ func (m *UserAuthMiddleware) refreshLoop() {
 			}
 			live = append(live, v)
 		}
-		m.mu.RUnlock()
+	}()
 
-		if len(expired) > 0 {
+	if len(expired) > 0 {
+		func() {
 			m.mu.Lock()
+			defer m.mu.Unlock()
 			for _, k := range expired {
 				// Re-check under the write lock: the entry may have been
 				// refreshed by an in-flight request since the snapshot.
@@ -352,13 +367,11 @@ func (m *UserAuthMiddleware) refreshLoop() {
 					delete(m.cache, k)
 				}
 			}
-			m.mu.Unlock()
-		}
+		}()
+	}
 
-		for _, entry := range live {
-			entry.chain.Refresh(ctx)
-		}
-		cancel()
+	for _, entry := range live {
+		entry.chain.Refresh(ctx)
 	}
 }
 

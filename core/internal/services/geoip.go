@@ -13,6 +13,7 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
 // ipAPIResponse is the response from ip-api.com batch endpoint
@@ -83,7 +84,7 @@ func (g *GeoIPService) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			g.sweep(time.Now())
+			safeworker.Call(g.logger, "geoip_cache_sweep", func() { g.sweep(time.Now()) })
 		}
 	}
 }

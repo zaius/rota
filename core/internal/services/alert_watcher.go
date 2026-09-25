@@ -14,6 +14,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
 // AlertWatcher monitors pool health and fires webhook alerts when active proxies
@@ -47,7 +48,7 @@ func (w *AlertWatcher) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.check(ctx)
+			safeworker.Call(w.log, "alert_check", func() { w.check(ctx) })
 		}
 	}
 }

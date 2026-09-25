@@ -15,6 +15,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
 // proxyRouter is the core HTTP handler that dispatches incoming proxy requests.
@@ -190,35 +191,42 @@ func (s *Server) startBackgroundTasks() {
 		for {
 			select {
 			case <-s.refreshTicker.C:
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				// Proxy lists are refreshed by UserAuthMiddleware (per-user
-				// chains). Here we only re-sync domain cooldowns from the DB so
-				// the in-memory view tracks expirations and cooldowns set by
-				// other instances.
-				if s.domainCD != nil {
-					s.domainCooldownMu.Lock()
-					if cooldowns, err := s.proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
-						s.logger.Error("failed to refresh domain cooldowns", "error", err)
-					} else {
-						s.domainCD.ReplaceAll(cooldowns)
-					}
-					s.domainCooldownMu.Unlock()
-				}
-				if s.sessionMgr != nil {
-					s.scopeCooldownMu.Lock()
-					if cooldowns, err := s.proxyRepo.ListActiveScopeCooldowns(ctx); err != nil {
-						s.logger.Error("failed to refresh scope cooldowns", "error", err)
-					} else {
-						s.sessionMgr.ReplaceScopeCooldowns(cooldowns)
-					}
-					s.scopeCooldownMu.Unlock()
-				}
-				cancel()
+				safeworker.Call(s.logger, "cooldown_refresh", s.refreshCooldowns)
 			case <-s.stopChan:
 				return
 			}
 		}
 	}()
+}
+
+// refreshCooldowns re-syncs domain and scope cooldowns from the database, so
+// the in-memory view tracks expirations and cooldowns set by other instances.
+// UserAuthMiddleware refreshes the proxy lists themselves, per user chain.
+func (s *Server) refreshCooldowns() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if s.domainCD != nil {
+		func() {
+			s.domainCooldownMu.Lock()
+			defer s.domainCooldownMu.Unlock()
+			if cooldowns, err := s.proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
+				s.logger.Error("failed to refresh domain cooldowns", "error", err)
+			} else {
+				s.domainCD.ReplaceAll(cooldowns)
+			}
+		}()
+	}
+	if s.sessionMgr != nil {
+		func() {
+			s.scopeCooldownMu.Lock()
+			defer s.scopeCooldownMu.Unlock()
+			if cooldowns, err := s.proxyRepo.ListActiveScopeCooldowns(ctx); err != nil {
+				s.logger.Error("failed to refresh scope cooldowns", "error", err)
+			} else {
+				s.sessionMgr.ReplaceScopeCooldowns(cooldowns)
+			}
+		}()
+	}
 }
 
 // Start starts the proxy server

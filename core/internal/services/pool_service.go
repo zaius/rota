@@ -13,6 +13,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/proxy"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 	"github.com/gammazero/workerpool"
 	"github.com/robfig/cron/v3"
 )
@@ -64,8 +65,8 @@ func (ps *PoolService) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			ps.runScheduledHealthChecks(ctx)
-			ps.runAutoSync(ctx)
+			safeworker.Call(ps.logger, "pool_health_schedule", func() { ps.runScheduledHealthChecks(ctx) })
+			safeworker.Call(ps.logger, "pool_auto_sync", func() { ps.runAutoSync(ctx) })
 		case <-ctx.Done():
 			return
 		}
@@ -81,12 +82,12 @@ func (ps *PoolService) runScheduledHealthChecks(ctx context.Context) {
 	}
 	for _, pool := range pools {
 		if isCronDue(pool.HealthCheckCron) {
-			poolCopy := pool
-			go func(p models.ProxyPool) {
+			p := pool
+			safeworker.Go(ps.logger, "pool_health_check", func() {
 				if _, err := ps.HealthCheckPool(ctx, p.ID, p.HealthCheckURL, 20); err != nil {
 					ps.logger.Error("scheduled pool health check failed", "pool_id", p.ID, "error", err)
 				}
-			}(poolCopy)
+			})
 		}
 	}
 }
@@ -112,15 +113,15 @@ func (ps *PoolService) runAutoSync(ctx context.Context) {
 			if len(newIDs) > 0 {
 				ps.logger.Info("auto-sync added new proxies to pool",
 					"pool_id", poolCopy.ID, "added", len(newIDs), "total", total)
-				newCopy := append([]int(nil), newIDs...)
-				go func(p models.ProxyPool, ids []int) {
+				p, ids := poolCopy, append([]int(nil), newIDs...)
+				safeworker.Go(ps.logger, "pool_new_member_check", func() {
 					hcCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 					defer cancel()
 					if err := ps.checkProxiesByIDs(hcCtx, p.HealthCheckURL, ids, 20); err != nil {
 						ps.logger.Warn("auto-HC on new pool members failed",
 							"pool_id", p.ID, "error", err)
 					}
-				}(poolCopy, newCopy)
+				})
 			}
 		}
 	}
@@ -142,15 +143,15 @@ func (ps *PoolService) SyncPool(ctx context.Context, poolID int) (int, error) {
 	if len(newIDs) > 0 {
 		ps.logger.Info("manual sync added new proxies to pool",
 			"pool_id", poolID, "added", len(newIDs), "total", total)
-		newCopy := append([]int(nil), newIDs...)
-		go func(p models.ProxyPool, ids []int) {
+		p, ids := *pool, append([]int(nil), newIDs...)
+		safeworker.Go(ps.logger, "pool_new_member_check", func() {
 			hcCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 			if err := ps.checkProxiesByIDs(hcCtx, p.HealthCheckURL, ids, 20); err != nil {
 				ps.logger.Warn("auto-HC on new pool members failed (manual sync)",
 					"pool_id", p.ID, "error", err)
 			}
-		}(*pool, newCopy)
+		})
 	}
 	return total, nil
 }
