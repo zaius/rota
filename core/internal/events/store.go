@@ -128,12 +128,18 @@ type Store interface {
 	// InsertRequest records one proxied request outcome.
 	InsertRequest(ctx context.Context, event RequestEvent) error
 
+	// InsertRequests records a batch of request outcomes in one write.
+	InsertRequests(ctx context.Context, events []RequestEvent) error
+
 	// RequestStats returns today/yesterday request aggregates for the
 	// dashboard.
 	RequestStats(ctx context.Context) (*RequestStats, error)
 
 	// InsertTunnel records one completed CONNECT tunnel.
 	InsertTunnel(ctx context.Context, event TunnelEvent) error
+
+	// InsertTunnels records a batch of completed tunnels in one write.
+	InsertTunnels(ctx context.Context, events []TunnelEvent) error
 
 	// TunnelStats aggregates tunnels that closed within the trailing window.
 	// Long-lived tunnels still open are not counted — they have no duration

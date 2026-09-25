@@ -145,6 +145,39 @@ func (s *ClickHouseStore) InsertRequest(ctx context.Context, event RequestEvent)
 	return nil
 }
 
+// InsertRequests records a batch of request outcomes as one native insert.
+func (s *ClickHouseStore) InsertRequests(ctx context.Context, events []RequestEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	batch, err := s.conn.PrepareBatch(ctx, `
+		INSERT INTO proxy_requests (
+			timestamp, proxy_id, proxy_address, pool_id, username,
+			method, url, domain, status_code, response_time, success, error, target_failure
+		)`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare proxy request batch: %w", err)
+	}
+	defer batch.Abort() //nolint:errcheck // no-op once sent
+	for _, e := range events {
+		statusCode := e.StatusCode
+		if statusCode < 0 || statusCode > 65535 {
+			statusCode = 0
+		}
+		if err := batch.Append(
+			e.Timestamp, int32(e.ProxyID), e.ProxyAddress, int32(e.PoolID), e.Username,
+			e.Method, e.URL, e.Domain, uint16(statusCode), int32(e.ResponseTime),
+			e.Success, e.Error, e.TargetFailure,
+		); err != nil {
+			return fmt.Errorf("failed to append proxy request: %w", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to insert proxy requests: %w", err)
+	}
+	return nil
+}
+
 // RequestStats returns today/yesterday request aggregates for the dashboard.
 func (s *ClickHouseStore) RequestStats(ctx context.Context) (*RequestStats, error) {
 	// Rates and averages are derived in Go from counts and sums: aggregate
@@ -202,11 +235,39 @@ func (s *ClickHouseStore) InsertTunnel(ctx context.Context, event TunnelEvent) e
 		event.BytesUp,
 		event.BytesDown,
 		int32(event.Requests),
-		int32(event.DurationMs),
+		saturateInt32(event.DurationMs),
 		event.Error,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert proxy tunnel: %w", err)
+	}
+	return nil
+}
+
+// InsertTunnels records a batch of completed tunnels as one native insert.
+func (s *ClickHouseStore) InsertTunnels(ctx context.Context, events []TunnelEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	batch, err := s.conn.PrepareBatch(ctx, `
+		INSERT INTO proxy_tunnels (
+			timestamp, proxy_id, proxy_address, pool_id, username,
+			host, domain, bytes_up, bytes_down, requests, duration_ms, error
+		)`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare proxy tunnel batch: %w", err)
+	}
+	defer batch.Abort() //nolint:errcheck // no-op once sent
+	for _, e := range events {
+		if err := batch.Append(
+			e.OpenedAt, int32(e.ProxyID), e.ProxyAddress, int32(e.PoolID), e.Username,
+			e.Host, e.Domain, e.BytesUp, e.BytesDown, int32(e.Requests), saturateInt32(e.DurationMs), e.Error,
+		); err != nil {
+			return fmt.Errorf("failed to append proxy tunnel: %w", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to insert proxy tunnels: %w", err)
 	}
 	return nil
 }

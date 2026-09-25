@@ -222,6 +222,82 @@ func TestIntegration_Tunnels_InsertAndStats(t *testing.T) {
 	}
 }
 
+func TestIntegration_BatchInserts(t *testing.T) {
+	backend := newTestBackend(t)
+	store := backend.Store()
+	ctx := context.Background()
+	proxyID := backend.SeedProxy(t, "127.0.0.1:9105")
+
+	// 23h old: inside "today" only if the batch path stores timestamps the
+	// way the single-row path does; a zone offset would push it to yesterday.
+	now := time.Now()
+	reqs := []RequestEvent{
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9105", PoolID: 7, Username: "alice",
+			Method: "GET", URL: "http://example.com", Domain: "example.com",
+			StatusCode: 200, ResponseTime: 100, Success: true, Timestamp: now.Add(-23 * time.Hour)},
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9105", Method: "CONNECT", URL: "example.org:443",
+			ResponseTime: 300, Error: "connect timeout", Timestamp: now},
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9105", Method: "GET", URL: "http://example.com",
+			StatusCode: 200, ResponseTime: 200, Success: true, Timestamp: now.Add(-36 * time.Hour)},
+	}
+	if err := store.InsertRequests(ctx, reqs); err != nil {
+		t.Fatalf("InsertRequests: %v", err)
+	}
+	if err := store.InsertRequests(ctx, nil); err != nil {
+		t.Fatalf("InsertRequests(empty): %v", err)
+	}
+
+	dims := backend.RequestDims(t)
+	var withDims, nullDims int
+	for _, d := range dims {
+		switch {
+		case d.PoolID != nil && d.Username != nil && d.Domain != nil:
+			withDims++
+			if *d.PoolID != 7 || *d.Username != "alice" || *d.Domain != "example.com" {
+				t.Errorf("dimensions: want (7, alice, example.com), got (%v, %v, %v)",
+					*d.PoolID, *d.Username, *d.Domain)
+			}
+		case d.PoolID == nil && d.Username == nil && d.Domain == nil:
+			nullDims++
+		default:
+			t.Errorf("mixed dimension tuple: %+v", d)
+		}
+	}
+	if withDims != 1 || nullDims != 2 {
+		t.Errorf("want 1 dimensioned + 2 null-dimension rows, got %d + %d", withDims, nullDims)
+	}
+
+	stats, err := store.RequestStats(ctx)
+	if err != nil {
+		t.Fatalf("RequestStats: %v", err)
+	}
+	if stats.RequestsToday != 2 || stats.RequestsYesterday != 1 || stats.SuccessRateToday != 50 {
+		t.Errorf("RequestStats: want today=2 (50%%) yesterday=1, got today=%d (%v%%) yesterday=%d",
+			stats.RequestsToday, stats.SuccessRateToday, stats.RequestsYesterday)
+	}
+
+	tunnels := []TunnelEvent{
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9105", PoolID: 3, Username: "scraper",
+			Host: "www.airbnb.com:443", Domain: "www.airbnb.com",
+			BytesUp: 1_000, BytesDown: 50_000, Requests: 42,
+			DurationMs: 600_000, OpenedAt: now.Add(-30 * time.Minute)},
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9105",
+			Host: "www.booking.com:443", Domain: "www.booking.com",
+			BytesUp: 500, BytesDown: 10_000, Error: "reset by peer",
+			DurationMs: 1_000, OpenedAt: now.Add(-20 * time.Minute)},
+	}
+	if err := store.InsertTunnels(ctx, tunnels); err != nil {
+		t.Fatalf("InsertTunnels: %v", err)
+	}
+	tstats, err := store.TunnelStats(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("TunnelStats: %v", err)
+	}
+	if tstats.Tunnels != 2 || tstats.BytesUp != 1_500 || tstats.BytesDown != 60_000 || tstats.Requests != 42 {
+		t.Errorf("TunnelStats: want 2 tunnels, (1500, 60000) bytes, 42 requests; got %+v", tstats)
+	}
+}
+
 func TestIntegration_ApplyRetention(t *testing.T) {
 	backend := newTestBackend(t)
 	store := backend.Store()
