@@ -360,7 +360,7 @@ func (r *ProxyRepository) ApplyRequestStats(ctx context.Context, stats []events.
 
 // Update updates a proxy
 func (r *ProxyRepository) Update(ctx context.Context, id int, req models.UpdateProxyRequest) (*models.Proxy, error) {
-	tags := req.Tags
+	tags := req.Tags.Value
 	if tags == nil {
 		tags = []string{}
 	}
@@ -368,16 +368,20 @@ func (r *ProxyRepository) Update(ctx context.Context, id int, req models.UpdateP
 		UPDATE proxies
 		SET address    = COALESCE(NULLIF($1, ''), address),
 		    protocol   = COALESCE(NULLIF($2, ''), protocol),
-		    username   = $3,
-		    password   = $4,
-		    tags       = $5,
+		    username   = CASE WHEN $3::BOOLEAN THEN NULLIF($4::TEXT, '') ELSE username END,
+		    password   = CASE WHEN $5::BOOLEAN THEN NULLIF($6::TEXT, '') ELSE password END,
+		    tags       = CASE WHEN $7::BOOLEAN THEN $8::TEXT[] ELSE tags END,
 		    updated_at = NOW()
-		WHERE id = $6
+		WHERE id = $9
 		RETURNING id, address, protocol, status, COALESCE(tags,'{}'), updated_at
 	`
 
 	var p models.Proxy
-	err := r.db.Pool.QueryRow(ctx, query, req.Address, req.Protocol, req.Username, req.Password, tags, id).Scan(
+	err := r.db.Pool.QueryRow(ctx, query, req.Address, req.Protocol,
+		req.Username.Present, req.Username.Value,
+		req.Password.Present, req.Password.Value,
+		req.Tags.Present, tags, id,
+	).Scan(
 		&p.ID, &p.Address, &p.Protocol, &p.Status, &p.Tags, &p.UpdatedAt,
 	)
 
