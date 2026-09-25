@@ -60,6 +60,17 @@ func metricsHTTPHandler(p *metrics.Provider) http.Handler {
 	return p.Handler()
 }
 
+// flushHistory writes out buffered request and tunnel events. It gets its own
+// deadline: the servers may already have spent the shutdown context waiting on
+// requests that outlived it. Calls after the first return at once.
+func flushHistory(w *events.BatchWriter, log *logger.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := w.Close(ctx); err != nil {
+		log.Warn("event history was not fully written", "error", err)
+	}
+}
+
 func run() error {
 	// Load configuration
 	cfg, err := config.Load()
@@ -118,6 +129,15 @@ func run() error {
 	default:
 		return fmt.Errorf("unsupported event store: %s", cfg.EventStore)
 	}
+
+	// The proxy records an event for every upstream attempt and tunnel; batch
+	// them so the store takes one multi-row insert per flush instead of a
+	// round trip per event.
+	batchWriter := events.NewBatchWriter(eventStore, log, metrics.RecordEventsWritten)
+	eventStore = batchWriter
+	// Registered after the store and database closes, so it runs before them
+	// on every return path, including a server failing to start.
+	defer flushHistory(batchWriter, log)
 
 	// Create repositories once — this is the single place they are constructed.
 	proxyRepo := repository.NewProxyRepository(db)
@@ -259,6 +279,10 @@ func run() error {
 	// Wait for shutdown to complete
 	shutdownWg.Wait()
 	close(shutdownErrors)
+
+	// Flush buffered history once the servers have stopped producing it, while
+	// the metrics pipeline can still report the writes.
+	flushHistory(batchWriter, log)
 
 	// Stop the metrics pipeline last, so the final OTLP push (if configured)
 	// still sees everything the servers recorded on the way down.

@@ -441,6 +441,8 @@ Every tunnel writes a record when it closes, whether or not inspection is enable
 
 The dashboard turns these into **Open Tunnels**, **Tunnels (24h)** and **Tunnel Data (24h)**, plus mean concurrency â€” the number that distinguishes "3 short tunnels" from "3 tunnels held open all day moving 2 GB".
 
+Tunnel and request records are written to the event store in batches, so they appear up to a second after the traffic. A graceful shutdown writes out whatever is still buffered.
+
 ### Optional: inspecting HTTPS requests
 
 To count individual requests inside tunnels, Rota can terminate TLS, record each request, and re-encrypt to the target. This is **off by default** and requires two independent opt-ins.
@@ -604,6 +606,7 @@ Rota instruments itself once with OpenTelemetry and exports through two paths â€
 | `rota_healthcheck_checks_total` / `rota_healthcheck_duration_seconds` | counter / histogram | health-check probes by `outcome` |
 | `rota_source_fetches_total` / `rota_source_proxies_imported_total` | counter | source list fetches and new proxies imported |
 | `rota_pool_alerts_total` | counter | alert webhooks by delivery `outcome` |
+| `rota_events_written_total` | counter | request/tunnel history writes by `kind` and `outcome`; failures are lost history |
 | `rota_api_requests_total` / `rota_api_request_duration_seconds` | counter / histogram | management API traffic by `route`, `method`, `status` |
 | `go_*` / `process_*` | various | Go runtime: memory, GC, goroutines |
 

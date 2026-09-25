@@ -51,6 +51,7 @@ var (
 	sourceFetches         metric.Int64Counter
 	sourceProxiesImported metric.Int64Counter
 	poolAlerts            metric.Int64Counter
+	eventsWritten         metric.Int64Counter
 	apiRequests           metric.Int64Counter
 	apiRequestDuration    metric.Float64Histogram
 )
@@ -88,6 +89,8 @@ func init() {
 		metric.WithDescription("New proxies imported from source fetches"))
 	poolAlerts, _ = meter.Int64Counter("rota.pool.alerts",
 		metric.WithDescription("Pool alert webhooks fired, by delivery outcome"))
+	eventsWritten, _ = meter.Int64Counter("rota.events.written",
+		metric.WithDescription("Request and tunnel history events written to the event store, by kind and outcome"))
 	apiRequests, _ = meter.Int64Counter("rota.api.requests",
 		metric.WithDescription("Management API requests, by route, method and status"))
 	apiRequestDuration, _ = meter.Float64Histogram("rota.api.request.duration",
@@ -212,6 +215,15 @@ func RecordSourceFetch(ctx context.Context, success bool, imported int) {
 	if imported > 0 {
 		sourceProxiesImported.Add(ctx, int64(imported))
 	}
+}
+
+// RecordEventsWritten records a batch write of history events; kind is
+// "request" or "tunnel". A failed write loses its events.
+func RecordEventsWritten(ctx context.Context, kind string, count int, success bool) {
+	eventsWritten.Add(ctx, int64(count), metric.WithAttributes(
+		attribute.String("kind", kind),
+		attribute.String("outcome", outcomeLabel(success)),
+	))
 }
 
 // RecordPoolAlert records one fired pool alert webhook.

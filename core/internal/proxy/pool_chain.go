@@ -406,14 +406,13 @@ func (b *TunnelBinding) RecordClose(counts TunnelCounts, requests int, cause err
 		record.ErrorMessage = cause.Error()
 	}
 
-	chain := b.chain
-	safeworker.Go(chain.logger, "record_tunnel", func() {
-		recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := chain.tracker.RecordTunnel(recordCtx, record); err != nil {
-			chain.logger.Error("failed to record proxy tunnel", "error", err)
-		}
-	})
+	// Recording a tunnel only queues an event, so it runs inline on the
+	// tunnel's own goroutine, which has finished its work.
+	recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := b.chain.tracker.RecordTunnel(recordCtx, record); err != nil {
+		b.chain.logger.Error("failed to record proxy tunnel", "error", err)
+	}
 }
 
 // ConnectWithRetry establishes a TCP tunnel (HTTPS CONNECT) through the chain.
