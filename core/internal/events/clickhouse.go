@@ -338,7 +338,7 @@ func (s *ClickHouseStore) ResponseTimeChart(ctx context.Context, interval string
 			return nil, fmt.Errorf("failed to scan chart data: %w", err)
 		}
 		data = append(data, models.ChartDataPoint{
-			Time:  ts.Local().Format("15:04"),
+			Time:  chartBucketLabel(ts.Local(), interval),
 			Value: int(value),
 		})
 	}
@@ -373,7 +373,7 @@ func (s *ClickHouseStore) SuccessRateChart(ctx context.Context, interval string)
 			return nil, fmt.Errorf("failed to scan chart data: %w", err)
 		}
 		data = append(data, models.SuccessRateDataPoint{
-			Time:    ts.Local().Format("15:04"),
+			Time:    chartBucketLabel(ts.Local(), interval),
 			Success: int(success),
 			Failure: int(failure),
 		})

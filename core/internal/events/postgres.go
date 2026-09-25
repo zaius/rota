@@ -405,7 +405,7 @@ func (s *PostgresStore) ResponseTimeChart(ctx context.Context, interval string) 
 		}
 
 		data = append(data, models.ChartDataPoint{
-			Time:  bucket.Format("15:04"),
+			Time:  chartBucketLabel(bucket, interval),
 			Value: value,
 		})
 	}
@@ -444,7 +444,7 @@ func (s *PostgresStore) SuccessRateChart(ctx context.Context, interval string) (
 		}
 
 		data = append(data, models.SuccessRateDataPoint{
-			Time:    bucket.Format("15:04"),
+			Time:    chartBucketLabel(bucket, interval),
 			Success: success,
 			Failure: failure,
 		})
