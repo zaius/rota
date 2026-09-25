@@ -7,7 +7,7 @@
 
 <p align="center">
 <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
-<a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.25.3-00ADD8?logo=go"></a>
+<a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.27.1-00ADD8?logo=go"></a>
 <a href="https://react.dev"><img src="https://img.shields.io/badge/React-19-61DAFB?logo=react"></a>
 <a href="https://www.timescale.com/"><img src="https://img.shields.io/badge/TimescaleDB-2.22-FDB515?logo=timescale"></a>
 <a href="https://github.com/zaius/rota/releases"><img src="https://img.shields.io/github/release/zaius/rota"></a>
@@ -127,7 +127,7 @@ Or run the whole stack (rota + TimescaleDB) with `docker compose up -d`.
 ### From Source
 
 ```bash
-# Prerequisites: Go 1.25.3+, Node.js 20+, pnpm, PostgreSQL 14+ (TimescaleDB optional)
+# Prerequisites: Go 1.27.1+, Node.js 22+, pnpm, PostgreSQL 14+ (TimescaleDB optional)
 
 # Clone the repository
 git clone https://github.com/zaius/rota.git

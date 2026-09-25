@@ -1,6 +1,6 @@
 # Build stage — runs natively on the build host and cross-compiles to the
 # target arch (Go makes this cheap; avoids emulating the toolchain under QEMU).
-FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata

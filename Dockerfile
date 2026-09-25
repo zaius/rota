@@ -20,7 +20,7 @@ COPY dashboard/ .
 RUN pnpm run build
 
 # Stage 2: Build the Go core
-FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine AS core-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS core-builder
 RUN apk add --no-cache git ca-certificates tzdata
 WORKDIR /src
 COPY core/go.mod core/go.sum ./
