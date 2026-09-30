@@ -28,12 +28,12 @@ func (c *PoolChain) validateConnectTarget(ctx context.Context, authority string)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	host, _, err := net.SplitHostPort(authority)
+	host, err := connectTargetHost(authority)
 	if err != nil {
-		return forwardingFailure("proxy_connect_rejected", fmt.Errorf("invalid CONNECT target %q: %w", authority, err))
+		return forwardingFailure("target_invalid", fmt.Errorf("invalid CONNECT target %q: %w", authority, err))
 	}
 	noIPv4 := func() error {
-		return forwardingFailure("proxy_connect_rejected", &net.DNSError{
+		return forwardingFailure("target_no_ipv4", &net.DNSError{
 			Err: "no IPv4 address for CONNECT target", Name: host, IsNotFound: true,
 		})
 	}
@@ -54,11 +54,7 @@ func (c *PoolChain) validateConnectTarget(ctx context.Context, authority string)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err != nil {
-		var dnsErr *net.DNSError
-		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
-			return forwardingFailure("proxy_connect_rejected", fmt.Errorf("resolve CONNECT target %q: %w", host, err))
-		}
+	if err != nil && !isDNSNotFound(err) {
 		// A local resolver failure is inconclusive; the upstream's DNS may work.
 		return nil
 	}
@@ -67,7 +63,39 @@ func (c *PoolChain) validateConnectTarget(ctx context.Context, authority string)
 			return nil
 		}
 	}
+
+	// An IPv6-only name fails the A lookup exactly like NXDOMAIN does, so only a
+	// missing AAAA record as well proves the name is dead. Any other AAAA
+	// outcome still leaves the target without IPv4.
+	_, err = resolver.LookupIP(lookupCtx, "ip6", host)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if isDNSNotFound(err) {
+		return forwardingFailure("target_dns_not_found", fmt.Errorf("resolve CONNECT target %q: %w", host, err))
+	}
 	return noIPv4()
+}
+
+// connectTargetHost returns the host of a CONNECT authority that an upstream
+// could dial: a non-empty host and a port from 1 to 65535.
+func connectTargetHost(authority string) (string, error) {
+	host, port, err := net.SplitHostPort(authority)
+	if err != nil {
+		return "", err
+	}
+	if host == "" {
+		return "", errors.New("missing host")
+	}
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+		return "", fmt.Errorf("invalid port %q", port)
+	}
+	return host, nil
+}
+
+func isDNSNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
 }
 
 // connectViaSocks5 dials host through a SOCKS5 proxy.
@@ -132,13 +160,14 @@ func connectViaHTTPStandalone(p *models.Proxy, host string, timeout time.Duratio
 	}
 	if status < 200 || status >= 300 {
 		conn.Close()
-		reason := "proxy_connect_rejected"
-		if status == http.StatusProxyAuthRequired {
-			reason = "upstream_proxy_auth_failed"
-		} else if status < 400 {
-			reason = "proxy_handshake_failed"
+		cause := fmt.Errorf("CONNECT target %s via %s rejected: %s", host, p.Address, line)
+		switch {
+		case status == http.StatusProxyAuthRequired:
+			return nil, forwardingFailure("upstream_proxy_auth_failed", cause)
+		case status < 400:
+			return nil, forwardingFailure("proxy_handshake_failed", cause)
 		}
-		return nil, forwardingFailure(reason, fmt.Errorf("CONNECT target %s via %s rejected: %s", host, p.Address, line))
+		return nil, &upstreamFailure{reason: "upstream_connect_rejected", upstreamStatus: status, cause: cause}
 	}
 
 	_ = conn.SetDeadline(time.Time{})

@@ -19,29 +19,32 @@ import (
 
 func TestWriteProxyError_Classification(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		err    error
-		status int
-		reason string
+		name           string
+		err            error
+		status         int
+		reason         string
+		upstreamStatus string
 	}{
-		{"capacity", fmt.Errorf("wrapped: %w", ErrNoProxyAvailable), 593, "no_proxy_available"},
-		{"request", io.ErrUnexpectedEOF, 592, "upstream_request_failed"},
-		{"timeout", fmt.Errorf("wrapped: %w", context.DeadlineExceeded), 592, "upstream_timeout"},
-		{"client_cancel", forwardingFailure("client_request_aborted", context.Canceled), 592, "client_request_aborted"},
-		{"client_deadline", forwardingFailure("client_request_aborted", context.DeadlineExceeded), 592, "client_request_aborted"},
-		{"dial", fmt.Errorf("wrapped: %w", &net.OpError{Op: "dial", Err: errors.New("refused")}), 592, "proxy_connect_failed"},
-		{"proxy_timeout", forwardingFailure("proxy_connect_failed", context.DeadlineExceeded), 592, "upstream_timeout"},
-		{"handshake", forwardingFailure("proxy_handshake_failed", io.EOF), 592, "proxy_handshake_failed"},
-		{"rejected", forwardingFailure("proxy_connect_rejected", errors.New("403")), 592, "proxy_connect_rejected"},
-		{"target_dns_missing", forwardingFailure("proxy_connect_rejected", &net.DNSError{Name: "target.invalid", Err: "no such host", IsNotFound: true}), 592, "proxy_connect_rejected"},
-		{"proxy_dns", forwardingFailure("proxy_connect_failed", &net.DNSError{Name: "proxy.invalid", Err: "no such host", IsNotFound: true}), 592, "proxy_connect_failed"},
-		{"auth", forwardingFailure("upstream_proxy_auth_failed", errors.New("407")), 592, "upstream_proxy_auth_failed"},
-		{"configuration", forwardingFailure("proxy_configuration_error", errors.New("http://user:secret@proxy")), 592, "proxy_configuration_error"},
+		{"capacity", fmt.Errorf("wrapped: %w", ErrNoProxyAvailable), 593, "no_proxy_available", ""},
+		{"request", io.ErrUnexpectedEOF, 592, "upstream_request_failed", ""},
+		{"timeout", fmt.Errorf("wrapped: %w", context.DeadlineExceeded), 592, "upstream_timeout", ""},
+		{"client_cancel", forwardingFailure("client_request_aborted", context.Canceled), 592, "client_request_aborted", ""},
+		{"client_deadline", forwardingFailure("client_request_aborted", context.DeadlineExceeded), 592, "client_request_aborted", ""},
+		{"dial", fmt.Errorf("wrapped: %w", &net.OpError{Op: "dial", Err: errors.New("refused")}), 592, "proxy_connect_failed", ""},
+		{"proxy_timeout", forwardingFailure("proxy_connect_failed", context.DeadlineExceeded), 592, "upstream_timeout", ""},
+		{"handshake", forwardingFailure("proxy_handshake_failed", io.EOF), 592, "proxy_handshake_failed", ""},
+		{"upstream_rejected", fmt.Errorf("wrapped: %w", &upstreamFailure{reason: "upstream_connect_rejected", upstreamStatus: 403, cause: errors.New("403")}), 592, "upstream_connect_rejected", "403"},
+		{"target_dns_not_found", forwardingFailure("target_dns_not_found", &net.DNSError{Name: "target.invalid", Err: "no such host", IsNotFound: true}), 592, "target_dns_not_found", ""},
+		{"target_no_ipv4", forwardingFailure("target_no_ipv4", &net.DNSError{Name: "target.example", Err: "no IPv4 address", IsNotFound: true}), 592, "target_no_ipv4", ""},
+		{"target_invalid", forwardingFailure("target_invalid", errors.New("missing port")), 592, "target_invalid", ""},
+		{"proxy_dns", forwardingFailure("proxy_connect_failed", &net.DNSError{Name: "proxy.invalid", Err: "no such host", IsNotFound: true}), 592, "proxy_connect_failed", ""},
+		{"auth", forwardingFailure("upstream_proxy_auth_failed", errors.New("407")), 592, "upstream_proxy_auth_failed", ""},
+		{"configuration", forwardingFailure("proxy_configuration_error", errors.New("http://user:secret@proxy")), 592, "proxy_configuration_error", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			writeProxyError(w, tc.err)
-			if w.Code != tc.status || w.Header().Get(ProxyErrorHeader) != tc.reason {
+			if w.Code != tc.status || w.Header().Get(ProxyErrorHeader) != tc.reason || w.Header().Get(UpstreamStatusHeader) != tc.upstreamStatus {
 				t.Fatalf("got %d %v", w.Code, w.Header())
 			}
 			if (w.Header().Get("Retry-After") != "") != (tc.status == 593) {
@@ -85,11 +88,11 @@ func TestProxyHandler_UpstreamStatuses(t *testing.T) {
 				}
 				switch {
 				case status == 407:
-					if w.Code != 592 || w.Header().Get(ProxyErrorHeader) != "upstream_proxy_auth_failed" {
+					if w.Code != 592 || w.Header().Get(ProxyErrorHeader) != "upstream_proxy_auth_failed" || w.Header().Get(UpstreamStatusHeader) != "" {
 						t.Fatalf("upstream auth misreported: %d %v", w.Code, w.Header())
 					}
 				case method == http.MethodConnect:
-					if w.Code != 592 || w.Header().Get(ProxyErrorHeader) != "proxy_connect_rejected" {
+					if w.Code != 592 || w.Header().Get(ProxyErrorHeader) != "upstream_connect_rejected" || w.Header().Get(UpstreamStatusHeader) != fmt.Sprint(status) {
 						t.Fatalf("CONNECT rejection misreported: %d %v", w.Code, w.Header())
 					}
 				default:

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 )
 
 // These application-specific statuses distinguish Rota-generated failures from
@@ -15,13 +16,17 @@ const (
 	StatusNoProxyAvailable         = 593
 	StatusTLSInspectionUnavailable = 594
 	ProxyErrorHeader               = "X-Rota-Error"
+	UpstreamStatusHeader           = "X-Rota-Upstream-Status"
 )
 
 // upstreamFailure records the stage we can actually identify. A CONNECT
 // rejection, for example, does not prove whether the proxy or target is at fault.
+// upstreamStatus holds the upstream proxy's CONNECT status when it rejected the
+// target, and is 0 otherwise.
 type upstreamFailure struct {
-	reason string
-	cause  error
+	reason         string
+	upstreamStatus int
+	cause          error
 }
 
 func (e *upstreamFailure) Error() string { return e.cause.Error() }
@@ -35,7 +40,14 @@ func forwardingFailure(reason string, err error) error {
 // failures. Do not rotate or advance the proxy's failure streak for these.
 func isTargetConnectFailure(err error) bool {
 	var failure *upstreamFailure
-	return errors.As(err, &failure) && failure.reason == "proxy_connect_rejected"
+	if !errors.As(err, &failure) {
+		return false
+	}
+	switch failure.reason {
+	case "target_dns_not_found", "target_no_ipv4", "target_invalid", "upstream_connect_rejected":
+		return true
+	}
+	return false
 }
 
 // A deadline from http.Client.Timeout is an upstream failure while the caller
@@ -86,6 +98,10 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		w.Header().Set("Retry-After", "5")
 		writeRotaError(w, StatusNoProxyAvailable, "no_proxy_available", ErrNoProxyAvailable.Error())
 		return
+	}
+	var failure *upstreamFailure
+	if errors.As(err, &failure) && failure.upstreamStatus != 0 {
+		w.Header().Set(UpstreamStatusHeader, strconv.Itoa(failure.upstreamStatus))
 	}
 	reason := forwardingReason(err)
 	writeRotaError(w, StatusForwardingFailed, reason, "proxy forwarding failed: "+reason)

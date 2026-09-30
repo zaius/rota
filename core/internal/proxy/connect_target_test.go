@@ -26,48 +26,70 @@ func (ipv4TargetResolver) LookupIP(context.Context, string, string) ([]net.IP, e
 }
 
 func TestValidateConnectTarget(t *testing.T) {
+	notFound := &net.DNSError{Err: "no such host", IsNotFound: true}
 	for _, tc := range []struct {
 		name      string
 		authority string
-		ips       []net.IP
-		err       error
-		lookup    bool
-		rejected  bool
+		a         []net.IP
+		aErr      error
+		aaaa      []net.IP
+		aaaaErr   error
+		lookups   []string
+		reason    string // empty when the target passes
 	}{
-		{name: "A", authority: "target.example:443", ips: []net.IP{net.ParseIP("192.0.2.1")}, lookup: true},
-		{name: "no A", authority: "target.example:443", lookup: true, rejected: true},
-		{name: "AAAA only", authority: "target.example:443", ips: []net.IP{net.ParseIP("2001:db8::1")}, lookup: true, rejected: true},
-		{name: "NXDOMAIN", authority: "target.example:443", err: &net.DNSError{Err: "no such host", IsNotFound: true}, lookup: true, rejected: true},
-		{name: "NODATA", authority: "target.example:443", err: &net.DNSError{Err: "no records of requested type", IsNotFound: true}, lookup: true, rejected: true},
-		{name: "DNS timeout", authority: "target.example:443", err: &net.DNSError{Err: "timeout", IsTimeout: true}, lookup: true},
-		{name: "SERVFAIL", authority: "target.example:443", err: &net.DNSError{Err: "server misbehaving", IsTemporary: true}, lookup: true},
-		{name: "lookup deadline", authority: "target.example:443", err: context.DeadlineExceeded, lookup: true},
-		{name: "resolver error", authority: "target.example:443", err: errors.New("resolver unavailable"), lookup: true},
+		{name: "A", authority: "target.example:443", a: []net.IP{net.ParseIP("192.0.2.1")}, lookups: []string{"ip4"}},
+		{name: "no A or AAAA", authority: "target.example:443", aaaaErr: notFound, lookups: []string{"ip4", "ip6"}, reason: "target_dns_not_found"},
+		{name: "NXDOMAIN", authority: "target.example:443", aErr: notFound, aaaaErr: notFound, lookups: []string{"ip4", "ip6"}, reason: "target_dns_not_found"},
+		{name: "NODATA", authority: "target.example:443", aErr: &net.DNSError{Err: "no records of requested type", IsNotFound: true}, aaaaErr: notFound, lookups: []string{"ip4", "ip6"}, reason: "target_dns_not_found"},
+		{name: "AAAA only", authority: "target.example:443", aErr: notFound, aaaa: []net.IP{net.ParseIP("2001:db8::1")}, lookups: []string{"ip4", "ip6"}, reason: "target_no_ipv4"},
+		{name: "no A, AAAA timeout", authority: "target.example:443", aErr: notFound, aaaaErr: &net.DNSError{Err: "timeout", IsTimeout: true}, lookups: []string{"ip4", "ip6"}, reason: "target_no_ipv4"},
+		{name: "A answer without IPv4", authority: "target.example:443", a: []net.IP{net.ParseIP("2001:db8::1")}, aaaa: []net.IP{net.ParseIP("2001:db8::1")}, lookups: []string{"ip4", "ip6"}, reason: "target_no_ipv4"},
+		{name: "DNS timeout", authority: "target.example:443", aErr: &net.DNSError{Err: "timeout", IsTimeout: true}, lookups: []string{"ip4"}},
+		{name: "SERVFAIL", authority: "target.example:443", aErr: &net.DNSError{Err: "server misbehaving", IsTemporary: true}, lookups: []string{"ip4"}},
+		{name: "lookup deadline", authority: "target.example:443", aErr: context.DeadlineExceeded, lookups: []string{"ip4"}},
+		{name: "resolver error", authority: "target.example:443", aErr: errors.New("resolver unavailable"), lookups: []string{"ip4"}},
 		{name: "IPv4 literal", authority: "192.0.2.1:443"},
 		{name: "IPv4 mapped literal", authority: "[::ffff:192.0.2.1]:443"},
-		{name: "IPv6 literal", authority: "[2001:db8::1]:443", rejected: true},
-		{name: "missing port", authority: "target.example", rejected: true},
+		{name: "IPv6 literal", authority: "[2001:db8::1]:443", reason: "target_no_ipv4"},
+		{name: "missing port", authority: "target.example", reason: "target_invalid"},
+		{name: "missing host", authority: ":443", reason: "target_invalid"},
+		{name: "named port", authority: "target.example:https", reason: "target_invalid"},
+		{name: "port zero", authority: "target.example:0", reason: "target_invalid"},
+		{name: "port out of range", authority: "target.example:65536", reason: "target_invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
+			var lookups []string
 			chain := &PoolChain{targetResolver: targetResolverFunc(func(ctx context.Context, network, host string) ([]net.IP, error) {
-				calls++
-				if network != "ip4" || host != "target.example" {
-					t.Fatalf("lookup %q %q, want ip4 target.example", network, host)
+				lookups = append(lookups, network)
+				if host != "target.example" {
+					t.Fatalf("lookup %q, want target.example", host)
 				}
 				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > connectTargetLookupTimeout {
 					t.Fatal("target lookup is not bounded")
 				}
-				return tc.ips, tc.err
+				switch network {
+				case "ip4":
+					return tc.a, tc.aErr
+				case "ip6":
+					return tc.aaaa, tc.aaaaErr
+				}
+				t.Fatalf("unexpected lookup network %q", network)
+				return nil, nil
 			})}
 			err := chain.validateConnectTarget(context.Background(), tc.authority)
-			if (err != nil) != tc.rejected || (calls == 1) != tc.lookup {
-				t.Fatalf("error = %v, lookup calls = %d", err, calls)
+			if fmt.Sprint(lookups) != fmt.Sprint(tc.lookups) {
+				t.Fatalf("lookups = %v, want %v", lookups, tc.lookups)
 			}
-			if tc.rejected && (!isTargetConnectFailure(err) || forwardingReason(err) != "proxy_connect_rejected") {
-				t.Fatalf("misclassified target failure: %v", err)
+			if tc.reason == "" {
+				if err != nil {
+					t.Fatalf("valid target rejected: %v", err)
+				}
+				return
 			}
-			if tc.rejected && tc.err != nil && !errors.Is(err, tc.err) {
+			if !isTargetConnectFailure(err) || forwardingReason(err) != tc.reason {
+				t.Fatalf("got %q (%v), want %s", forwardingReason(err), err, tc.reason)
+			}
+			if tc.reason == "target_dns_not_found" && !errors.Is(err, tc.aaaaErr) {
 				t.Fatalf("lost resolver cause: %v", err)
 			}
 		})
@@ -135,33 +157,47 @@ func TestConnectTargetLookupFailureFallsThroughToUpstream(t *testing.T) {
 }
 
 func TestConnectTargetFailureDoesNotSelectProxy(t *testing.T) {
-	for _, method := range []string{"roundrobin", "session"} {
-		t.Run(method, func(t *testing.T) {
-			sm := NewSessionManager()
-			defer sm.Stop()
-			selector := newSessionSelector(sm, 1, 2)
-			selector.method = method
-			chain := &PoolChain{
-				selectors: []*PoolSelector{selector},
-				tracker:   &UsageTracker{}, // Any attempt to record or update health is a bug.
-				targetResolver: targetResolverFunc(func(context.Context, string, string) ([]net.IP, error) {
-					return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
-				}),
-				failCounts: map[int]int{1: 2, 2: 2},
-			}
-			req := httptest.NewRequest(http.MethodConnect, "target.example:443", nil)
-			req = req.WithContext(context.WithValue(ctxWithToken("test"), UserChainContextKey, chain))
-			w := httptest.NewRecorder()
-			NewUpstreamProxyHandler(nil, nil, logger.New("error")).HandleConnectRequest(w, req)
-			if w.Code != 592 || w.Header().Get(ProxyErrorHeader) != "proxy_connect_rejected" {
-				t.Fatalf("response = %d %v", w.Code, w.Header())
-			}
-			if selector.rrIdx != 0 || len(sm.List()) != 0 {
-				t.Fatal("target failure consumed a rotation slot or session reservation")
-			}
-			if proxyCount(selector) != 2 || chain.failCounts[1] != 2 || chain.failCounts[2] != 2 {
-				t.Fatal("target failure changed proxy health")
-			}
-		})
+	for _, tc := range []struct {
+		authority string
+		aaaa      []net.IP
+		reason    string
+	}{
+		{authority: "target.example:443", reason: "target_dns_not_found"},
+		{authority: "target.example:443", aaaa: []net.IP{net.ParseIP("2001:db8::1")}, reason: "target_no_ipv4"},
+		{authority: "[2001:db8::1]:443", reason: "target_no_ipv4"},
+		{authority: "target.example:0", reason: "target_invalid"},
+	} {
+		for _, method := range []string{"roundrobin", "session"} {
+			t.Run(tc.authority+"/"+tc.reason+"/"+method, func(t *testing.T) {
+				sm := NewSessionManager()
+				defer sm.Stop()
+				selector := newSessionSelector(sm, 1, 2)
+				selector.method = method
+				chain := &PoolChain{
+					selectors: []*PoolSelector{selector},
+					tracker:   &UsageTracker{}, // Any attempt to record or update health is a bug.
+					targetResolver: targetResolverFunc(func(_ context.Context, network, _ string) ([]net.IP, error) {
+						if network == "ip6" && tc.aaaa != nil {
+							return tc.aaaa, nil
+						}
+						return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+					}),
+					failCounts: map[int]int{1: 2, 2: 2},
+				}
+				req := httptest.NewRequest(http.MethodConnect, tc.authority, nil)
+				req = req.WithContext(context.WithValue(ctxWithToken("test"), UserChainContextKey, chain))
+				w := httptest.NewRecorder()
+				NewUpstreamProxyHandler(nil, nil, logger.New("error")).HandleConnectRequest(w, req)
+				if w.Code != 592 || w.Header().Get(ProxyErrorHeader) != tc.reason || w.Header().Get(UpstreamStatusHeader) != "" {
+					t.Fatalf("response = %d %v", w.Code, w.Header())
+				}
+				if selector.rrIdx != 0 || len(sm.List()) != 0 {
+					t.Fatal("target failure consumed a rotation slot or session reservation")
+				}
+				if proxyCount(selector) != 2 || chain.failCounts[1] != 2 || chain.failCounts[2] != 2 {
+					t.Fatal("target failure changed proxy health")
+				}
+			})
+		}
 	}
 }

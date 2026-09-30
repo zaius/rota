@@ -311,7 +311,10 @@ Rota returns `593` before forwarding. Its `Retry-After` is a polling delay, not 
 | --- | --- |
 | `proxy_connect_failed` | Proxy DNS/TCP connection failed. |
 | `proxy_handshake_failed` | Sending CONNECT or reading/parsing its reply failed. |
-| `proxy_connect_rejected` | CONNECT target has no IPv4 address (NXDOMAIN/NODATA), or the upstream returned a 4xx/5xx CONNECT response other than `407`. No pool retry or proxy-health strike. |
+| `target_dns_not_found` | Rota's resolver found neither an A nor an AAAA record for the CONNECT host (NXDOMAIN/NODATA). No upstream attempt or proxy-health strike. |
+| `target_no_ipv4` | The CONNECT host has no IPv4 address: an IPv6 literal, an IPv6-only name, or a name with no A record whose AAAA lookup was inconclusive. No upstream attempt or proxy-health strike. |
+| `target_invalid` | Malformed CONNECT authority: missing host or port, or a port outside 1–65535. No upstream attempt or proxy-health strike. |
+| `upstream_connect_rejected` | The upstream proxy returned a 4xx/5xx CONNECT response other than `407`. The target may have refused or timed out, the upstream may block the domain, or the target may block that exit IP. `X-Rota-Upstream-Status` carries the upstream status code. No pool retry or proxy-health strike. |
 | `upstream_proxy_auth_failed` | Upstream HTTP proxy returned `407` during CONNECT or HTTP forwarding; check its stored credentials. Counts against proxy health and retries another proxy. |
 | `upstream_timeout` | Connection, tunnel, or request timed out. |
 | `client_request_aborted` | The HTTP client canceled the request or its request context expired. No pool retry or proxy-health strike. |
@@ -320,7 +323,7 @@ Rota returns `593` before forwarding. Its `Retry-After` is a polling delay, not 
 
 Rota cannot always identify whether the proxy or target caused a failure. Ordinary upstream statuses and bodies pass through, including `429`, `502`, and `503`; upstream HTTP proxy `407` is mapped to `592`. Upstream `X-Rota-Error` headers are removed from forwarded/inspected responses to prevent false attribution.
 
-Before selecting a proxy for CONNECT, Rota checks the target for IPv4 addresses using its local resolver, with a five-second lookup limit (or the client's earlier deadline). IPv6-only targets, NXDOMAIN, and NODATA return `592` without consuming an upstream attempt or session reservation. Other resolver errors, including SERVFAIL and lookup timeouts, allow the upstream to resolve the original hostname. A canceled or expired client request stops before selection.
+Before selecting a proxy for CONNECT, Rota checks the target for IPv4 addresses using its local resolver, with a five-second limit for its lookups (or the client's earlier deadline). When the A lookup finds nothing, an AAAA lookup separates a dead name (`target_dns_not_found`) from an IPv6-only one (`target_no_ipv4`). These reasons and `target_invalid` return `592` without consuming an upstream attempt or session reservation. Other A lookup errors, including SERVFAIL and timeouts, allow the upstream to resolve the original hostname. A canceled or expired client request stops before selection.
 
 An upstream CONNECT target rejection records one failed request for that attempt but leaves proxy health unchanged and stops retries. Its persisted `target_failure` flag excludes it from per-proxy success-rate rollups and low-success cleanup; traffic history and charts still include the failed request. Existing records retain their previous classification. TCP dial, CONNECT handshake, and upstream authentication failures still count against the proxy and try the next one.
 
