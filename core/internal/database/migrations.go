@@ -761,6 +761,27 @@ var migrations = []Migration{
 			ALTER TABLE proxy_users ADD COLUMN IF NOT EXISTS requests_per_minute INTEGER NOT NULL DEFAULT 0;
 		`,
 	},
+	{
+		Version:     34,
+		Description: "Store the JWT signing key so dashboard sessions survive restarts",
+		Up: `
+			CREATE TABLE IF NOT EXISTS system_secrets (
+				key        VARCHAR(64) PRIMARY KEY,
+				value      TEXT NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+		`,
+		Down: `DROP TABLE IF EXISTS system_secrets;`,
+	},
+	{
+		Version:     35,
+		Description: "Let proxy users opt in to exporting their pools' proxies",
+		Up: `
+			ALTER TABLE proxy_users
+			  ADD COLUMN IF NOT EXISTS allow_proxy_export BOOLEAN NOT NULL DEFAULT FALSE;
+		`,
+		Down: `ALTER TABLE proxy_users DROP COLUMN IF EXISTS allow_proxy_export;`,
+	},
 }
 
 // migrationLockKey serializes each migration transaction across instances.

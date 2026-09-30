@@ -11,6 +11,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
 // FleetPoller periodically snapshots fleet-wide aggregates from the primary
@@ -103,7 +104,7 @@ func (p *FleetPoller) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.refresh(ctx)
+			safeworker.Call(p.logger, "fleet_metrics", func() { p.refresh(ctx) })
 		}
 	}
 }

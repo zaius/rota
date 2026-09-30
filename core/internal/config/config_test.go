@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestFailedAuthSettingsRequirePositiveValues(t *testing.T) {
 	for _, key := range []string{"AUTH_IP_MAX_ATTEMPTS", "AUTH_IP_WINDOW_MINUTES", "AUTH_IP_BLOCK_MINUTES"} {
@@ -77,4 +81,59 @@ func TestGetEnvAsBoolKeepsTrueDefaultOnGarbage(t *testing.T) {
 	if !getEnvAsBool("ROTA_TEST_BOOL", true) {
 		t.Fatal("expected an unparseable value to preserve the default")
 	}
+}
+
+func TestGeoIPLicenseKeyDefaultsDatabasePaths(t *testing.T) {
+	t.Setenv("MAXMIND_LICENSE_KEY", "k3y")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeoIP.CityDB != "data/geoip/GeoLite2-City.mmdb" || cfg.GeoIP.ASNDB != "data/geoip/GeoLite2-ASN.mmdb" {
+		t.Errorf("paths = %q, %q", cfg.GeoIP.CityDB, cfg.GeoIP.ASNDB)
+	}
+
+	t.Setenv("GEOIP_CITY_DB", "/srv/city.mmdb")
+	if cfg, _ := Load(); cfg.GeoIP.CityDB != "/srv/city.mmdb" {
+		t.Errorf("explicit city path overridden: %q", cfg.GeoIP.CityDB)
+	}
+}
+
+func TestGeoIPASNDatabaseRequiresCity(t *testing.T) {
+	t.Setenv("GEOIP_ASN_DB", "/srv/asn.mmdb")
+	if _, err := Load(); err == nil {
+		t.Fatal("accepted GEOIP_ASN_DB without GEOIP_CITY_DB")
+	}
+}
+
+func TestLoadDotEnv(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	content := "# comment\n" +
+		"DOTENV_PORT=8000       # inline comment\n" +
+		"export DOTENV_QUOTED=\"two # words\"  # comment\n" +
+		"DOTENV_SINGLE='x'\n" +
+		"DOTENV_HASH=a#b\n" +
+		"DOTENV_SET=from-file\n" +
+		"BROKEN LINE\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"DOTENV_PORT", "DOTENV_QUOTED", "DOTENV_SINGLE", "DOTENV_HASH"} {
+		t.Setenv(k, "") // empty counts as unset
+	}
+	t.Setenv("DOTENV_SET", "from-env")
+
+	loadDotEnv(path)
+	for k, want := range map[string]string{
+		"DOTENV_PORT":   "8000",
+		"DOTENV_QUOTED": "two # words",
+		"DOTENV_SINGLE": "x",
+		"DOTENV_HASH":   "a#b",
+		"DOTENV_SET":    "from-env",
+	} {
+		if got := os.Getenv(k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	loadDotEnv(filepath.Join(t.TempDir(), "missing")) // a missing file is ignored
 }

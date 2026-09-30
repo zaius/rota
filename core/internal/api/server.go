@@ -86,13 +86,20 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		log.Warn("failed to seed admin credentials", "error", err)
 	}
 
-	// Prefer a configured JWT secret so tokens survive restarts and work across
-	// replicas. Falling back to a per-boot random secret keeps single-node dev
-	// zero-config, at the cost of logging everyone out on every restart.
+	// The JWT signing key lives in the database, so dashboard sessions survive
+	// restarts and every replica shares it. JWT_SECRET overrides it for
+	// operators who manage the key themselves; a per-boot key is the fallback
+	// only when the database cannot provide one.
 	jwtSecret := cfg.JWTSecret
 	if jwtSecret == "" {
-		jwtSecret = generateJWTSecret()
-		log.Warn("JWT_SECRET not set: generated an ephemeral secret; all sessions will be invalidated on restart and multi-replica deployments will not share sessions")
+		secret, created, err := repository.NewSecretRepository(db).EnsureJWTSecret(context.Background())
+		if err != nil {
+			secret = generateJWTSecret()
+			log.Warn("failed to load the stored JWT secret; sessions will not survive this restart", "error", err)
+		} else if created {
+			log.Info("generated and stored a new JWT secret")
+		}
+		jwtSecret = secret
 	}
 
 	// Usage tracker + health checker back only the on-demand proxy-test endpoint.
@@ -241,6 +248,7 @@ func (s *Server) setupRoutes() {
 			cr.Post("/proxies/{id}/invalidate", s.proxyControlHandler.InvalidateProxy)
 			cr.Post("/sessions/invalidate", s.proxyControlHandler.InvalidateSession)
 			cr.Post("/sessions/release", s.proxyControlHandler.ReleaseSession)
+			cr.Get("/proxies/working", s.proxyControlHandler.ExportWorkingProxies)
 		})
 
 		// Everything else requires an admin JWT.
@@ -268,6 +276,7 @@ func (s *Server) setupRoutes() {
 			r.Post("/proxies", s.proxyHandler.Create)
 			r.Post("/proxies/bulk", s.proxyHandler.BulkCreate)
 			r.Post("/proxies/bulk-delete", s.proxyHandler.BulkDelete)
+			r.Post("/proxies/bulk-tags", s.proxyHandler.BulkTag)
 			r.Post("/proxies/bulk-test", s.proxyHandler.BulkTest)
 			r.Get("/proxies/bulk-test", s.proxyHandler.BulkTestLatest)
 			r.Get("/proxies/bulk-test/{job_id}", s.proxyHandler.BulkTestStatus)

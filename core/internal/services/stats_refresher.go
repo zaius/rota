@@ -7,6 +7,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
 // StatsRefresher periodically derives per-proxy request aggregates from the
@@ -52,7 +53,7 @@ func (s *StatsRefresher) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.refresh(ctx)
+			safeworker.Call(s.logger, "stats_refresh", func() { s.refresh(ctx) })
 		}
 	}
 }

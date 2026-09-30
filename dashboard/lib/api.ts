@@ -11,6 +11,7 @@ import {
   UpdateProxyRequest,
   BulkProxyRequest,
   BulkDeleteRequest,
+  BulkTagRequest,
   BulkTestRequest,
   ProxyFilter,
   ProxyTestResult,
@@ -230,6 +231,13 @@ class ApiClient {
     })
   }
 
+  async bulkTagProxies(request: BulkTagRequest): Promise<{ updated: number; message: string }> {
+    return this.request("/api/v1/proxies/bulk-tags", {
+      method: "POST",
+      body: JSON.stringify(request),
+    })
+  }
+
   async deleteAllProxies(): Promise<{ deleted: number }> {
     return this.request("/api/v1/proxies", { method: "DELETE" })
   }
@@ -400,6 +408,17 @@ class ApiClient {
     })
   }
 
+  async getTagList(): Promise<string[]> {
+    const res = await this.request<{ tags: string[] | null }>("/api/v1/pools/tag-list")
+    return res.tags ?? []
+  }
+
+  async getISPList(query = ""): Promise<string[]> {
+    const qs = query ? `?q=${encodeURIComponent(query)}` : ""
+    const res = await this.request<{ isps: string[] | null }>(`/api/v1/pools/isp-list${qs}`)
+    return res.isps ?? []
+  }
+
   async syncPool(id: number): Promise<{ synced: number }> {
     return this.request(`/api/v1/pools/${id}/sync`, { method: "POST" })
   }
@@ -494,7 +513,10 @@ class ApiClient {
   // The dashboard socket reconnects with a capped exponential backoff. The
   // server closes it on restart, and without this the stats silently stop
   // updating until the page is reloaded.
-  createDashboardWebSocket(onMessage: (data: DashboardStats) => void): SocketHandle {
+  createDashboardWebSocket(
+    onMessage: (data: DashboardStats) => void,
+    onConnectedChange?: (connected: boolean) => void,
+  ): SocketHandle {
     let ws: WebSocket | null = null
     let closedByCaller = false
     let attempt = 0
@@ -507,6 +529,7 @@ class ApiClient {
 
       ws.onopen = () => {
         attempt = 0
+        onConnectedChange?.(true)
       }
       ws.onmessage = (event) => {
         const message = parseSocketMessage<{ type?: string; data?: DashboardStats }>(event.data)
@@ -520,6 +543,7 @@ class ApiClient {
       }
       ws.onclose = () => {
         if (closedByCaller) return
+        onConnectedChange?.(false)
         const delay = Math.min(30_000, 1_000 * 2 ** attempt)
         attempt += 1
         retryTimer = setTimeout(connect, delay)

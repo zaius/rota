@@ -6,8 +6,12 @@
 #
 # Build from the repo root:  docker build -t rota .
 
+# The build stages run on the build host's own platform: the dashboard is
+# platform-independent static files and Go cross-compiles, so a multi-arch
+# build never runs Node or the Go toolchain under QEMU emulation.
+
 # Stage 1: Build the dashboard (static SPA)
-FROM node:20-alpine AS dashboard-builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS dashboard-builder
 WORKDIR /src
 RUN corepack enable && corepack prepare pnpm@10.19.0 --activate
 COPY dashboard/package.json dashboard/pnpm-lock.yaml ./
@@ -16,20 +20,23 @@ COPY dashboard/ .
 RUN pnpm run build
 
 # Stage 2: Build the Go core
-FROM golang:1.25.3-alpine AS core-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS core-builder
 RUN apk add --no-cache git ca-certificates tzdata
 WORKDIR /src
 COPY core/go.mod core/go.sum ./
 RUN go mod download
 COPY core/ .
 ARG TARGETARCH
+# The build context has no .git, so pass the version in, e.g.
+#   --build-arg VERSION=$(git describe --tags --always --dirty)
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
-    -ldflags='-w -s -extldflags "-static"' \
+    -ldflags="-w -s -extldflags '-static' -X github.com/alpkeskin/rota/core/internal/version.Version=${VERSION}" \
     -o /out/server \
     ./cmd/server/main.go
 
 # Stage 3: Runner — just the static binary + the built SPA. No Node.
-FROM alpine:3.20 AS runner
+FROM alpine:3.24 AS runner
 RUN apk --no-cache add ca-certificates tzdata wget
 WORKDIR /app
 
@@ -39,7 +46,9 @@ COPY --from=dashboard-builder /src/dist /app/web
 # Serve the dashboard from /app/web on the API port (same origin as the API).
 ENV WEB_DIR=/app/web
 
-RUN adduser -D -u 1000 rota && chown -R rota:rota /app
+# /app/data holds downloaded GeoIP databases; creating it here lets a volume
+# mounted there inherit the rota user's ownership.
+RUN adduser -D -u 1000 rota && mkdir -p /app/data && chown -R rota:rota /app
 USER rota
 
 EXPOSE 8000 8001

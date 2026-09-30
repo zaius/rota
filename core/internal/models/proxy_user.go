@@ -24,17 +24,18 @@ func IsValidTLSProfile(name string) bool {
 // ProxyUser is a user that authenticates to the proxy server port (8000).
 // Each user has a main pool and optional ordered fallback pools.
 type ProxyUser struct {
-	ID              int       `json:"id"`
-	Username        string    `json:"username"`
-	PasswordHash    string    `json:"-"` // bcrypt, never in JSON
-	Enabled         bool      `json:"enabled"`
-	MainPoolID      *int      `json:"main_pool_id,omitempty"`
-	FallbackPoolIDs []int     `json:"fallback_pool_ids"`
-	MaxRetries      int       `json:"max_retries"`
-	InspectTLS      bool      `json:"inspect_tls"` // intercept HTTPS to count requests
-	TLSProfile      string    `json:"tls_profile"` // fingerprint to present when intercepting; "" = go
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID               int       `json:"id"`
+	Username         string    `json:"username"`
+	PasswordHash     string    `json:"-"` // bcrypt, never in JSON
+	Enabled          bool      `json:"enabled"`
+	MainPoolID       *int      `json:"main_pool_id,omitempty"`
+	FallbackPoolIDs  []int     `json:"fallback_pool_ids"`
+	MaxRetries       int       `json:"max_retries"`
+	InspectTLS       bool      `json:"inspect_tls"`        // intercept HTTPS to count requests
+	TLSProfile       string    `json:"tls_profile"`        // fingerprint to present when intercepting; "" = go
+	AllowProxyExport bool      `json:"allow_proxy_export"` // may download its pools' proxies, upstream credentials included
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 
 	// Enriched fields (JOIN, not stored)
 	MainPoolName string `json:"main_pool_name,omitempty"`
@@ -67,19 +68,24 @@ type CreateProxyUserRequest struct {
 	// real browser or phone instead of Go. Only applies while InspectTLS is on;
 	// "" keeps the Go stdlib fingerprint.
 	TLSProfile string `json:"tls_profile" validate:"omitempty,tls_profile"`
+
+	// AllowProxyExport lets the user download its pools' working proxies,
+	// upstream credentials included.
+	AllowProxyExport bool `json:"allow_proxy_export"`
 }
 
 // UpdateProxyUserRequest is the payload for PUT /api/v1/proxy-users/{id}.
 // Partial updates: every field left out of the document keeps its current
 // value — only fields explicitly present are applied.
 type UpdateProxyUserRequest struct {
-	Password        string          `json:"password,omitempty"`                                     // "" keeps
-	Enabled         *bool           `json:"enabled,omitempty"`                                      // omitted keeps
-	MainPoolID      Optional[int]   `json:"main_pool_id"`                                           // omitted keeps, null clears
-	FallbackPoolIDs Optional[[]int] `json:"fallback_pool_ids"`                                      // omitted keeps, null/[] clears, list replaces
-	MaxRetries      int             `json:"max_retries,omitempty"`                                  // 0 keeps
-	InspectTLS      *bool           `json:"inspect_tls,omitempty"`                                  // omitted keeps
-	TLSProfile      *string         `json:"tls_profile,omitempty" validate:"omitempty,tls_profile"` // omitted keeps
+	Password         string          `json:"password,omitempty"`                                     // "" keeps
+	Enabled          *bool           `json:"enabled,omitempty"`                                      // omitted keeps
+	MainPoolID       Optional[int]   `json:"main_pool_id"`                                           // omitted keeps, null clears
+	FallbackPoolIDs  Optional[[]int] `json:"fallback_pool_ids"`                                      // omitted keeps, null/[] clears, list replaces
+	MaxRetries       int             `json:"max_retries,omitempty"`                                  // 0 keeps
+	InspectTLS       *bool           `json:"inspect_tls,omitempty"`                                  // omitted keeps
+	TLSProfile       *string         `json:"tls_profile,omitempty" validate:"omitempty,tls_profile"` // omitted keeps
+	AllowProxyExport *bool           `json:"allow_proxy_export,omitempty"`                           // omitted keeps
 }
 
 // proxyUserContextKey is used to pass the resolved ProxyUser through request context

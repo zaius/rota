@@ -7,7 +7,7 @@
 
 <p align="center">
 <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
-<a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.25.3-00ADD8?logo=go"></a>
+<a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.27.1-00ADD8?logo=go"></a>
 <a href="https://react.dev"><img src="https://img.shields.io/badge/React-19-61DAFB?logo=react"></a>
 <a href="https://www.timescale.com/"><img src="https://img.shields.io/badge/TimescaleDB-2.22-FDB515?logo=timescale"></a>
 <a href="https://github.com/zaius/rota/releases"><img src="https://img.shields.io/github/release/zaius/rota"></a>
@@ -94,8 +94,9 @@ For production, set at minimum:
 # .env
 DB_PASSWORD=a-strong-random-password
 ROTA_ADMIN_PASSWORD=a-strong-password
-JWT_SECRET=a-stable-random-secret  # so dashboard sessions survive restarts
 ```
+
+Dashboard sessions survive restarts without further setup: the server generates its JWT signing key once and stores it in the database. Set `JWT_SECRET` only to manage or rotate that key yourself.
 
 Start with `docker compose up -d`; the Compose file already sets `restart: unless-stopped`.
 
@@ -126,7 +127,7 @@ Or run the whole stack (rota + TimescaleDB) with `docker compose up -d`.
 ### From Source
 
 ```bash
-# Prerequisites: Go 1.25.3+, Node.js 20+, pnpm, PostgreSQL 14+ (TimescaleDB optional)
+# Prerequisites: Go 1.27.1+, Node.js 22+, pnpm, PostgreSQL 14+ (TimescaleDB optional)
 
 # Clone the repository
 git clone https://github.com/zaius/rota.git
@@ -146,6 +147,20 @@ cd dashboard
 pnpm install
 pnpm run dev  # http://localhost:3000, proxies API calls to the core on :8001
 ```
+
+### Standalone Binary (no Docker)
+
+Every release attaches archives for Linux (amd64, arm64), macOS (arm64, amd64) and Windows (amd64), with `checksums.txt`. Each holds the `rota` binary and the dashboard in `web/`, which the binary serves on the API port. You still need a PostgreSQL 14+ database.
+
+```bash
+# Unpack the archive for your platform, then configure it
+cp .env.example .env   # set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, ROTA_ADMIN_PASSWORD
+
+# The binary reads .env from its working directory; real environment variables win
+./rota                 # Windows: rota.exe
+```
+
+To build the archives yourself, run `scripts/release-binaries.sh <version>`; they land in `dist/`.
 
 ### Testing the Proxy
 
@@ -201,7 +216,20 @@ After proxies are geolocated, open the **Proxy Pools → Geo Distribution** tab:
 - Check individual countries or cities; mix them freely
 - Click **Create Pool from selection** — the pool is created and filled instantly
 
-Pools also support **ISP filters** (substring match, OR logic) and **tag filters** (AND logic — proxy must carry all specified tags). Combine geo + ISP + tags in any combination.
+Pools also support **ISP filters** (substring match, OR logic) and **tag filters** (AND logic — proxy must carry all specified tags). Combine geo + ISP + tags in any combination. Tag proxies on the **Proxy Management** page, one at a time or in bulk; tags let pools hold proxies that have no GeoIP data, such as local or VPN proxies. Proxies can also be added to and removed from a pool by hand.
+
+#### GeoIP Source
+
+Locations come from the free [ip-api.com](https://ip-api.com) web service unless local MaxMind databases are configured. Local lookups avoid ip-api.com's rate limit and keep proxy addresses on your server:
+
+| Variable | Purpose |
+|---|---|
+| `MAXMIND_LICENSE_KEY` | Download GeoLite2-City and GeoLite2-ASN into `data/geoip/` and keep them current (free [MaxMind account](https://www.maxmind.com/en/geolite2/signup)) |
+| `MAXMIND_ACCOUNT_ID` | Optional; downloads through MaxMind's account-authenticated endpoint |
+| `GEOIP_CITY_DB` / `GEOIP_ASN_DB` | Paths to existing `.mmdb` files, e.g. kept current by `geoipupdate`; a replaced file is reloaded within the hour |
+| `GEOIP_UPDATE_HOURS` | Re-download age for managed databases (default `168`) |
+
+The ASN database supplies the ISP names that ISP filters match. Until the City database loads, lookups keep using ip-api.com, as do proxies given by hostname rather than IP address.
 
 #### Pool Sync Modes
 
@@ -388,11 +416,12 @@ Inspect active cooldowns and permanent exclusions with admin-authenticated `GET 
 
 ### Invalidating with proxy-user credentials
 
-The scraping client usually holds proxy-user credentials, not an admin JWT. Three control endpoints therefore also accept **HTTP Basic auth with proxy-user credentials**:
+The scraping client usually holds proxy-user credentials, not an admin JWT. These client-control endpoints therefore also accept **HTTP Basic auth with proxy-user credentials**:
 
 - `POST /api/v1/proxies/{id}/invalidate`
 - `POST /api/v1/sessions/invalidate`
 - `POST /api/v1/sessions/release`
+- `GET /api/v1/proxies/working`
 
 ```bash
 # Same credentials the client already uses on the proxy port
@@ -403,6 +432,20 @@ curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
 ```
 
 Proxy-user calls are scoped to the user's own pools: only proxies that belong to the user's main/fallback pools can be invalidated, and session operations only match that user's own bindings in those pools. The endpoints share the same brute-force protection as the login endpoint. Reactivation stays admin-only. Temporary cooldowns expire automatically; permanent exclusions after repeated session invalidations require admin reactivation.
+
+### Exporting working proxies
+
+A client that connects to upstream proxies directly, rather than through Rota, can download them from `GET /api/v1/proxies/working`, one per line with their credentials. A proxy user needs **Allow proxy export** turned on in its settings, and can only read its own pools:
+
+```bash
+# The user's main pool, fastest first, as protocol://user:pass@host:port
+curl -u "myuser:mypassword" "http://localhost:8001/api/v1/proxies/working"
+
+# A fallback pool, at most 20 proxies, as host:port:user:pass
+curl -u "myuser:mypassword" "http://localhost:8001/api/v1/proxies/working?pool=3&limit=20&format=colon"
+```
+
+By default only active proxies outside a cooldown are listed; `status=all` includes the rest. Admins can read any pool with a JWT, but must pass `pool`.
 
 ### Per-domain statistics
 
@@ -439,6 +482,8 @@ Every tunnel writes a record when it closes, whether or not inspection is enable
 | `proxy_id`, `pool_id`, `username` | Which proxy, pool and user served it |
 
 The dashboard turns these into **Open Tunnels**, **Tunnels (24h)** and **Tunnel Data (24h)**, plus mean concurrency — the number that distinguishes "3 short tunnels" from "3 tunnels held open all day moving 2 GB".
+
+Tunnel and request records are written to the event store in batches, so they appear up to a second after the traffic. A graceful shutdown writes out whatever is still buffered.
 
 ### Optional: inspecting HTTPS requests
 
@@ -603,6 +648,7 @@ Rota instruments itself once with OpenTelemetry and exports through two paths �
 | `rota_healthcheck_checks_total` / `rota_healthcheck_duration_seconds` | counter / histogram | health-check probes by `outcome` |
 | `rota_source_fetches_total` / `rota_source_proxies_imported_total` | counter | source list fetches and new proxies imported |
 | `rota_pool_alerts_total` | counter | alert webhooks by delivery `outcome` |
+| `rota_events_written_total` | counter | request/tunnel history writes by `kind` and `outcome`; failures are lost history |
 | `rota_api_requests_total` / `rota_api_request_duration_seconds` | counter / histogram | management API traffic by `route`, `method`, `status` |
 | `go_*` / `process_*` | various | Go runtime: memory, GC, goroutines |
 

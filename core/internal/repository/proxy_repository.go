@@ -360,7 +360,7 @@ func (r *ProxyRepository) ApplyRequestStats(ctx context.Context, stats []events.
 
 // Update updates a proxy
 func (r *ProxyRepository) Update(ctx context.Context, id int, req models.UpdateProxyRequest) (*models.Proxy, error) {
-	tags := req.Tags
+	tags := req.Tags.Value
 	if tags == nil {
 		tags = []string{}
 	}
@@ -368,16 +368,20 @@ func (r *ProxyRepository) Update(ctx context.Context, id int, req models.UpdateP
 		UPDATE proxies
 		SET address    = COALESCE(NULLIF($1, ''), address),
 		    protocol   = COALESCE(NULLIF($2, ''), protocol),
-		    username   = $3,
-		    password   = $4,
-		    tags       = $5,
+		    username   = CASE WHEN $3::BOOLEAN THEN NULLIF($4::TEXT, '') ELSE username END,
+		    password   = CASE WHEN $5::BOOLEAN THEN NULLIF($6::TEXT, '') ELSE password END,
+		    tags       = CASE WHEN $7::BOOLEAN THEN $8::TEXT[] ELSE tags END,
 		    updated_at = NOW()
-		WHERE id = $6
+		WHERE id = $9
 		RETURNING id, address, protocol, status, COALESCE(tags,'{}'), updated_at
 	`
 
 	var p models.Proxy
-	err := r.db.Pool.QueryRow(ctx, query, req.Address, req.Protocol, req.Username, req.Password, tags, id).Scan(
+	err := r.db.Pool.QueryRow(ctx, query, req.Address, req.Protocol,
+		req.Username.Present, req.Username.Value,
+		req.Password.Present, req.Password.Value,
+		req.Tags.Present, tags, id,
+	).Scan(
 		&p.ID, &p.Address, &p.Protocol, &p.Status, &p.Tags, &p.UpdatedAt,
 	)
 
@@ -565,6 +569,39 @@ func (r *ProxyRepository) BulkDeleteByFilter(ctx context.Context, filter models.
 	return int(result.RowsAffected()), nil
 }
 
+// BulkUpdateTags adds and removes tags on the proxies with the given IDs, or on
+// every proxy matching filter when it is non-nil. Removal wins when a tag is in
+// both lists, and each resulting tag list comes out deduplicated and sorted.
+func (r *ProxyRepository) BulkUpdateTags(ctx context.Context, ids []int, filter *models.ProxyFilter, add, remove []string) (int, error) {
+	if add == nil {
+		add = []string{}
+	}
+	if remove == nil {
+		remove = []string{}
+	}
+	where := "WHERE id = ANY($3::int[])"
+	args := []any{add, remove, ids}
+	if filter != nil {
+		var filterArgs []any
+		where, filterArgs = buildProxyWhere(filter.Search, filter.Status, filter.Protocol, 3)
+		args = append(args[:2], filterArgs...)
+	}
+	query := `
+		UPDATE proxies
+		SET tags = (
+		        SELECT COALESCE(array_agg(DISTINCT t ORDER BY t), '{}')
+		        FROM unnest(tags || $1::text[]) AS t
+		        WHERE t <> ALL($2::text[])
+		    ),
+		    updated_at = NOW()
+		` + where
+	result, err := r.db.Pool.Exec(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("failed to bulk update proxy tags: %w", err)
+	}
+	return int(result.RowsAffected()), nil
+}
+
 // scanProxies scans rows selecting the full proxy columns (including password)
 // needed to build a transport for testing.
 func scanProxies(rows pgx.Rows) ([]*models.Proxy, error) {
@@ -686,13 +723,26 @@ func (r *ProxyRepository) UpdateGeo(ctx context.Context, address string, geo mod
 	return nil
 }
 
-// UpdateStatus sets a proxy's status and bumps last_check.
-func (r *ProxyRepository) UpdateStatus(ctx context.Context, id int, status string) error {
-	_, err := r.db.Pool.Exec(ctx,
-		`UPDATE proxies SET status = $1, last_check = NOW(), updated_at = NOW() WHERE id = $2`,
-		status, id)
+// RecordCheckResult applies an explicit health-check result to a proxy. A
+// check is a deliberate probe, so its verdict takes effect at once: success
+// marks the proxy active and resets its consecutive-failure streak, failure
+// marks it failed and extends the streak.
+func (r *ProxyRepository) RecordCheckResult(ctx context.Context, id int, success bool, errMsg string) error {
+	var lastError *string
+	if !success && errMsg != "" {
+		lastError = &errMsg
+	}
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE proxies SET
+			status          = CASE WHEN $2 THEN 'active' ELSE 'failed' END,
+			failed_requests = CASE WHEN $2 THEN 0 ELSE failed_requests + 1 END,
+			last_error      = $3,
+			last_check      = NOW(),
+			updated_at      = NOW()
+		WHERE id = $1`,
+		id, success, lastError)
 	if err != nil {
-		return fmt.Errorf("failed to update proxy status: %w", err)
+		return fmt.Errorf("failed to record proxy check result: %w", err)
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -81,56 +82,68 @@ func (s *PostgresStore) capabilities(ctx context.Context) (pgCapabilities, error
 
 // InsertRequest records one proxied request outcome.
 func (s *PostgresStore) InsertRequest(ctx context.Context, event RequestEvent) error {
-	query := `
+	return s.InsertRequests(ctx, []RequestEvent{event})
+}
+
+// InsertRequests records a batch of request outcomes in one statement. It
+// skips events whose proxy no longer exists: the ON DELETE CASCADE would have
+// removed them anyway, and they would otherwise fail the foreign key and take
+// the whole batch down with them.
+func (s *PostgresStore) InsertRequests(ctx context.Context, events []RequestEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	n := len(events)
+	var (
+		proxyIDs      = make([]int32, n)
+		addresses     = make([]string, n)
+		poolIDs       = make([]*int32, n)
+		usernames     = make([]*string, n)
+		methods       = make([]string, n)
+		urls          = make([]string, n)
+		domains       = make([]*string, n)
+		statusCodes   = make([]*int32, n)
+		successes     = make([]bool, n)
+		responseTimes = make([]int32, n)
+		errs          = make([]*string, n)
+		timestamps    = make([]time.Time, n)
+		targetFails   = make([]bool, n)
+	)
+	for i := range events {
+		e := &events[i]
+		proxyIDs[i] = int32(e.ProxyID)
+		addresses[i] = e.ProxyAddress
+		poolIDs[i] = optInt32(e.PoolID)
+		usernames[i] = optString(e.Username)
+		methods[i] = e.Method
+		urls[i] = e.URL
+		domains[i] = optString(e.Domain)
+		statusCodes[i] = optInt32(e.StatusCode)
+		successes[i] = e.Success
+		responseTimes[i] = saturateInt32(e.ResponseTime)
+		errs[i] = optString(e.Error)
+		timestamps[i] = pgTime(e.Timestamp)
+		targetFails[i] = e.TargetFailure
+	}
+
+	_, err := s.db.Pool.Exec(ctx, `
 		INSERT INTO proxy_requests (
 			proxy_id, proxy_address, pool_id, username, method, url, domain,
 			status_code, success, response_time, error, timestamp, target_failure
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-	`
-
-	var errorMsg *string
-	if event.Error != "" {
-		errorMsg = &event.Error
+		)
+		SELECT u.*
+		FROM unnest(
+			$1::int[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[],
+			$8::int[], $9::bool[], $10::int[], $11::text[], $12::timestamp[], $13::bool[]
+		) AS u(proxy_id, proxy_address, pool_id, username, method, url, domain,
+		       status_code, success, response_time, error, timestamp, target_failure)
+		WHERE EXISTS (SELECT 1 FROM proxies p WHERE p.id = u.proxy_id)
+	`, proxyIDs, addresses, poolIDs, usernames, methods, urls, domains,
+		statusCodes, successes, responseTimes, errs, timestamps, targetFails)
+	if err != nil {
+		return fmt.Errorf("failed to insert proxy requests: %w", err)
 	}
-
-	var statusCode *int
-	if event.StatusCode > 0 {
-		statusCode = &event.StatusCode
-	}
-
-	// Zero-value dimensions are stored as NULL: "not applicable", not "".
-	var poolID *int
-	if event.PoolID > 0 {
-		poolID = &event.PoolID
-	}
-	var username *string
-	if event.Username != "" {
-		username = &event.Username
-	}
-	var domain *string
-	if event.Domain != "" {
-		domain = &event.Domain
-	}
-
-	_, err := s.db.Pool.Exec(
-		ctx,
-		query,
-		event.ProxyID,
-		event.ProxyAddress,
-		poolID,
-		username,
-		event.Method,
-		event.URL,
-		domain,
-		statusCode,
-		event.Success,
-		event.ResponseTime,
-		errorMsg,
-		pgTime(event.Timestamp),
-		event.TargetFailure,
-	)
-
-	return err
+	return nil
 }
 
 // RequestStats returns today/yesterday request aggregates for the dashboard.
@@ -177,51 +190,88 @@ func (s *PostgresStore) RequestStats(ctx context.Context) (*RequestStats, error)
 
 // InsertTunnel records one completed CONNECT tunnel.
 func (s *PostgresStore) InsertTunnel(ctx context.Context, event TunnelEvent) error {
-	query := `
+	return s.InsertTunnels(ctx, []TunnelEvent{event})
+}
+
+// InsertTunnels records a batch of completed tunnels in one statement,
+// skipping tunnels whose proxy no longer exists (see InsertRequests).
+func (s *PostgresStore) InsertTunnels(ctx context.Context, events []TunnelEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	n := len(events)
+	var (
+		proxyIDs   = make([]int32, n)
+		addresses  = make([]string, n)
+		poolIDs    = make([]*int32, n)
+		usernames  = make([]*string, n)
+		hosts      = make([]string, n)
+		domains    = make([]*string, n)
+		bytesUp    = make([]int64, n)
+		bytesDown  = make([]int64, n)
+		requests   = make([]int32, n)
+		durations  = make([]int32, n)
+		errs       = make([]*string, n)
+		timestamps = make([]time.Time, n)
+	)
+	for i := range events {
+		e := &events[i]
+		proxyIDs[i] = int32(e.ProxyID)
+		addresses[i] = e.ProxyAddress
+		poolIDs[i] = optInt32(e.PoolID)
+		usernames[i] = optString(e.Username)
+		hosts[i] = e.Host
+		domains[i] = optString(e.Domain)
+		bytesUp[i] = e.BytesUp
+		bytesDown[i] = e.BytesDown
+		requests[i] = saturateInt32(e.Requests)
+		durations[i] = saturateInt32(e.DurationMs)
+		errs[i] = optString(e.Error)
+		timestamps[i] = pgTime(e.OpenedAt)
+	}
+
+	_, err := s.db.Pool.Exec(ctx, `
 		INSERT INTO proxy_tunnels (
 			proxy_id, proxy_address, pool_id, username, host, domain,
 			bytes_up, bytes_down, requests, duration_ms, error, timestamp
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`
-
-	// Zero-value dimensions are stored as NULL: "not applicable", not "".
-	var poolID *int
-	if event.PoolID > 0 {
-		poolID = &event.PoolID
-	}
-	var username *string
-	if event.Username != "" {
-		username = &event.Username
-	}
-	var domain *string
-	if event.Domain != "" {
-		domain = &event.Domain
-	}
-	var errorMsg *string
-	if event.Error != "" {
-		errorMsg = &event.Error
-	}
-
-	_, err := s.db.Pool.Exec(
-		ctx,
-		query,
-		event.ProxyID,
-		event.ProxyAddress,
-		poolID,
-		username,
-		event.Host,
-		domain,
-		event.BytesUp,
-		event.BytesDown,
-		event.Requests,
-		event.DurationMs,
-		errorMsg,
-		pgTime(event.OpenedAt),
-	)
+		)
+		SELECT u.*
+		FROM unnest(
+			$1::int[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[],
+			$7::bigint[], $8::bigint[], $9::int[], $10::int[], $11::text[], $12::timestamp[]
+		) AS u(proxy_id, proxy_address, pool_id, username, host, domain,
+		       bytes_up, bytes_down, requests, duration_ms, error, timestamp)
+		WHERE EXISTS (SELECT 1 FROM proxies p WHERE p.id = u.proxy_id)
+	`, proxyIDs, addresses, poolIDs, usernames, hosts, domains,
+		bytesUp, bytesDown, requests, durations, errs, timestamps)
 	if err != nil {
-		return fmt.Errorf("failed to insert proxy tunnel: %w", err)
+		return fmt.Errorf("failed to insert proxy tunnels: %w", err)
 	}
 	return nil
+}
+
+// saturateInt32 clamps v to the INTEGER column range, so a tunnel open for
+// weeks records the largest duration the column holds instead of wrapping
+// negative.
+func saturateInt32(v int) int32 {
+	return int32(max(min(v, math.MaxInt32), math.MinInt32))
+}
+
+// optInt32 maps a zero value to NULL ("not applicable").
+func optInt32(v int) *int32 {
+	if v <= 0 {
+		return nil
+	}
+	n := int32(v)
+	return &n
+}
+
+// optString maps an empty string to NULL ("not applicable").
+func optString(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // TunnelStats aggregates tunnels that closed within the trailing window.
@@ -405,7 +455,7 @@ func (s *PostgresStore) ResponseTimeChart(ctx context.Context, interval string) 
 		}
 
 		data = append(data, models.ChartDataPoint{
-			Time:  bucket.Format("15:04"),
+			Time:  chartBucketLabel(bucket, interval),
 			Value: value,
 		})
 	}
@@ -444,7 +494,7 @@ func (s *PostgresStore) SuccessRateChart(ctx context.Context, interval string) (
 		}
 
 		data = append(data, models.SuccessRateDataPoint{
-			Time:    bucket.Format("15:04"),
+			Time:    chartBucketLabel(bucket, interval),
 			Success: success,
 			Failure: failure,
 		})

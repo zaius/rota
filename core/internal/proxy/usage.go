@@ -173,41 +173,10 @@ func (t *UsageTracker) RecordTunnel(ctx context.Context, record TunnelRecord) er
 	return nil
 }
 
-// RecordHealthCheck records a health check result
+// RecordHealthCheck records a health check result. Checks are user-initiated
+// probes, so the result applies to the proxy's status immediately rather than
+// waiting out the consecutive-failure threshold that request failures use.
 func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, success bool, responseTime int, errorMsg string) error {
 	metrics.RecordHealthCheck(ctx, success, responseTime)
-	now := time.Now()
-
-	status := "active"
-	if !success {
-		// Check how many consecutive failures
-		var failedRequests int64
-		query := `SELECT failed_requests FROM proxies WHERE id = $1`
-		if err := t.repo.GetDB().Pool.QueryRow(ctx, query, proxyID).Scan(&failedRequests); err != nil {
-			return err
-		}
-
-		// Mark as failed after 3 consecutive failures
-		if failedRequests >= 2 {
-			status = "failed"
-		}
-	}
-
-	query := `
-		UPDATE proxies
-		SET
-			last_check = $1,
-			last_error = $2,
-			status = $3,
-			updated_at = NOW()
-		WHERE id = $4
-	`
-
-	var lastError *string
-	if errorMsg != "" {
-		lastError = &errorMsg
-	}
-
-	_, err := t.repo.GetDB().Pool.Exec(ctx, query, now, lastError, status, proxyID)
-	return err
+	return t.repo.RecordCheckResult(ctx, proxyID, success, errorMsg)
 }

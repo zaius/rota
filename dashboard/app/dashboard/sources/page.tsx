@@ -1,34 +1,41 @@
-
 import { useState } from "react"
-import {
-  Plus, Trash2, RefreshCw, Globe, Clock, CheckCircle2,
-  XCircle, Pencil, Download, Loader2, AlertCircle,
-} from "lucide-react"
-import { toast } from "sonner"
-import { api } from "@/lib/api"
-import { ProxySource, CreateSourceRequest, PROTOCOLS } from "@/lib/types"
-import { FORMAT_URL, compileLineFormat } from "@/lib/lineformat"
+import { ChevronDown } from "lucide-react"
 import { useQueryClient } from "@tanstack/react-query"
+import { api } from "@/lib/api"
+import { errorMessage } from "@/lib/utils"
+import { toast } from "@/lib/toast"
+import { type CreateSourceRequest, type ProxySource, PROTOCOLS } from "@/lib/types"
+import { FORMAT_URL, compileLineFormat } from "@/lib/lineformat"
 import { LineFormatField } from "@/components/line-format-field"
 import { useResourceQuery } from "@/hooks/use-resource-query"
-import { StatCard } from "@/components/crud/stat-card"
-import { EmptyState } from "@/components/crud/empty-state"
-import { PageSpinner } from "@/components/crud/page-spinner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Badge } from "@/components/ui/badge"
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
-} from "@/components/ui/dialog"
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select"
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { PageHeader, Content, EmptyLine, LoadingLine } from "@/components/page-header"
+import { StatStrip } from "@/components/stat-strip"
+import { ErrorStatus, OkStatus, PendingStatus, RunningStatus } from "@/components/status"
+import { count, formatDateTime, humanizeMinutes, relative } from "@/lib/format"
 
 const DEFAULT_FORM: CreateSourceRequest = {
   name: "",
@@ -43,9 +50,8 @@ const DEFAULT_FORM: CreateSourceRequest = {
 
 export default function SourcesPage() {
   const queryClient = useQueryClient()
-  const sourcesQuery = useResourceQuery(["sources"], () => api.getSources().then(r => r.sources))
+  const sourcesQuery = useResourceQuery(["sources"], () => api.getSources().then((r) => r.sources))
   const sources = sourcesQuery.data ?? []
-  const loading = sourcesQuery.isLoading
   const reload = sourcesQuery.invalidate
 
   const [fetchingId, setFetchingId] = useState<number | null>(null)
@@ -55,6 +61,7 @@ export default function SourcesPage() {
   const [editSource, setEditSource] = useState<ProxySource | null>(null)
   const [form, setForm] = useState<CreateSourceRequest>(DEFAULT_FORM)
   const [saving, setSaving] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<ProxySource | null>(null)
 
   const openCreate = () => {
     setEditSource(null)
@@ -77,14 +84,15 @@ export default function SourcesPage() {
     setDialogOpen(true)
   }
 
-  const handleSave = async () => {
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault()
     if (!form.name.trim() || !form.url.trim()) {
       toast.error("Name and URL are required")
       return
     }
     const formatError = compileLineFormat(form.format ?? "").error
     if (formatError) {
-      toast.error(`Invalid line format: ${formatError}`)
+      toast.error("Invalid line format", formatError)
       return
     }
     setSaving(true)
@@ -98,23 +106,26 @@ export default function SourcesPage() {
       }
       setDialogOpen(false)
       reload()
-      // A custom format may now be in history — refresh the picker.
+      // A custom format may now be in history; refresh the picker.
       queryClient.invalidateQueries({ queryKey: ["format-history"] })
-    } catch (e: any) {
-      toast.error(e.message || "Failed to save source")
+    } catch (err) {
+      toast.error("Failed to save source", errorMessage(err, "Unknown error"))
     } finally {
       setSaving(false)
     }
   }
 
-  const handleDelete = async (id: number) => {
-    if (!confirm("Delete this source?")) return
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
     try {
-      await api.deleteSource(id)
+      await api.deleteSource(deleteTarget.id)
       toast.success("Source deleted")
       reload()
-    } catch {
-      toast.error("Failed to delete source")
+      queryClient.invalidateQueries({ queryKey: ["proxies"] })
+    } catch (err) {
+      toast.error("Failed to delete source", errorMessage(err, "Unknown error"))
+    } finally {
+      setDeleteTarget(null)
     }
   }
 
@@ -122,10 +133,10 @@ export default function SourcesPage() {
     setFetchingId(id)
     try {
       const res = await api.fetchSourceNow(id)
-      toast.success(`Fetched ${res.imported} proxies from source`)
+      toast.success(`Imported ${count(res.imported)} new proxies`)
       reload()
-    } catch (e: any) {
-      toast.error(e.message || "Fetch failed")
+    } catch (err) {
+      toast.error("Fetch failed", errorMessage(err, "Unknown error"))
     } finally {
       setFetchingId(null)
     }
@@ -135,9 +146,9 @@ export default function SourcesPage() {
     setEnriching(true)
     try {
       const res = await api.enrichGeo()
-      toast.success(`Geo enriched ${res.enriched} proxies`)
-    } catch {
-      toast.error("Geo enrichment failed")
+      toast.success(`GeoIP resolved for ${count(res.enriched)} proxies`)
+    } catch (err) {
+      toast.error("GeoIP enrichment failed", errorMessage(err, "Unknown error"))
     } finally {
       setEnriching(false)
     }
@@ -147,262 +158,211 @@ export default function SourcesPage() {
     try {
       await api.updateSource(s.id, { enabled: !s.enabled })
       reload()
-    } catch {
-      toast.error("Failed to toggle source")
+    } catch (err) {
+      toast.error("Failed to update source", errorMessage(err, "Unknown error"))
     }
   }
 
-  const formatDate = (d?: string) =>
-    d ? new Date(d).toLocaleString() : "Never"
-
-  if (loading) {
-    return <PageSpinner />
-  }
+  const enabled = sources.filter((s) => s.enabled).length
+  const withErrors = sources.filter((s) => s.last_error).length
+  const imported = sources.reduce((s, x) => s + x.last_count, 0)
+  const returned = sources.reduce((s, x) => s + x.last_total, 0)
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Proxy Sources</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Remote TXT lists of proxies — fetched automatically on schedule
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleEnrichGeo}
-            disabled={enriching}
-          >
-            {enriching
-              ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              : <Globe className="h-4 w-4 mr-2" />}
-            Enrich GeoIP
-          </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="h-4 w-4 mr-2" />
-            Add Source
-          </Button>
-        </div>
-      </div>
+    <>
+      <PageHeader
+        title="Sources"
+        description="Remote text lists fetched on a schedule. Each fetch adds proxies that are new to the inventory; existing ones are left untouched."
+      >
+        <Button variant="outline" onClick={handleEnrichGeo} disabled={enriching}>
+          {enriching ? "Resolving GeoIP…" : "Resolve GeoIP"}
+        </Button>
+        <Button onClick={openCreate}>Add source</Button>
+      </PageHeader>
 
-      {/* Stats cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Total Sources" value={sources.length} />
-        <StatCard label="Enabled" value={sources.filter(s => s.enabled).length} valueClassName="text-green-500" />
-        <StatCard label="Total Imported" value={sources.reduce((s, x) => s + x.last_count, 0)} />
-        <StatCard label="With Errors" value={sources.filter(s => s.last_error).length} valueClassName="text-red-500" />
-      </div>
+      <StatStrip
+        columns={4}
+        stats={[
+          { label: "Sources", value: count(sources.length), hint: `${count(enabled)} enabled` },
+          { label: "Lines on last fetch", value: count(returned), hint: "summed across sources" },
+          { label: "New on last fetch", value: count(imported), hint: "proxies not seen before" },
+          {
+            label: "Failing",
+            value: count(withErrors),
+            hint: withErrors ? "last fetch returned an error" : "every last fetch succeeded",
+            tone: withErrors > 0 ? "critical" : sources.length > 0 ? "good" : "default",
+          },
+        ]}
+      />
 
-      {/* Table */}
-      {sources.length === 0 ? (
-        <EmptyState
-          icon={Download}
-          message="No proxy sources yet. Add one to get started."
-          action={<Button onClick={openCreate}><Plus className="h-4 w-4 mr-2" />Add Source</Button>}
-        />
-      ) : (
-        <Card>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>URL</TableHead>
-                  <TableHead>Protocol</TableHead>
-                  <TableHead>Interval</TableHead>
-                  <TableHead>Last Fetch</TableHead>
-                  <TableHead title="Total lines returned by the source on last fetch">Total</TableHead>
-                  <TableHead title="Newly created proxies on last fetch">Imported</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead title="Per-source auto-cleanup threshold (days)">Cleanup</TableHead>
-                  <TableHead>Enabled</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+      <Content>
+        {sourcesQuery.isLoading ? (
+          <LoadingLine />
+        ) : sources.length === 0 ? (
+          <EmptyLine>No sources yet. Add a URL that serves one proxy per line.</EmptyLine>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>URL</TableHead>
+                <TableHead>Protocol</TableHead>
+                <TableHead>Every</TableHead>
+                <TableHead>Last fetch</TableHead>
+                <TableHead className="text-right" title="Lines returned by the source on the last fetch">Lines</TableHead>
+                <TableHead className="text-right" title="Proxies created on the last fetch">New</TableHead>
+                <TableHead>Result</TableHead>
+                <TableHead title="Delete proxies missing from this source for this many days">Cleanup</TableHead>
+                <TableHead>Enabled</TableHead>
+                <TableHead className="w-8" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sources.map((s) => (
+                <TableRow key={s.id}>
+                  <TableCell className="font-medium">{s.name}</TableCell>
+                  <TableCell className="text-muted-foreground max-w-[16rem] truncate font-mono" title={s.url}>
+                    {s.url}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground font-mono">
+                    {s.protocol}
+                    {s.format && s.format !== FORMAT_URL && (
+                      <span className="block max-w-[10rem] truncate text-[0.6875rem] leading-4" title={`Line format: ${s.format}`}>
+                        {s.format}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="num">{humanizeMinutes(s.interval_minutes)}</TableCell>
+                  <TableCell className="text-muted-foreground whitespace-nowrap" title={s.last_fetched_at ? formatDateTime(s.last_fetched_at) : undefined}>
+                    {s.last_fetched_at ? relative(s.last_fetched_at) : "never"}
+                  </TableCell>
+                  <TableCell className="num text-right">{count(s.last_total)}</TableCell>
+                  <TableCell className="num text-right font-medium">{count(s.last_count)}</TableCell>
+                  <TableCell>
+                    {fetchingId === s.id ? (
+                      <RunningStatus>Fetching</RunningStatus>
+                    ) : s.last_error ? (
+                      <span title={s.last_error}>
+                        <ErrorStatus>Error</ErrorStatus>
+                      </span>
+                    ) : s.last_fetched_at ? (
+                      <OkStatus />
+                    ) : (
+                      <PendingStatus>Not fetched</PendingStatus>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">{s.cleanup_enabled ? `after ${s.cleanup_days}d` : "—"}</TableCell>
+                  <TableCell>
+                    <Switch checked={s.enabled} onCheckedChange={() => toggleEnabled(s)} aria-label={`${s.name} enabled`} />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${s.name}`}>
+                          <ChevronDown aria-hidden />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => handleFetch(s.id)} disabled={fetchingId === s.id}>
+                          Fetch now
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => openEdit(s)}>Edit</DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem variant="destructive" onClick={() => setDeleteTarget(s)}>
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sources.map(s => (
-                  <TableRow key={s.id}>
-                    <TableCell className="font-medium">{s.name}</TableCell>
-                    <TableCell className="max-w-[200px]">
-                      <span className="truncate block text-xs text-muted-foreground" title={s.url}>
-                        {s.url}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col items-start gap-1">
-                        <Badge variant="outline">{s.protocol.toUpperCase()}</Badge>
-                        {s.format && s.format !== FORMAT_URL && (
-                          <span
-                            className="text-[10px] text-muted-foreground font-mono max-w-[140px] truncate"
-                            title={`Line format: ${s.format}`}
-                          >
-                            {s.format}
-                          </span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <span className="flex items-center gap-1 text-sm">
-                        <Clock className="h-3 w-3" />
-                        {s.interval_minutes}m
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                      {formatDate(s.last_fetched_at)}
-                    </TableCell>
-                    <TableCell>
-                      <span className="font-semibold">{s.last_total.toLocaleString()}</span>
-                    </TableCell>
-                    <TableCell>
-                      <span className="font-semibold">{s.last_count.toLocaleString()}</span>
-                    </TableCell>
-                    <TableCell>
-                      {s.last_error ? (
-                        <span className="flex items-center gap-1 text-xs text-red-500" title={s.last_error}>
-                          <AlertCircle className="h-3 w-3 flex-shrink-0" />
-                          Error
-                        </span>
-                      ) : s.last_fetched_at ? (
-                        <span className="flex items-center gap-1 text-xs text-green-500">
-                          <CheckCircle2 className="h-3 w-3" />
-                          OK
-                        </span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {s.cleanup_enabled ? (
-                        <Badge variant="outline" className="text-xs" title="Delete proxies missing from fetch for this many days">
-                          {s.cleanup_days}d
-                        </Badge>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Switch
-                        checked={s.enabled}
-                        onCheckedChange={() => toggleEnabled(s)}
-                      />
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost" size="icon"
-                          onClick={() => handleFetch(s.id)}
-                          disabled={fetchingId === s.id}
-                          title="Fetch now"
-                        >
-                          {fetchingId === s.id
-                            ? <Loader2 className="h-4 w-4 animate-spin" />
-                            : <RefreshCw className="h-4 w-4" />}
-                        </Button>
-                        <Button
-                          variant="ghost" size="icon"
-                          onClick={() => openEdit(s)}
-                          title="Edit"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost" size="icon"
-                          onClick={() => handleDelete(s.id)}
-                          title="Delete"
-                          className="text-red-500 hover:text-red-600"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
+              ))}
+            </TableBody>
+          </Table>
+        )}
+        {withErrors > 0 && (
+          <div className="mt-6 space-y-1">
+            <p className="label">Last errors</p>
+            {sources
+              .filter((s) => s.last_error)
+              .map((s) => (
+                <p key={s.id} className="text-muted-foreground">
+                  <span className="text-foreground font-medium">{s.name}</span>
+                  <span className="ml-2 font-mono break-all">{s.last_error}</span>
+                </p>
+              ))}
+          </div>
+        )}
+      </Content>
 
-      {/* Add / Edit dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{editSource ? "Edit Source" : "Add Proxy Source"}</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-4 py-2">
-            <div className="flex flex-col gap-1.5">
-              <Label>Name</Label>
-              <Input
-                placeholder="e.g. Public Proxy List"
-                value={form.name}
-                onChange={e => setForm({ ...form, name: e.target.value })}
-              />
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[30rem]">
+          <form onSubmit={handleSave} className="space-y-4">
+            <DialogHeader>
+              <DialogTitle>{editSource ? "Edit source" : "Add source"}</DialogTitle>
+              <DialogDescription>
+                {editSource ? "Changes apply from the next scheduled fetch." : "The first fetch runs on the next scheduler tick, or now via “Fetch now”."}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-1.5">
+              <Label htmlFor="src-name">Name</Label>
+              <Input id="src-name" placeholder="Public HTTP list" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>URL (TXT file with one proxy per line)</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="src-url">URL</Label>
               <Input
+                id="src-url"
+                className="font-mono"
                 placeholder="https://example.com/proxies.txt"
+                required
                 value={form.url}
-                onChange={e => setForm({ ...form, url: e.target.value })}
+                onChange={(e) => setForm({ ...form, url: e.target.value })}
               />
+              <p className="text-muted-foreground text-[0.6875rem] leading-4">Plain text, one proxy per line in the format below.</p>
             </div>
-            <LineFormatField
-              value={form.format ?? FORMAT_URL}
-              onChange={format => setForm({ ...form, format })}
-            />
-            <div className="flex flex-col gap-1.5">
-              <Label>Protocol</Label>
-              <Select
-                value={form.protocol}
-                onValueChange={v => setForm({ ...form, protocol: v as any })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PROTOCOLS.map(p => (
-                    <SelectItem key={p} value={p}>{p.toUpperCase()}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Refresh interval (minutes)</Label>
-              <Input
-                type="number"
-                min={1}
-                value={form.interval_minutes}
-                onChange={e => setForm({ ...form, interval_minutes: parseInt(e.target.value) || 60 })}
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <Switch
-                id="src-enabled"
-                checked={form.enabled}
-                onCheckedChange={v => setForm({ ...form, enabled: v })}
-              />
-              <Label htmlFor="src-enabled">Enabled</Label>
-            </div>
-
-            {/* Soft auto-cleanup — per-source */}
-            <div className="border-t pt-4 flex flex-col gap-3">
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="src-cleanup"
-                  checked={!!form.cleanup_enabled}
-                  onCheckedChange={v => setForm({ ...form, cleanup_enabled: v })}
-                />
-                <Label htmlFor="src-cleanup">Auto-cleanup stale proxies</Label>
+            <LineFormatField id="src-format" value={form.format ?? FORMAT_URL} onChange={(format) => setForm({ ...form, format })} />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="src-protocol">Protocol</Label>
+                <Select value={form.protocol} onValueChange={(v) => setForm({ ...form, protocol: v as CreateSourceRequest["protocol"] })}>
+                  <SelectTrigger id="src-protocol" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PROTOCOLS.map((p) => (
+                      <SelectItem key={p} value={p}>
+                        {p.toUpperCase()}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-              <p className="text-xs text-muted-foreground -mt-1">
-                Delete proxies that have been missing from this source's fetch for longer than the threshold below.
-                Proxies still in the fetch response are never deleted.
-              </p>
+              <div className="space-y-1.5">
+                <Label htmlFor="src-interval">Fetch every (minutes)</Label>
+                <Input
+                  id="src-interval"
+                  type="number"
+                  min={1}
+                  value={form.interval_minutes}
+                  onChange={(e) => setForm({ ...form, interval_minutes: parseInt(e.target.value) || 60 })}
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="src-enabled" className="text-foreground">Enabled</Label>
+              <Switch id="src-enabled" checked={form.enabled} onCheckedChange={(v) => setForm({ ...form, enabled: v })} />
+            </div>
+            <div className="border-border space-y-3 border-t pt-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <Label htmlFor="src-cleanup" className="text-foreground">Remove stale proxies</Label>
+                  <p className="text-muted-foreground mt-1 text-[0.6875rem] leading-4">
+                    Delete proxies that this source stopped listing for longer than the threshold. Proxies still in the response are never deleted.
+                  </p>
+                </div>
+                <Switch id="src-cleanup" checked={!!form.cleanup_enabled} onCheckedChange={(v) => setForm({ ...form, cleanup_enabled: v })} />
+              </div>
               {form.cleanup_enabled && (
-                <div className="flex flex-col gap-1.5">
+                <div className="space-y-1.5">
                   <Label htmlFor="src-cleanup-days">Delete after (days)</Label>
                   <Input
                     id="src-cleanup-days"
@@ -410,24 +370,33 @@ export default function SourcesPage() {
                     min={1}
                     max={365}
                     value={form.cleanup_days ?? 7}
-                    onChange={e => setForm({
-                      ...form,
-                      cleanup_days: Math.max(1, Math.min(365, parseInt(e.target.value) || 7)),
-                    })}
+                    onChange={(e) => setForm({ ...form, cleanup_days: Math.max(1, Math.min(365, parseInt(e.target.value) || 7)) })}
                   />
                 </div>
               )}
             </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-              {editSource ? "Save Changes" : "Add Source"}
-            </Button>
-          </DialogFooter>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={saving}>{saving ? "Saving…" : editSource ? "Save changes" : "Add source"}</Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
-    </div>
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete “{deleteTarget?.name}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Scheduled fetches stop, and every proxy this source imported is deleted with it. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }

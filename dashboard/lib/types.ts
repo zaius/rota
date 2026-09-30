@@ -17,6 +17,7 @@ export interface Proxy {
   cooldown_until?: string
   cooldown_reason?: string
   username?: string
+  tags: string[]
   created_at: string
   updated_at: string
 }
@@ -116,6 +117,13 @@ export interface Settings {
     url: string
     status: number
     headers: string[]
+    strict_tls: boolean
+  }
+  proxy_cleanup: {
+    enabled: boolean
+    max_failed_days: number
+    min_success_rate: number
+    cleanup_interval_hours: number
   }
 }
 
@@ -137,13 +145,16 @@ export interface AddProxyRequest {
   protocol: Protocol
   username?: string
   password?: string
+  tags?: string[]
 }
 
+// Omitted credentials and tags keep their stored values; null or "" clears them.
 export interface UpdateProxyRequest {
   address?: string
   protocol?: Protocol
-  username?: string
-  password?: string
+  username?: string | null
+  password?: string | null
+  tags?: string[]
 }
 
 export interface BulkProxyRequest {
@@ -162,6 +173,14 @@ export interface BulkDeleteRequest {
   ids?: number[]
   all?: boolean
   filter?: ProxyFilter
+}
+
+export interface BulkTagRequest {
+  ids?: number[]
+  all?: boolean
+  filter?: ProxyFilter
+  add?: string[]
+  remove?: string[]
 }
 
 export interface BulkTestRequest {
@@ -388,6 +407,7 @@ export interface ProxyUser {
   max_retries: number
   inspect_tls: boolean
   tls_profile: TLSProfile
+  allow_proxy_export: boolean
   created_at: string
   updated_at: string
 }
@@ -401,6 +421,7 @@ export interface CreateProxyUserRequest {
   max_retries: number
   inspect_tls?: boolean
   tls_profile?: TLSProfile
+  allow_proxy_export?: boolean
 }
 
 export interface UpdateProxyUserRequest {
@@ -411,6 +432,7 @@ export interface UpdateProxyUserRequest {
   max_retries?: number
   inspect_tls?: boolean
   tls_profile?: TLSProfile
+  allow_proxy_export?: boolean
 }
 
 export interface CreatePoolRequest {

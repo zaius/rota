@@ -14,6 +14,7 @@ import (
 	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
 // ProxyTester is the subset of HealthChecker used by SourceService.
@@ -70,7 +71,7 @@ func (s *SourceService) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			s.fetchDueSources(ctx)
+			safeworker.Call(s.logger, "source_fetch", func() { s.fetchDueSources(ctx) })
 		case <-ctx.Done():
 			return
 		}

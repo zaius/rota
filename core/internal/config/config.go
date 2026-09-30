@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -26,10 +27,9 @@ type Config struct {
 	// data either way.
 	ClickHouse ClickHouseConfig
 
-	// JWTSecret signs dashboard session tokens. Leave empty to generate a
-	// random secret on each boot (fine for single-node dev, but logs everyone
-	// out on restart and cannot work behind more than one replica). Set a
-	// stable value (JWT_SECRET) in production / multi-replica deployments.
+	// JWTSecret, when set, signs dashboard session tokens in place of the key
+	// the server generates once and stores in the database. Set it only to
+	// manage or rotate the key yourself; changing it logs every session out.
 	JWTSecret string
 
 	// CORSAllowedOrigins lists browser origins allowed to call the API.
@@ -40,8 +40,9 @@ type Config struct {
 
 	// WebDir, if set (WEB_DIR), is a directory of built dashboard assets that the
 	// API server serves at "/" with SPA fallback — so the Go binary serves both
-	// the UI and the API on one port, with no separate Node/Next runtime. Empty
-	// in dev, where the dashboard runs under the Vite dev server.
+	// the UI and the API on one port, with no separate Node/Next runtime. It
+	// defaults to a "web" directory beside the executable, and is empty in dev,
+	// where the dashboard runs under the Vite dev server.
 	WebDir string
 
 	// TrustProxyHeaders controls whether X-Forwarded-For / X-Real-IP are used to
@@ -54,6 +55,10 @@ type Config struct {
 
 	// TLSInspect configures optional HTTPS interception (TLS_INSPECT_*).
 	TLSInspect TLSInspectConfig
+
+	// GeoIP selects local MaxMind databases for proxy geolocation in place of
+	// the ip-api.com web service (GEOIP_*, MAXMIND_*).
+	GeoIP GeoIPConfig
 
 	// MetricsEnabled controls the OpenTelemetry metrics pipeline: the
 	// Prometheus /metrics endpoint on the API port and, when the standard
@@ -104,6 +109,28 @@ func (t *TLSInspectConfig) Enabled() bool {
 	return t.CACertFile != "" && t.CAKeyFile != ""
 }
 
+// GeoIPConfig points geolocation at local MaxMind databases. With no City
+// database configured, lookups go to the ip-api.com web service instead.
+type GeoIPConfig struct {
+	// CityDB is a GeoLite2/GeoIP2 City .mmdb for country, region, city and
+	// coordinates (GEOIP_CITY_DB).
+	CityDB string
+	// ASNDB is an optional GeoLite2 ASN .mmdb; its AS organization fills the
+	// ISP that pool ISP filters match (GEOIP_ASN_DB).
+	ASNDB string
+	// LicenseKey enables downloading the databases from MaxMind when they are
+	// missing or older than UpdateHours (MAXMIND_LICENSE_KEY). AccountID
+	// selects MaxMind's authenticated download endpoint (MAXMIND_ACCOUNT_ID).
+	LicenseKey string
+	AccountID  string
+	// UpdateHours is the download age limit (GEOIP_UPDATE_HOURS, default 168).
+	UpdateHours int
+}
+
+// defaultGeoIPDir holds downloaded databases when the environment names no
+// database paths.
+const defaultGeoIPDir = "data/geoip"
+
 // ClickHouseConfig holds the ClickHouse connection settings (native protocol).
 type ClickHouseConfig struct {
 	Host     string
@@ -121,8 +148,12 @@ func (d *DatabaseConfig) DSN() string {
 	)
 }
 
-// Load reads configuration from environment variables
+// Load reads configuration from environment variables. For runs outside
+// Docker, it first reads a .env file in the working directory; variables
+// already set in the environment take precedence over it.
 func Load() (*Config, error) {
+	loadDotEnv(".env")
+
 	cfg := &Config{
 		ProxyPort: getEnvAsInt("PROXY_PORT", 8000),
 		APIPort:   getEnvAsInt("API_PORT", 8001),
@@ -148,7 +179,7 @@ func Load() (*Config, error) {
 		},
 
 		CORSAllowedOrigins: getEnvAsSlice("CORS_ALLOWED_ORIGINS", []string{"*"}),
-		WebDir:             getEnv("WEB_DIR", ""),
+		WebDir:             getEnv("WEB_DIR", defaultWebDir()),
 		TrustProxyHeaders:  getEnvAsBool("TRUST_PROXY_HEADERS", false),
 
 		TLSInspect: TLSInspectConfig{
@@ -157,12 +188,31 @@ func Load() (*Config, error) {
 			BypassDomains: getEnvAsSlice("TLS_INSPECT_BYPASS_DOMAINS", nil),
 		},
 
+		GeoIP: GeoIPConfig{
+			CityDB:      getEnv("GEOIP_CITY_DB", ""),
+			ASNDB:       getEnv("GEOIP_ASN_DB", ""),
+			LicenseKey:  getEnv("MAXMIND_LICENSE_KEY", ""),
+			AccountID:   getEnv("MAXMIND_ACCOUNT_ID", ""),
+			UpdateHours: getEnvAsInt("GEOIP_UPDATE_HOURS", 168),
+		},
+
 		MetricsEnabled:     getEnvAsBool("METRICS_ENABLED", true),
 		MetricsBearerToken: getEnv("METRICS_BEARER_TOKEN", ""),
 
 		AuthIPMaxAttempts:   getEnvAsInt("AUTH_IP_MAX_ATTEMPTS", 10),
 		AuthIPWindowMinutes: getEnvAsInt("AUTH_IP_WINDOW_MINUTES", 10),
 		AuthIPBlockMinutes:  getEnvAsInt("AUTH_IP_BLOCK_MINUTES", 30),
+	}
+
+	// A license key alone is enough: download both databases to the default
+	// location.
+	if cfg.GeoIP.LicenseKey != "" {
+		if cfg.GeoIP.CityDB == "" {
+			cfg.GeoIP.CityDB = defaultGeoIPDir + "/GeoLite2-City.mmdb"
+		}
+		if cfg.GeoIP.ASNDB == "" {
+			cfg.GeoIP.ASNDB = defaultGeoIPDir + "/GeoLite2-ASN.mmdb"
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -206,6 +256,14 @@ func (c *Config) Validate() error {
 	// through absent data.
 	if (c.TLSInspect.CACertFile == "") != (c.TLSInspect.CAKeyFile == "") {
 		return fmt.Errorf("TLS_INSPECT_CA_CERT and TLS_INSPECT_CA_KEY must be set together")
+	}
+
+	// An ASN database only adds ISP names to City lookups.
+	if c.GeoIP.ASNDB != "" && c.GeoIP.CityDB == "" {
+		return fmt.Errorf("GEOIP_ASN_DB requires GEOIP_CITY_DB")
+	}
+	if c.GeoIP.UpdateHours < 1 {
+		return fmt.Errorf("GEOIP_UPDATE_HOURS must be positive")
 	}
 
 	return nil
@@ -276,4 +334,64 @@ func getEnvAsSlice(key string, defaultValue []string) []string {
 		return defaultValue
 	}
 	return result
+}
+
+// defaultWebDir returns the "web" directory beside the executable when there
+// is one — where release archives put the dashboard — so a standalone binary
+// serves it without configuration.
+func defaultWebDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(filepath.Dir(exe), "web")
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return dir
+	}
+	return ""
+}
+
+// loadDotEnv sets KEY=VALUE pairs from path for keys the environment leaves
+// unset or empty. It reads the subset of the format Docker Compose does: it
+// skips blank lines and # comments, allows an "export " prefix, keeps
+// everything between a quoted value's quotes, and ends an unquoted value at a
+// " #" comment. It ignores a missing file.
+func loadDotEnv(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			continue
+		}
+		value = dotEnvValue(strings.TrimSpace(value))
+		// Empty counts as unset, matching getEnv.
+		if os.Getenv(key) != "" {
+			continue
+		}
+		os.Setenv(key, value)
+	}
+}
+
+// dotEnvValue unquotes a .env value or strips its trailing comment.
+func dotEnvValue(v string) string {
+	if len(v) > 0 && (v[0] == '"' || v[0] == '\'') {
+		if end := strings.IndexByte(v[1:], v[0]); end >= 0 {
+			return v[1 : end+1]
+		}
+	}
+	for i := 1; i < len(v); i++ {
+		if v[i] == '#' && (v[i-1] == ' ' || v[i-1] == '\t') {
+			return strings.TrimSpace(v[:i])
+		}
+	}
+	return v
 }

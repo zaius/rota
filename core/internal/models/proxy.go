@@ -96,13 +96,17 @@ type CreateProxyRequest struct {
 	SourceID *int     `json:"source_id,omitempty"` // set internally when importing from a source
 }
 
-// UpdateProxyRequest represents a request to update a proxy
+// UpdateProxyRequest represents a request to update a proxy. An omitted
+// address or protocol keeps the stored value. Credentials and tags are partial
+// too: omitted keeps them, null or empty clears them. The dashboard never
+// reads a stored password back, so an edit that doesn't mention it must not
+// wipe it.
 type UpdateProxyRequest struct {
-	Address  string   `json:"address"`
-	Protocol string   `json:"protocol" validate:"omitempty,oneof=http https socks4 socks4a socks5"`
-	Username *string  `json:"username,omitempty"`
-	Password *string  `json:"password,omitempty"`
-	Tags     []string `json:"tags,omitempty"`
+	Address  string             `json:"address"`
+	Protocol string             `json:"protocol" validate:"omitempty,oneof=http https socks4 socks4a socks5"`
+	Username Optional[string]   `json:"username"`
+	Password Optional[string]   `json:"password"`
+	Tags     Optional[[]string] `json:"tags"`
 }
 
 // BulkCreateResult is the result of a bulk proxy import
@@ -142,6 +146,16 @@ type BulkDeleteProxyRequest struct {
 	IDs    []int        `json:"ids,omitempty"`
 	All    bool         `json:"all,omitempty"`
 	Filter *ProxyFilter `json:"filter,omitempty"`
+}
+
+// BulkTagProxyRequest adds and removes tags on multiple proxies, either an
+// explicit list of IDs or every proxy matching a filter (All=true).
+type BulkTagProxyRequest struct {
+	IDs    []int        `json:"ids,omitempty"`
+	All    bool         `json:"all,omitempty"`
+	Filter *ProxyFilter `json:"filter,omitempty"`
+	Add    []string     `json:"add,omitempty"`
+	Remove []string     `json:"remove,omitempty"`
 }
 
 // BulkTestProxyRequest represents a request to test multiple proxies, either an

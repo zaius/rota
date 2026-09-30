@@ -6,6 +6,7 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/repository"
+	"github.com/alpkeskin/rota/core/internal/version"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
@@ -38,7 +39,7 @@ func NewHealthHandler(db *database.DB, proxyRepo *repository.ProxyRepository, lo
 func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"status":  "healthy",
-		"version": "1.0.0",
+		"version": version.Version,
 		"uptime":  int(time.Since(startTime).Seconds()),
 	}
 
@@ -79,7 +80,7 @@ func (h *HealthHandler) Status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]interface{}{
-		"version": "1.0.0",
+		"version": version.Version,
 		"uptime":  int(time.Since(startTime).Seconds()),
 		"proxies": map[string]interface{}{
 			"total":  proxyStats["total"],

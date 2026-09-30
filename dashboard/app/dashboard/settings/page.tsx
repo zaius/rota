@@ -1,30 +1,95 @@
-
 import * as React from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Eye, EyeOff } from "lucide-react"
+import { toast } from "@/lib/toast"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import {
-  RotateCw,
-  Activity,
-  Save,
-  Loader2,
-  KeyRound,
-  Eye,
-  EyeOff,
-} from "lucide-react"
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { PageHeader, Section, LoadingLine } from "@/components/page-header"
 import { api } from "@/lib/api"
-import { Settings } from "@/lib/types"
-import { toast } from "sonner"
+import type { Settings } from "@/lib/types"
+import { cn, errorMessage } from "@/lib/utils"
+
+/** Label + control + one-line hint, in a form grid. */
+function Field({
+  id,
+  label,
+  hint,
+  children,
+  className,
+}: {
+  id?: string
+  label: React.ReactNode
+  hint?: React.ReactNode
+  children: React.ReactNode
+  className?: string
+}) {
+  return (
+    <div className={cn("space-y-1.5", className)}>
+      <Label htmlFor={id}>{label}</Label>
+      {children}
+      {hint && <p className="text-muted-foreground text-[0.6875rem] leading-4">{hint}</p>}
+    </div>
+  )
+}
+
+/** Boolean setting as a row: what it does on the left, the switch on the right. */
+function SwitchRow({
+  id,
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  id: string
+  label: React.ReactNode
+  hint?: React.ReactNode
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <div className="border-border flex items-start justify-between gap-6 border-b py-3 last:border-b-0">
+      <div className="min-w-0">
+        <Label htmlFor={id} className="text-foreground cursor-pointer">
+          {label}
+        </Label>
+        {hint && <p className="text-muted-foreground mt-1 text-[0.6875rem] leading-4">{hint}</p>}
+      </div>
+      <Switch id={id} checked={checked} onCheckedChange={onChange} />
+    </div>
+  )
+}
+
+const grid = "grid gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3"
+
+// num parses a numeric input, keeping fallback while the field is empty or
+// mid-edit.
+const num = (v: string, fallback = 0) => {
+  const n = parseInt(v)
+  return Number.isNaN(n) ? fallback : n
+}
 
 export default function SettingsPage() {
   const [settings, setSettings] = React.useState<Settings | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
   const [isSaving, setIsSaving] = React.useState(false)
+  const [resetOpen, setResetOpen] = React.useState(false)
+  // Raw textarea text; the header list parses from it on change so a trailing
+  // newline survives typing.
+  const [headersText, setHeadersText] = React.useState<string | null>(null)
 
-  // Admin account state
+  // Admin account
   const [adminUsername, setAdminUsername] = React.useState("")
   const [newUsername, setNewUsername] = React.useState("")
   const [currentPass, setCurrentPass] = React.useState("")
@@ -36,44 +101,42 @@ export default function SettingsPage() {
   React.useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const [data, adminInfo] = await Promise.all([
-          api.getSettings(),
-          api.getAdminInfo(),
-        ])
+        const [data, adminInfo] = await Promise.all([api.getSettings(), api.getAdminInfo()])
         setSettings(data)
         setAdminUsername(adminInfo.username)
         setNewUsername(adminInfo.username)
       } catch (error) {
-        console.error("Failed to fetch settings:", error)
+        toast.error("Failed to load settings", errorMessage(error, "Unknown error"))
       } finally {
         setIsLoading(false)
       }
     }
-
     fetchSettings()
   }, [])
 
-  const handleChangePassword = async () => {
-    if (!currentPass) { toast.error("Enter your current password"); return }
-    if (!newPass) { toast.error("Enter a new password"); return }
-    if (newPass.length < 6) { toast.error("New password must be at least 6 characters"); return }
-    if (newPass !== confirmPass) { toast.error("Passwords don't match"); return }
+  const patch = <K extends keyof Settings>(key: K, value: Partial<Settings[K]>) =>
+    setSettings((s) => (s ? { ...s, [key]: { ...s[key], ...value } } : s))
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!currentPass) return toast.error("Enter your current password")
+    if (!newPass) return toast.error("Enter a new password")
+    if (newPass.length < 6) return toast.error("New password must be at least 6 characters")
+    if (newPass !== confirmPass) return toast.error("Passwords don't match")
 
     setChangingPass(true)
     try {
-      const opts: any = { current_password: currentPass, new_password: newPass }
-      if (newUsername && newUsername !== adminUsername) {
-        opts.new_username = newUsername
-      }
+      const opts: Parameters<typeof api.changePassword>[0] = { current_password: currentPass, new_password: newPass }
+      if (newUsername && newUsername !== adminUsername) opts.new_username = newUsername
       const res = await api.changePassword(opts)
       setAdminUsername(res.username)
       setNewUsername(res.username)
       setCurrentPass("")
       setNewPass("")
       setConfirmPass("")
-      toast.success("Credentials updated successfully")
-    } catch (e: any) {
-      toast.error(e.message || "Failed to change password")
+      toast.success("Credentials updated")
+    } catch (err) {
+      toast.error("Failed to change password", errorMessage(err, "Unknown error"))
     } finally {
       setChangingPass(false)
     }
@@ -81,297 +144,263 @@ export default function SettingsPage() {
 
   const handleSave = async () => {
     if (!settings) return
-
     try {
       setIsSaving(true)
       await api.updateSettings(settings)
-      toast.success("Settings saved successfully")
-    } catch (error) {
-      console.error("Failed to save settings:", error)
-      toast.error("Failed to save settings")
+      toast.success("Settings saved")
+    } catch (err) {
+      toast.error("Failed to save settings", errorMessage(err, "Unknown error"))
     } finally {
       setIsSaving(false)
     }
   }
 
   const handleReset = async () => {
-    if (!confirm("Are you sure you want to reset all settings to defaults?")) return
-
     try {
       setIsSaving(true)
       const response = await api.resetSettings()
       setSettings(response.config)
+      setHeadersText(null)
       toast.success("Settings reset to defaults")
-    } catch (error) {
-      console.error("Failed to reset settings:", error)
-      toast.error("Failed to reset settings")
+    } catch (err) {
+      toast.error("Failed to reset settings", errorMessage(err, "Unknown error"))
     } finally {
       setIsSaving(false)
+      setResetOpen(false)
     }
   }
 
-  if (isLoading || !settings) {
-    return (
-      <div className="flex items-center justify-center h-96">
-        <Loader2 className="h-8 w-8 animate-spin" />
-      </div>
-    )
-  }
+  if (isLoading) return <LoadingLine />
+  if (!settings) return <LoadingLine>Settings could not be loaded. Check that the core API is reachable, then reload.</LoadingLine>
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
-          <p className="text-muted-foreground">
-            Configure your Rota proxy rotation system
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="lg" onClick={handleReset} disabled={isSaving}>
-            Reset to Defaults
-          </Button>
-          <Button size="lg" onClick={handleSave} disabled={isSaving}>
-            {isSaving ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              <>
-                <Save className="mr-2 h-4 w-4" />
-                Save Configuration
-              </>
-            )}
-          </Button>
-        </div>
-      </div>
+    <>
+      <PageHeader
+        title="Settings"
+        description="Runtime configuration of the core. Saving applies everything below at once; the admin account section saves on its own."
+      >
+        <Button variant="outline" onClick={() => setResetOpen(true)} disabled={isSaving}>
+          Reset to defaults
+        </Button>
+        <Button onClick={handleSave} disabled={isSaving}>
+          {isSaving ? "Saving…" : "Save settings"}
+        </Button>
+      </PageHeader>
 
-      {/* Admin Account */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <KeyRound className="h-5 w-5" />
-            <CardTitle>Admin Account</CardTitle>
-          </div>
-          <CardDescription>
-            Change the dashboard login credentials. Current user: <strong>{adminUsername}</strong>
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 max-w-md">
-            <div className="space-y-1.5">
-              <Label>Username</Label>
+      {/* Admin account */}
+      <Section
+        title="Admin account"
+        description={
+          <>
+            Dashboard sign-in. Signed in as <span className="font-mono">{adminUsername}</span>.
+          </>
+        }
+      >
+        <form onSubmit={handleChangePassword} className="max-w-2xl">
+          <div className={grid}>
+            <Field id="admin-username" label="Username" hint="Leave unchanged to keep the current one.">
               <Input
+                id="admin-username"
+                className="font-mono"
                 value={newUsername}
-                onChange={e => setNewUsername(e.target.value)}
-                placeholder="New username (leave unchanged to keep)"
+                onChange={(e) => setNewUsername(e.target.value)}
+                autoComplete="username"
               />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Current password <span className="text-destructive">*</span></Label>
+            </Field>
+            <Field id="admin-current" label="Current password" hint="Required to confirm any change.">
               <div className="relative">
                 <Input
+                  id="admin-current"
                   type={showPass ? "text" : "password"}
                   value={currentPass}
-                  onChange={e => setCurrentPass(e.target.value)}
-                  placeholder="Required to confirm any change"
-                  className="pr-10"
+                  onChange={(e) => setCurrentPass(e.target.value)}
+                  className="pr-8"
+                  autoComplete="current-password"
                 />
                 <button
                   type="button"
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  onClick={() => setShowPass(v => !v)}
+                  className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
+                  onClick={() => setShowPass((v) => !v)}
+                  aria-label={showPass ? "Hide passwords" : "Show passwords"}
                 >
-                  {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  {showPass ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
                 </button>
               </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label>New password</Label>
+            </Field>
+            <div className="hidden lg:block" />
+            <Field id="admin-new" label="New password" hint="At least 6 characters.">
+              <Input id="admin-new" type={showPass ? "text" : "password"} value={newPass} onChange={(e) => setNewPass(e.target.value)} autoComplete="new-password" />
+            </Field>
+            <Field id="admin-confirm" label="Confirm new password">
               <Input
-                type={showPass ? "text" : "password"}
-                value={newPass}
-                onChange={e => setNewPass(e.target.value)}
-                placeholder="Min 6 characters"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Confirm new password</Label>
-              <Input
+                id="admin-confirm"
                 type={showPass ? "text" : "password"}
                 value={confirmPass}
-                onChange={e => setConfirmPass(e.target.value)}
-                placeholder="Repeat new password"
+                onChange={(e) => setConfirmPass(e.target.value)}
+                autoComplete="new-password"
               />
-            </div>
-            <Button
-              onClick={handleChangePassword}
-              disabled={changingPass || !currentPass || !newPass}
-              className="w-fit"
-            >
-              {changingPass
-                ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving…</>
-                : <><KeyRound className="mr-2 h-4 w-4" />Update credentials</>}
-            </Button>
+            </Field>
           </div>
-        </CardContent>
-      </Card>
+          <Button type="submit" variant="outline" className="mt-4" disabled={changingPass || !currentPass || !newPass}>
+            {changingPass ? "Updating…" : "Update credentials"}
+          </Button>
+        </form>
+      </Section>
 
-      {/* Upstream request behaviour — rotation strategy itself is per pool */}
-      <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <RotateCw className="h-5 w-5" />
-              <CardTitle>Upstream Requests</CardTitle>
-            </div>
-            <CardDescription>
-              Request handling applied to every pool. Rotation strategy is configured per pool on the Proxy Pools page.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-6 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="rotation-timeout">Timeout (seconds)</Label>
-                <Input
-                  id="rotation-timeout"
-                  type="number"
-                  value={settings.rotation.timeout}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      rotation: { ...settings.rotation, timeout: parseInt(e.target.value) },
-                    })
-                  }
-                />
-              </div>
+      {/* Upstream requests: rotation strategy itself is per pool */}
+      <Section title="Upstream requests" description="Request handling applied to every pool. Rotation strategy is set per pool on the Pools page.">
+        <div className={grid}>
+          <Field id="rotation-timeout" label="Timeout (seconds)" hint="Per upstream attempt.">
+            <Input
+              id="rotation-timeout"
+              type="number"
+              min={1}
+              value={settings.rotation.timeout}
+              onChange={(e) => patch("rotation", { timeout: num(e.target.value) })}
+            />
+          </Field>
+        </div>
+        <div className="mt-4 max-w-2xl">
+          <SwitchRow
+            id="follow-redirect"
+            label="Follow redirects"
+            hint="Resolve 3xx responses upstream instead of passing them to the client."
+            checked={settings.rotation.follow_redirect}
+            onChange={(v) => patch("rotation", { follow_redirect: v })}
+          />
+        </div>
+      </Section>
 
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label htmlFor="follow-redirect">Follow Redirect</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Follow HTTP redirections
-                  </p>
-                </div>
-                <Switch
-                  id="follow-redirect"
-                  checked={settings.rotation.follow_redirect}
-                  onCheckedChange={(checked) =>
-                    setSettings({
-                      ...settings,
-                      rotation: { ...settings.rotation, follow_redirect: checked },
-                    })
-                  }
-                />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Health check */}
+      <Section title="Health check" description="The GET each proxy must pass to count as active.">
+        <div className={grid}>
+          <Field id="healthcheck-url" label="URL" hint="GET only." className="sm:col-span-2">
+            <Input
+              id="healthcheck-url"
+              type="url"
+              className="font-mono"
+              value={settings.healthcheck.url}
+              onChange={(e) => patch("healthcheck", { url: e.target.value })}
+            />
+          </Field>
+          <Field id="healthcheck-status" label="Expected status">
+            <Input
+              id="healthcheck-status"
+              type="number"
+              min={100}
+              max={599}
+              value={settings.healthcheck.status}
+              onChange={(e) => patch("healthcheck", { status: num(e.target.value, 200) })}
+            />
+          </Field>
+          <Field id="healthcheck-timeout" label="Timeout (seconds)">
+            <Input
+              id="healthcheck-timeout"
+              type="number"
+              min={1}
+              value={settings.healthcheck.timeout}
+              onChange={(e) => patch("healthcheck", { timeout: num(e.target.value) })}
+            />
+          </Field>
+          <Field id="healthcheck-workers" label="Workers" hint="Concurrent checks.">
+            <Input
+              id="healthcheck-workers"
+              type="number"
+              min={1}
+              value={settings.healthcheck.workers}
+              onChange={(e) => patch("healthcheck", { workers: num(e.target.value) })}
+            />
+          </Field>
+          <Field id="healthcheck-headers" label="Headers" hint="One per line, as Key: Value." className="sm:col-span-2 lg:col-span-3">
+            <Textarea
+              id="healthcheck-headers"
+              rows={3}
+              className="max-w-2xl font-mono text-[0.75rem]"
+              placeholder="User-Agent: Rota/1.0"
+              value={headersText ?? settings.healthcheck.headers.join("\n")}
+              onChange={(e) => {
+                setHeadersText(e.target.value)
+                patch("healthcheck", { headers: e.target.value.split("\n").filter((h) => h.trim()) })
+              }}
+            />
+          </Field>
+        </div>
+        <div className="mt-4 max-w-2xl">
+          <SwitchRow
+            id="healthcheck-strict-tls"
+            label="Strict TLS"
+            hint="Fail proxies that present an expired or untrusted certificate for the check URL."
+            checked={settings.healthcheck.strict_tls ?? false}
+            onChange={(v) => patch("healthcheck", { strict_tls: v })}
+          />
+        </div>
+      </Section>
 
-      <div className="grid gap-4">
-        {/* Health Check Settings */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Activity className="h-5 w-5" />
-              <CardTitle>Health Check</CardTitle>
-            </div>
-            <CardDescription>
-              Configure proxy health monitoring
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="healthcheck-timeout">Timeout (seconds)</Label>
+      {/* Proxy cleanup */}
+      <Section
+        title="Proxy cleanup"
+        description="Periodic removal of proxies that stay dead or keep failing. Deleted proxies leave every pool and come back only if a source lists them again."
+        className="border-b-0"
+      >
+        <div className="max-w-2xl">
+          <SwitchRow
+            id="cleanup-enabled"
+            label="Remove dead proxies automatically"
+            hint="Off, the inventory only shrinks when you delete proxies yourself or a source's own cleanup runs."
+            checked={settings.proxy_cleanup.enabled}
+            onChange={(v) => patch("proxy_cleanup", { enabled: v })}
+          />
+        </div>
+        {settings.proxy_cleanup.enabled && (
+          <div className={cn(grid, "mt-4")}>
+            <Field id="cleanup-failed-days" label="Failed for (days)" hint="Delete failed proxies not checked for this long. 0 disables.">
               <Input
-                id="healthcheck-timeout"
+                id="cleanup-failed-days"
                 type="number"
-                value={settings.healthcheck.timeout}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    healthcheck: { ...settings.healthcheck, timeout: parseInt(e.target.value) },
-                  })
-                }
+                min={0}
+                value={settings.proxy_cleanup.max_failed_days}
+                onChange={(e) => patch("proxy_cleanup", { max_failed_days: num(e.target.value) })}
               />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="healthcheck-workers">Number of Workers</Label>
+            </Field>
+            <Field
+              id="cleanup-min-success"
+              label="Min success rate (%)"
+              hint="Delete proxies below this rate over the last 7 days, with at least 10 requests. 0 disables."
+            >
               <Input
-                id="healthcheck-workers"
+                id="cleanup-min-success"
                 type="number"
-                value={settings.healthcheck.workers}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    healthcheck: { ...settings.healthcheck, workers: parseInt(e.target.value) },
-                  })
-                }
+                min={0}
+                max={100}
+                value={settings.proxy_cleanup.min_success_rate}
+                onChange={(e) => patch("proxy_cleanup", { min_success_rate: parseFloat(e.target.value) || 0 })}
               />
-              <p className="text-xs text-muted-foreground">
-                Number of concurrent workers to check proxies
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="healthcheck-url">Health Check URL</Label>
+            </Field>
+            <Field id="cleanup-interval" label="Run every (hours)" hint="0 uses the default of 24 hours.">
               <Input
-                id="healthcheck-url"
-                type="url"
-                value={settings.healthcheck.url}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    healthcheck: { ...settings.healthcheck, url: e.target.value },
-                  })
-                }
-              />
-              <p className="text-xs text-muted-foreground">
-                Only GET method is supported
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="healthcheck-status">Expected Status Code</Label>
-              <Input
-                id="healthcheck-status"
+                id="cleanup-interval"
                 type="number"
-                value={settings.healthcheck.status}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    healthcheck: { ...settings.healthcheck, status: parseInt(e.target.value) },
-                  })
-                }
+                min={0}
+                value={settings.proxy_cleanup.cleanup_interval_hours}
+                onChange={(e) => patch("proxy_cleanup", { cleanup_interval_hours: num(e.target.value) })}
               />
-            </div>
+            </Field>
+          </div>
+        )}
+      </Section>
 
-            <div className="space-y-2">
-              <Label htmlFor="healthcheck-headers">Headers</Label>
-              <Textarea
-                id="healthcheck-headers"
-                placeholder="Content-Type: application/json&#10;User-Agent: Rota/1.0"
-                value={settings.healthcheck.headers.join("\n")}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    healthcheck: {
-                      ...settings.healthcheck,
-                      headers: e.target.value.split("\n").filter((h) => h.trim()),
-                    },
-                  })
-                }
-                rows={4}
-                className="font-mono text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                One header per line in format: Key: Value
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+      <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset every setting to its default?</AlertDialogTitle>
+            <AlertDialogDescription>The core switches to defaults immediately. The admin account and proxy users are not touched.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleReset}>Reset</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }

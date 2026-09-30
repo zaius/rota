@@ -271,6 +271,36 @@ func (r *PoolRepository) GetProxies(ctx context.Context, poolID int) ([]models.P
 	return proxies, nil
 }
 
+// WorkingProxies returns a pool's proxies with their credentials, fastest
+// first; proxies with no latency measured yet come last. Unless all is true,
+// it lists only active proxies outside a cooldown. limit <= 0 means no limit.
+func (r *PoolRepository) WorkingProxies(ctx context.Context, poolID, limit int, all bool) ([]models.Proxy, error) {
+	query := `
+		SELECT p.id, p.address, p.protocol, p.username, p.password, p.status
+		FROM pool_proxies ppm
+		JOIN proxies p ON p.id = ppm.proxy_id
+		WHERE ppm.pool_id = $1
+		  AND ($2 OR (p.status = 'active' AND (p.cooldown_until IS NULL OR p.cooldown_until < NOW())))
+		ORDER BY p.avg_response_time = 0, p.avg_response_time, p.address
+		LIMIT NULLIF($3, 0)
+	`
+	rows, err := r.db.Pool.Query(ctx, query, poolID, all, max(limit, 0))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list working proxies: %w", err)
+	}
+	defer rows.Close()
+
+	proxies := []models.Proxy{}
+	for rows.Next() {
+		var p models.Proxy
+		if err := rows.Scan(&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan working proxy: %w", err)
+		}
+		proxies = append(proxies, p)
+	}
+	return proxies, rows.Err()
+}
+
 // AddProxies adds proxy IDs to a pool (idempotent)
 func (r *PoolRepository) AddProxies(ctx context.Context, poolID int, proxyIDs []int) error {
 	if len(proxyIDs) == 0 {

@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 
+	"github.com/alpkeskin/rota/core/internal/version"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
@@ -119,12 +120,20 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 
 // buildResource describes this process to metrics backends. The env detector
 // in resource.Default honors OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES; the
-// service name only falls back to "rota" when the deployer set neither.
+// service name only falls back to "rota", and the version to the build's own,
+// when the deployer set neither.
 func buildResource() (*resource.Resource, error) {
 	res := resource.Default()
-	if os.Getenv("OTEL_SERVICE_NAME") == "" &&
-		!strings.Contains(os.Getenv("OTEL_RESOURCE_ATTRIBUTES"), "service.name=") {
+	attrs := os.Getenv("OTEL_RESOURCE_ATTRIBUTES")
+	if os.Getenv("OTEL_SERVICE_NAME") == "" && !strings.Contains(attrs, "service.name=") {
 		merged, err := resource.Merge(res, resource.NewSchemaless(semconv.ServiceName("rota")))
+		if err != nil {
+			return nil, err
+		}
+		res = merged
+	}
+	if !strings.Contains(attrs, "service.version=") {
+		merged, err := resource.Merge(res, resource.NewSchemaless(semconv.ServiceVersion(version.Version)))
 		if err != nil {
 			return nil, err
 		}

@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -310,6 +311,54 @@ func (h *ProxyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// BulkTag adds and removes tags on many proxies in one statement.
+func (h *ProxyHandler) BulkTag(w http.ResponseWriter, r *http.Request) {
+	var req models.BulkTagProxyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if !req.All && len(req.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "At least one proxy ID is required")
+		return
+	}
+	add, remove := normalizeTags(req.Add), normalizeTags(req.Remove)
+	if len(add) == 0 && len(remove) == 0 {
+		writeError(w, http.StatusBadRequest, "At least one tag to add or remove is required")
+		return
+	}
+
+	var filter *models.ProxyFilter
+	if req.All {
+		filter = &models.ProxyFilter{}
+		if req.Filter != nil {
+			filter = req.Filter
+		}
+	}
+	updated, err := h.proxyRepo.BulkUpdateTags(r.Context(), req.IDs, filter, add, remove)
+	if err != nil {
+		h.logger.Error("failed to bulk update proxy tags", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to update proxy tags")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"updated": updated,
+		"message": fmt.Sprintf("Updated tags on %d proxies", updated),
+	})
+}
+
+// normalizeTags trims tags and drops empty ones.
+func normalizeTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // BulkDelete handles bulk proxy deletion

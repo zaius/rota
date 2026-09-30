@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
@@ -188,4 +189,41 @@ func (b *pgTestBackend) VerifyRetentionApplied(t *testing.T, cfg RetentionConfig
 	}
 	assertRows("proxy_requests", wantRequests)
 	assertRows("proxy_tunnels", wantTunnels)
+}
+
+func TestIntegration_PostgresBatchSkipsDeletedProxies(t *testing.T) {
+	b, ok := newTestBackend(t).(*pgTestBackend)
+	if !ok {
+		t.Skip("Postgres foreign keys")
+	}
+	ctx := context.Background()
+	proxyID := b.SeedProxy(t, "127.0.0.1:9205")
+	var missingID int
+	if err := b.db.Pool.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0) + 1000 FROM proxies`).Scan(&missingID); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	err := b.store.InsertRequests(ctx, []RequestEvent{
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9205", Method: "GET", Success: true, Timestamp: now},
+		{ProxyID: missingID, ProxyAddress: "127.0.0.1:1", Method: "GET", Success: true, Timestamp: now},
+	})
+	if err != nil {
+		t.Fatalf("InsertRequests with a deleted proxy: %v", err)
+	}
+	err = b.store.InsertTunnels(ctx, []TunnelEvent{
+		{ProxyID: missingID, ProxyAddress: "127.0.0.1:1", Host: "a.example:443", OpenedAt: now},
+		{ProxyID: proxyID, ProxyAddress: "127.0.0.1:9205", Host: "b.example:443", OpenedAt: now},
+	})
+	if err != nil {
+		t.Fatalf("InsertTunnels with a deleted proxy: %v", err)
+	}
+
+	var requests, tunnels int
+	if err := b.db.Pool.QueryRow(ctx, `SELECT (SELECT COUNT(*) FROM proxy_requests), (SELECT COUNT(*) FROM proxy_tunnels)`).Scan(&requests, &tunnels); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || tunnels != 1 {
+		t.Errorf("stored %d requests and %d tunnels, want the 1 of each with a live proxy", requests, tunnels)
+	}
 }

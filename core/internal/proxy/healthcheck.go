@@ -2,8 +2,6 @@ package proxy
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,10 +14,15 @@ import (
 	"github.com/gammazero/workerpool"
 )
 
+// settingsSource reads the stored settings.
+type settingsSource interface {
+	GetAll(ctx context.Context) (*models.Settings, error)
+}
+
 // HealthChecker manages proxy health checking
 type HealthChecker struct {
 	proxyRepo    *repository.ProxyRepository
-	settingsRepo *repository.SettingsRepository
+	settingsRepo settingsSource
 	tracker      *UsageTracker
 	logger       *logger.Logger
 
@@ -85,8 +88,11 @@ func (h *HealthChecker) reloadSettings(ctx context.Context) (*models.HealthCheck
 	return hc, nil
 }
 
-// CheckProxy tests a single proxy using the configured health-check timeout.
+// CheckProxy tests a single proxy using the current health-check settings.
 func (h *HealthChecker) CheckProxy(ctx context.Context, proxy *models.Proxy) (*models.ProxyTestResult, error) {
+	if _, err := h.reloadSettings(ctx); err != nil {
+		return nil, err
+	}
 	return h.checkProxy(ctx, proxy, 0)
 }
 
@@ -121,23 +127,12 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 		result.Status = "failed"
 		errMsg := fmt.Sprintf("failed to create transport: %v", err)
 		result.Error = &errMsg
+		h.recordResult(proxy.ID, false, int(time.Since(startTime).Milliseconds()), errMsg)
 		return result, nil
 	}
 	defer transport.CloseIdleConnections()
 
-	// Override TLS config for health checks to be maximally permissive
-	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{}
-	}
-	transport.TLSClientConfig.InsecureSkipVerify = true
-	transport.TLSClientConfig.MinVersion = 0     // Allow all TLS versions including SSLv3
-	transport.TLSClientConfig.MaxVersion = 0     // No maximum version restriction
-	transport.TLSClientConfig.CipherSuites = nil // Accept all cipher suites
-	// This callback allows us to accept even unparseable certificates
-	transport.TLSClientConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-		// Always return nil to accept any certificate, even malformed ones
-		return nil
-	}
+	ConfigureCheckTLS(transport, proxy, settings.StrictTLS)
 
 	client := &http.Client{
 		Transport: transport,
@@ -173,7 +168,11 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 
 		// Make TLS errors more user-friendly
 		if strings.Contains(errMsg, "x509:") || strings.Contains(errMsg, "tls:") {
-			errMsg = fmt.Sprintf("TLS/SSL error: %s (Note: Certificate verification is disabled, but proxy may have issues)", err.Error())
+			if settings.StrictTLS {
+				errMsg = fmt.Sprintf("TLS/SSL error: %s", err.Error())
+			} else {
+				errMsg = fmt.Sprintf("TLS/SSL error: %s (Note: Certificate verification is disabled, but proxy may have issues)", err.Error())
+			}
 		} else if strings.Contains(errMsg, "timeout") {
 			errMsg = fmt.Sprintf("Connection timeout after %ds", timeout)
 		} else if strings.Contains(errMsg, "connection refused") {
@@ -181,14 +180,7 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 		}
 
 		result.Error = &errMsg
-
-		// Record health check failure
-		go func() {
-			recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			h.tracker.RecordHealthCheck(recordCtx, proxy.ID, false, duration, errMsg)
-		}()
-
+		h.recordResult(proxy.ID, false, duration, errMsg)
 		return result, nil
 	}
 	defer resp.Body.Close()
@@ -198,38 +190,34 @@ func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, tim
 		result.Status = "failed"
 		errMsg := fmt.Sprintf("unexpected status code: got %d, expected %d", resp.StatusCode, settings.Status)
 		result.Error = &errMsg
-
-		// Record health check failure
-		go func() {
-			recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			h.tracker.RecordHealthCheck(recordCtx, proxy.ID, false, duration, errMsg)
-		}()
-
+		h.recordResult(proxy.ID, false, duration, errMsg)
 		return result, nil
 	}
 
 	// Success!
 	result.Status = "active"
 	result.ResponseTime = &duration
-
-	// Record health check success
-	go func() {
-		recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		h.tracker.RecordHealthCheck(recordCtx, proxy.ID, true, duration, "")
-	}()
-
+	h.recordResult(proxy.ID, true, duration, "")
 	return result, nil
+}
+
+// recordResult persists a check result before the check returns, so a caller
+// that re-reads the proxy afterwards sees its new status. It runs on a
+// detached, bounded context: a client that disconnects mid-test must not
+// discard a result the check already paid for.
+func (h *HealthChecker) recordResult(proxyID int, success bool, duration int, errMsg string) {
+	if h.tracker == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.tracker.RecordHealthCheck(ctx, proxyID, success, duration, errMsg); err != nil {
+		h.logger.Error("failed to record health check result", "proxy_id", proxyID, "error", err)
+	}
 }
 
 // CheckAllProxies tests all proxies concurrently
 func (h *HealthChecker) CheckAllProxies(ctx context.Context) ([]models.ProxyTestResult, error) {
-	// Pick up any settings change since the last run.
-	if _, err := h.reloadSettings(ctx); err != nil {
-		return nil, err
-	}
-
 	// Get all proxies (including failed ones for re-testing)
 	proxies, err := h.proxyRepo.ListAll(ctx)
 	if err != nil {
@@ -240,9 +228,9 @@ func (h *HealthChecker) CheckAllProxies(ctx context.Context) ([]models.ProxyTest
 }
 
 // CheckProxies tests the provided proxies concurrently using the configured
-// worker pool and returns one result per proxy (in the same order). It loads
-// health-check settings if they have not been cached yet, so it is safe to call
-// without a prior CheckAllProxies. If timeoutSecs > 0 it overrides the
+// worker pool and returns one result per proxy (in the same order). It reads
+// the current health-check settings first, so a change made in the dashboard
+// applies to the next test. If timeoutSecs > 0 it overrides the
 // per-proxy health-check timeout for this run only. If progressFn is non-nil it
 // is invoked after each proxy finishes with the running (checked, active,
 // failed) counts; the values passed are computed under a lock so they are safe.
@@ -251,9 +239,7 @@ func (h *HealthChecker) CheckProxies(ctx context.Context, proxies []*models.Prox
 		return []models.ProxyTestResult{}, nil
 	}
 
-	// Ensure settings are loaded (checkProxy also lazy-loads, but we read
-	// Workers here to size the pool).
-	settings, err := h.ensureSettings(ctx)
+	settings, err := h.reloadSettings(ctx)
 	if err != nil {
 		return nil, err
 	}

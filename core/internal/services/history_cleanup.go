@@ -6,6 +6,7 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
 const (
@@ -32,11 +33,13 @@ func (s *HistoryCleanupService) Run(ctx context.Context) {
 	defer ticker.Stop()
 
 	for {
-		if err := s.events.ApplyRetention(ctx, events.RetentionConfig{
-			RequestRetentionDays: requestRetentionDays,
-		}); err != nil {
-			s.logger.Error("failed to apply history retention", "error", err)
-		}
+		safeworker.Call(s.logger, "history_retention", func() {
+			if err := s.events.ApplyRetention(ctx, events.RetentionConfig{
+				RequestRetentionDays: requestRetentionDays,
+			}); err != nil {
+				s.logger.Error("failed to apply history retention", "error", err)
+			}
+		})
 
 		select {
 		case <-ctx.Done():
