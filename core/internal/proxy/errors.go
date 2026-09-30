@@ -36,8 +36,10 @@ func forwardingFailure(reason string, err error) error {
 	return &upstreamFailure{reason: reason, cause: err}
 }
 
-// Target rejections exclude proxy authentication errors and inconclusive DNS
-// failures. Do not rotate or advance the proxy's failure streak for these.
+// Target failures exclude proxy authentication errors and inconclusive DNS
+// failures. None of them advance a proxy's failure streak. The target_* reasons
+// come from local checks before any proxy is selected; ConnectWithRetry retries
+// upstream_connect_rejected once through a different proxy.
 func isTargetConnectFailure(err error) bool {
 	var failure *upstreamFailure
 	if !errors.As(err, &failure) {

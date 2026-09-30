@@ -20,6 +20,10 @@ import (
 // accumulate within a chain before it is evicted from its pool.
 const chainFailureThreshold = 3
 
+// maxConnectRejections is how many distinct proxies must reject a CONNECT
+// target before ConnectWithRetry returns upstream_connect_rejected.
+const maxConnectRejections = 2
+
 // PoolChain holds an ordered list of pool selectors for a user:
 // index 0 = main pool, index 1..N = fallback pools.
 // It refreshes pool selectors periodically and provides the high-level
@@ -435,6 +439,7 @@ func (c *PoolChain) ConnectWithRetry(
 	}
 
 	var lastErr error
+	rejections := 0
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		selectedProxy, selIdx, err := c.pickProxy(ctx, tried)
 		if err != nil {
@@ -455,11 +460,19 @@ func (c *PoolChain) ConnectWithRetry(
 		conn, err := connectViaProxyStandalone(selectedProxy, host, rotationSettings)
 		if err != nil {
 			c.recordFailure(selIdx, selectedProxy.ID, selectedProxy.Address, "CONNECT://"+host, "CONNECT", attemptStart, err)
-			if isTargetConnectFailure(err) {
-				log.Warn("pool chain CONNECT: target rejected", "proxy", selectedProxy.Address, "host", host, "err", err)
-				return nil, nil, err
-			}
 			lastErr = fmt.Errorf("CONNECT proxy %s attempt %d: %w", selectedProxy.Address, attempt+1, err)
+			if isTargetConnectFailure(err) {
+				// One exit's rejection can mean the target blocks that IP or the
+				// upstream blocks the domain, so a second exit confirms it. Neither
+				// proxy takes a strike, and a session selecting the second proxy
+				// rebinds to it.
+				rejections++
+				log.Warn("pool chain CONNECT: target rejected", "proxy", selectedProxy.Address, "host", host, "rejections", rejections, "err", err)
+				if rejections >= maxConnectRejections {
+					return nil, nil, lastErr
+				}
+				continue
+			}
 			log.Warn("pool chain CONNECT: failed", "proxy", selectedProxy.Address, "err", err)
 			c.markFailed(selIdx, selectedProxy.ID)
 			continue
