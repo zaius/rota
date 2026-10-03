@@ -182,10 +182,9 @@ func (c *PoolChain) Refresh(ctx context.Context) {
 // pickProxy iterates through pool selectors until it finds an active proxy
 // that hasn't been tried yet. Returns (proxy, selectorIndex).
 func (c *PoolChain) pickProxy(ctx context.Context, tried map[int]bool) (*models.Proxy, int, error) {
-	// Carry ownership even for direct callers outside the HTTP router. A session
-	// on the main pool remains a session when using differently configured fallbacks.
+	// Carry ownership even for direct callers outside the HTTP router.
 	ctx = context.WithValue(ctx, UserChainContextKey, c)
-	forceSession := len(c.selectors) > 0 && c.selectors[0].method == "session"
+	forceSession := c.sessionMode()
 	for i, sel := range c.selectors {
 		p, err := sel.selectExcluding(ctx, tried, forceSession)
 		if err == nil {
@@ -197,6 +196,23 @@ func (c *PoolChain) pickProxy(ctx context.Context, tried map[int]bool) (*models.
 		}
 	}
 	return nil, -1, ErrNoProxyAvailable
+}
+
+// sessionMode reports whether the main pool is in session mode. A session on
+// the main pool remains a session when using differently configured fallbacks.
+func (c *PoolChain) sessionMode() bool {
+	return len(c.selectors) > 0 && c.selectors[0].method == "session"
+}
+
+// holdSession keeps alive the binding that selector selIdx served the request
+// under, until the hold closes. It returns nil when the request has no binding.
+func (c *PoolChain) holdSession(ctx context.Context, selIdx int) *sessionHold {
+	if selIdx < 0 || selIdx >= len(c.selectors) || c.selectors[selIdx].sessionMgr == nil {
+		return nil
+	}
+	sel := c.selectors[selIdx]
+	ctx = context.WithValue(ctx, UserChainContextKey, c)
+	return sel.sessionMgr.openTunnel(sel.sessionKey(ctx, c.sessionMode()))
 }
 
 // markFailed records a failure for the proxy, removing it from its pool's
@@ -355,7 +371,8 @@ func (c *PoolChain) SendWithRetry(
 // The tunnel outlives ConnectWithRetry — it is handed to the caller to pump
 // bytes through — so the binding is what lets the caller attribute what happens
 // next (requests seen inside it, bytes moved, how long it lived) back to the
-// proxy, pool and user that served it.
+// proxy, pool and user that served it. It also keeps the request's session
+// binding from expiring until Close.
 type TunnelBinding struct {
 	ProxyID  int
 	PoolID   int
@@ -363,7 +380,18 @@ type TunnelBinding struct {
 	Host     string
 	OpenedAt time.Time
 
-	chain *PoolChain
+	chain   *PoolChain
+	session *sessionHold
+}
+
+// Close releases the tunnel's hold on its session binding, which then expires
+// after the pool's session TTL unless used again. Later calls do nothing.
+func (b *TunnelBinding) Close() {
+	if b == nil || b.session == nil {
+		return
+	}
+	b.session.close()
+	b.session = nil
 }
 
 // RecordRequest records one HTTP request observed inside the tunnel. It is
@@ -488,6 +516,7 @@ func (c *PoolChain) ConnectWithRetry(
 			Host:     host,
 			OpenedAt: attemptStart,
 			chain:    c,
+			session:  c.holdSession(ctx, selIdx),
 		}, nil
 	}
 

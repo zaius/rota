@@ -15,7 +15,8 @@ var ErrNoProxyAvailable = errors.New("no proxy available; wait and retry")
 // SessionManager owns process-wide sticky bindings and exclusive reservations.
 // A proxy can have only one session owner per scope, including when that proxy
 // appears in several pools. Bindings survive per-user PoolChain rebuilds, and
-// are released explicitly, on idle expiry, or when the proxy is evicted.
+// are released explicitly, on idle expiry, or when the proxy is evicted. A
+// binding with an open tunnel never goes idle.
 type SessionManager struct {
 	mu           sync.Mutex
 	sessions     map[sessionIdentity]*sessionEntry
@@ -43,6 +44,16 @@ type sessionEntry struct {
 	createdAt time.Time
 	lastUsed  time.Time
 	ttl       time.Duration
+	tunnels   int
+}
+
+// sessionHold keeps one open tunnel's binding alive. It records the entry the
+// tunnel opened on, so closing the tunnel leaves alone a binding that was
+// released and recreated in the meantime.
+type sessionHold struct {
+	m     *SessionManager
+	key   sessionIdentity
+	entry *sessionEntry
 }
 
 // SessionInfo is the externally-visible view of a live session binding.
@@ -141,11 +152,40 @@ func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, cho
 
 func (m *SessionManager) liveLocked(key sessionIdentity, now time.Time) *sessionEntry {
 	e := m.sessions[key]
-	if e != nil && now.Sub(e.lastUsed) > e.ttl {
+	if e != nil && e.tunnels == 0 && now.Sub(e.lastUsed) > e.ttl {
 		m.deleteLocked(key)
 		return nil
 	}
 	return e
+}
+
+// openTunnel holds key's live binding until the returned hold closes. It
+// returns nil when key has no live binding.
+func (m *SessionManager) openTunnel(key sessionIdentity) *sessionHold {
+	if key.token == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e := m.liveLocked(key, time.Now())
+	if e == nil {
+		return nil
+	}
+	e.tunnels++
+	return &sessionHold{m: m, key: key, entry: e}
+}
+
+// close drops the tunnel from its binding's count and marks the binding used,
+// so the idle clock starts from the last tunnel's close. It does nothing if the
+// binding was released, evicted, or replaced while the tunnel was open.
+func (h *sessionHold) close() {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	if h.m.sessions[h.key] != h.entry {
+		return
+	}
+	h.entry.tunnels--
+	h.entry.lastUsed = time.Now()
 }
 
 func (m *SessionManager) deleteLocked(key sessionIdentity) {
@@ -224,10 +264,16 @@ func (m *SessionManager) listMatching(matches func(sessionIdentity) bool) []Sess
 		if e == nil || !matches(key) {
 			continue
 		}
+		// An open tunnel holds the binding, so report the soonest it could
+		// expire: one TTL from now.
+		expiresAt := e.lastUsed.Add(e.ttl)
+		if e.tunnels > 0 {
+			expiresAt = now.Add(e.ttl)
+		}
 		out = append(out, SessionInfo{
 			PoolID: key.poolID, Username: key.username, Token: key.token, Scope: key.scope,
 			ProxyID: e.proxyID, CreatedAt: e.createdAt, LastUsed: e.lastUsed,
-			ExpiresAt: e.lastUsed.Add(e.ttl),
+			ExpiresAt: expiresAt,
 		})
 	}
 	return out

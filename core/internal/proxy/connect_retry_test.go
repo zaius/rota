@@ -178,6 +178,10 @@ func TestConnectWithRetry_RejectionRetryRebindsSession(t *testing.T) {
 	if binding.ProxyID != 2 || rejected.Load() != 1 {
 		t.Fatalf("retry did not serve from the second proxy: %+v, %d rejections", binding, rejected.Load())
 	}
+	if binding.session == nil {
+		t.Fatal("tunnel does not hold its session binding")
+	}
+	binding.Close()
 	sessions := sm.List()
 	if len(sessions) != 1 || sessions[0].ProxyID != 2 || sessions[0].Scope != "target.example" {
 		t.Fatalf("session binding did not move to the serving proxy: %+v", sessions)

@@ -184,6 +184,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		return
 	}
 	defer upstreamConn.Close()
+	defer binding.Close()
 
 	// Hijack the client connection from the HTTP server.
 	hijacker, ok := w.(http.Hijacker)

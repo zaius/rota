@@ -124,20 +124,10 @@ func (ps *PoolSelector) selectExcluding(ctx context.Context, tried map[int]bool,
 	}
 
 	host, _ := ctx.Value(TargetHostContextKey).(string)
-	scope, _ := ctx.Value(SessionScopeContextKey).(string)
-	if scope == "" {
-		scope = normalizeHost(host)
-	}
-	key := sessionIdentity{poolID: ps.poolID, scope: scope}
-	if chain, ok := chainFromContext(ctx); ok {
-		key.username = chain.username
-	}
+	key := ps.sessionKey(ctx, forceSession)
 	method := ps.method
 	if forceSession {
 		method = "session"
-	}
-	if method == "session" {
-		key.token, _ = ctx.Value(SessionTokenContextKey).(string)
 	}
 	choose := func(boundID int, available func(int) bool) (*models.Proxy, error) {
 		eligible := func(id int) bool {
@@ -156,6 +146,24 @@ func (ps *PoolSelector) selectExcluding(ctx context.Context, tried map[int]bool,
 		return ps.sessionMgr.selectProxy(key, ps.sessionTTL, choose)
 	}
 	return choose(0, func(int) bool { return true })
+}
+
+// sessionKey identifies the binding a request selects under in this pool. The
+// token stays empty outside session mode, so selection creates no binding.
+func (ps *PoolSelector) sessionKey(ctx context.Context, forceSession bool) sessionIdentity {
+	host, _ := ctx.Value(TargetHostContextKey).(string)
+	scope, _ := ctx.Value(SessionScopeContextKey).(string)
+	if scope == "" {
+		scope = normalizeHost(host)
+	}
+	key := sessionIdentity{poolID: ps.poolID, scope: scope}
+	if chain, ok := chainFromContext(ctx); ok {
+		key.username = chain.username
+	}
+	if forceSession || ps.method == "session" {
+		key.token, _ = ctx.Value(SessionTokenContextKey).(string)
+	}
+	return key
 }
 
 // selectLocked applies rotation among eligible proxies. Caller holds ps.mu.
