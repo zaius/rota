@@ -22,7 +22,7 @@ func TestBidirectionalCopy_Basic(t *testing.T) {
 	// Start bidirectional copy (proxy sits between proxyClientSide and proxyUpstreamSide).
 	done := make(chan TunnelCounts, 1)
 	go func() {
-		counts, _ := BidirectionalCopy(proxyClientSide, proxyUpstreamSide)
+		counts, _ := BidirectionalCopy(proxyClientSide, proxyUpstreamSide, nil)
 		done <- counts
 	}()
 
@@ -75,7 +75,7 @@ func TestBidirectionalCopy_LargePayload(t *testing.T) {
 
 	done := make(chan TunnelCounts, 1)
 	go func() {
-		counts, _ := BidirectionalCopy(proxyClientSide, proxyUpstreamSide)
+		counts, _ := BidirectionalCopy(proxyClientSide, proxyUpstreamSide, nil)
 		done <- counts
 	}()
 
@@ -140,7 +140,7 @@ func TestBidirectionalCopy_HalfClose(t *testing.T) {
 
 	done := make(chan TunnelCounts, 1)
 	go func() {
-		counts, _ := BidirectionalCopy(proxyClientSide, proxyUpstreamSide)
+		counts, _ := BidirectionalCopy(proxyClientSide, proxyUpstreamSide, nil)
 		done <- counts
 	}()
 
@@ -209,4 +209,45 @@ func tcpPipe(t *testing.T) (net.Conn, net.Conn) {
 	}
 
 	return clientConn, serverConn
+}
+
+// shutdownConn must end a tunnel whose copy loops are blocked waiting on idle
+// sockets. On Linux that is the splice pump, where Close would block instead.
+func TestBidirectionalCopy_ShutdownEndsIdleTunnel(t *testing.T) {
+	clientConn, proxyClientSide := tcpPipe(t)
+	upstreamConn, proxyUpstreamSide := tcpPipe(t)
+	defer clientConn.Close()
+	defer upstreamConn.Close()
+
+	var traffic sync.WaitGroup
+	traffic.Add(1)
+	var once sync.Once
+	done := make(chan struct{})
+	go func() {
+		BidirectionalCopy(proxyClientSide, proxyUpstreamSide, func() { once.Do(traffic.Done) }) //nolint:errcheck
+		close(done)
+	}()
+
+	if _, err := clientConn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(upstreamConn, make([]byte, 4)); err != nil {
+		t.Fatal(err)
+	}
+	traffic.Wait()
+
+	shutdownConn(proxyClientSide)
+	shutdownConn(proxyUpstreamSide)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not end the idle tunnel")
+	}
+	// Both peers see the tunnel end.
+	for _, peer := range []net.Conn{clientConn, upstreamConn} {
+		peer.SetReadDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
+		if n, err := peer.Read(make([]byte, 1)); err != io.EOF {
+			t.Fatalf("peer read %d bytes, err %v; want EOF", n, err)
+		}
+	}
 }

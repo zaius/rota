@@ -111,30 +111,63 @@ func TestSessionManager_RebindAndRefresh(t *testing.T) {
 // Regression: requests over a kept-alive CONNECT tunnel never refreshed the
 // binding, so it expired one TTL after the CONNECT with traffic still flowing,
 // and the client's invalidate then found no session.
-func TestSessionManager_OpenTunnelHoldsBinding(t *testing.T) {
+func TestSessionManager_TunnelTrafficHoldsBinding(t *testing.T) {
 	m := NewSessionManager()
 	defer m.Stop()
 	key := sessionIdentity{poolID: 1, token: "a", scope: "example.com"}
 	mustReserve(t, m, key, 42, time.Minute)
+	hold := m.openTunnel(key)
 	idle := func(d time.Duration) {
 		m.mu.Lock()
 		m.sessions[key].lastUsed = time.Now().Add(-d)
 		m.mu.Unlock()
+		hold.lastTraffic.Store(time.Now().Add(-d).UnixNano())
 	}
 
-	hold := m.openTunnel(key)
 	idle(time.Hour)
+	hold.touch()
 	if got := m.FindByToken("a"); len(got) != 1 || time.Until(got[0].ExpiresAt) < 59*time.Second {
-		t.Fatalf("binding expired with its tunnel open: %+v", got)
+		t.Fatalf("binding expired with traffic on its tunnel: %+v", got)
 	}
+	idle(30 * time.Second)
 	hold.close()
-	if got := m.FindByToken("a"); len(got) != 1 || time.Since(got[0].LastUsed) > time.Second {
-		t.Fatalf("closing the tunnel did not restart the idle clock: %+v", got)
+	if got := m.FindByToken("a"); len(got) != 1 || time.Since(got[0].LastUsed) < 29*time.Second {
+		t.Fatalf("closed tunnel's idle clock did not run from its last traffic: %+v", got)
 	}
-	idle(time.Minute + time.Second)
+	m.mu.Lock()
+	m.sessions[key].lastUsed = time.Now().Add(-time.Minute - time.Second)
+	m.mu.Unlock()
 	if got := m.FindByToken("a"); len(got) != 0 {
 		t.Fatalf("binding outlived its TTL after the tunnel closed: %+v", got)
 	}
+}
+
+// A tunnel idle for the whole TTL must not keep its proxy: the binding expires
+// and the tunnel ends.
+func TestSessionManager_IdleTunnelEndsWithBinding(t *testing.T) {
+	m := NewSessionManager()
+	defer m.Stop()
+	key := sessionIdentity{poolID: 1, token: "a", scope: "example.com"}
+	mustReserve(t, m, key, 42, time.Minute)
+	hold := m.openTunnel(key)
+	ended := make(chan struct{})
+	hold.onExpiry(func() { close(ended) })
+
+	m.mu.Lock()
+	m.sessions[key].lastUsed = time.Now().Add(-2 * time.Minute)
+	m.mu.Unlock()
+	hold.lastTraffic.Store(time.Now().Add(-2 * time.Minute).UnixNano())
+	if got := m.FindByToken("a"); len(got) != 0 {
+		t.Fatalf("idle tunnel kept its binding alive: %+v", got)
+	}
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("binding expiry did not end its idle tunnel")
+	}
+	hold.close()
+	key.token = "b"
+	mustReserve(t, m, key, 42, time.Minute) // the proxy was freed
 }
 
 // A tunnel that outlives its binding must not touch the binding that replaces it.
@@ -150,10 +183,11 @@ func TestSessionManager_StaleTunnelCloseIgnoresNewBinding(t *testing.T) {
 
 	stale.close()
 	m.mu.Lock()
-	tunnels := m.sessions[key].tunnels
+	_, attached := m.sessions[key].tunnels[current]
+	tunnels := len(m.sessions[key].tunnels)
 	m.mu.Unlock()
-	if tunnels != 1 {
-		t.Fatalf("stale close changed the new binding's tunnel count to %d", tunnels)
+	if !attached || tunnels != 1 {
+		t.Fatalf("stale close changed the new binding's tunnels: %d attached", tunnels)
 	}
 	current.close()
 }

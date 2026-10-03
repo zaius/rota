@@ -23,8 +23,8 @@ func (c TunnelCounts) Total() int64 { return c.BytesUp + c.BytesDown }
 //
 // The byte counts are the only volume signal a plain (uninspected) tunnel can
 // produce: the payload is opaque TLS, so bytes and lifetime are all there is to
-// record.
-func BidirectionalCopy(client, upstream net.Conn) (TunnelCounts, error) {
+// record. onTraffic, when non-nil, runs whenever bytes move in either direction.
+func BidirectionalCopy(client, upstream net.Conn, onTraffic func()) (TunnelCounts, error) {
 	var wg sync.WaitGroup
 	var clientErr, upstreamErr error
 	var counts TunnelCounts
@@ -34,7 +34,7 @@ func BidirectionalCopy(client, upstream net.Conn) (TunnelCounts, error) {
 	// upstream → client
 	go func() {
 		defer wg.Done()
-		counts.BytesDown, clientErr = copyOneDirection(client, upstream)
+		counts.BytesDown, clientErr = copyOneDirection(client, upstream, onTraffic)
 		// When upstream closes or errors, half-close the client write side
 		// so the client knows there's no more data coming.
 		if cw, ok := client.(closeWriter); ok {
@@ -45,7 +45,7 @@ func BidirectionalCopy(client, upstream net.Conn) (TunnelCounts, error) {
 	// client → upstream
 	go func() {
 		defer wg.Done()
-		counts.BytesUp, upstreamErr = copyOneDirection(upstream, client)
+		counts.BytesUp, upstreamErr = copyOneDirection(upstream, client, onTraffic)
 		// When client closes or errors, half-close the upstream write side.
 		if cw, ok := upstream.(closeWriter); ok {
 			cw.CloseWrite() //nolint:errcheck
@@ -65,9 +65,9 @@ func BidirectionalCopy(client, upstream net.Conn) (TunnelCounts, error) {
 // available on the current platform, returning the number of bytes copied. On
 // Linux with raw TCP sockets it tries splice(2) first; otherwise it falls back
 // to io.Copy.
-func copyOneDirection(dst, src net.Conn) (int64, error) {
+func copyOneDirection(dst, src net.Conn, onTraffic func()) (int64, error) {
 	// Try platform-specific zero-copy (splice on Linux)
-	ok, n, err := trySplice(dst, src)
+	ok, n, err := trySplice(dst, src, onTraffic)
 	if ok {
 		return n, err
 	}
@@ -76,7 +76,37 @@ func copyOneDirection(dst, src net.Conn) (int64, error) {
 	// when possible, otherwise userspace buffer copy)
 	buf := bufPool.Get().([]byte)
 	defer bufPool.Put(buf)
-	return io.CopyBuffer(dst, src, buf)
+	var r io.Reader = src
+	if onTraffic != nil {
+		r = trafficReader{src, onTraffic}
+	}
+	return io.CopyBuffer(dst, r, buf)
+}
+
+// trafficReader runs onTraffic after every read that returns bytes.
+type trafficReader struct {
+	r         io.Reader
+	onTraffic func()
+}
+
+func (t trafficReader) Read(b []byte) (int, error) {
+	n, err := t.r.Read(b)
+	if n > 0 {
+		t.onTraffic()
+	}
+	return n, err
+}
+
+// shutdownConn ends both directions of c so the goroutines copying through it
+// return. It shuts a raw TCP socket down rather than closing it: the splice
+// pump polls the fd itself, and Close would wait until that poll next woke.
+func shutdownConn(c net.Conn) {
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.CloseRead()  //nolint:errcheck
+		tc.CloseWrite() //nolint:errcheck
+		return
+	}
+	c.Close() //nolint:errcheck
 }
 
 // closeWriter is a connection that can shut down its write side while still
@@ -119,7 +149,8 @@ func (c *prefixConn) CloseWrite() error {
 	return nil
 }
 
-// countingConn wraps a net.Conn and tallies the bytes read and written.
+// countingConn wraps a net.Conn and tallies the bytes read and written. It runs
+// onTraffic, when set, after every read or write that moves bytes.
 //
 // It exists for the TLS-interception path, where the plaintext HTTP loop sits
 // on top of a tls.Conn and cannot see wire volume. The pass-through path must
@@ -127,8 +158,9 @@ func (c *prefixConn) CloseWrite() error {
 // disable zero-copy — there the counts come from copyOneDirection instead.
 type countingConn struct {
 	net.Conn
-	read    atomic.Int64
-	written atomic.Int64
+	read      atomic.Int64
+	written   atomic.Int64
+	onTraffic func()
 }
 
 func newCountingConn(c net.Conn) *countingConn { return &countingConn{Conn: c} }
@@ -136,12 +168,18 @@ func newCountingConn(c net.Conn) *countingConn { return &countingConn{Conn: c} }
 func (c *countingConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
 	c.read.Add(int64(n))
+	if n > 0 && c.onTraffic != nil {
+		c.onTraffic()
+	}
 	return n, err
 }
 
 func (c *countingConn) Write(b []byte) (int, error) {
 	n, err := c.Conn.Write(b)
 	c.written.Add(int64(n))
+	if n > 0 && c.onTraffic != nil {
+		c.onTraffic()
+	}
 	return n, err
 }
 

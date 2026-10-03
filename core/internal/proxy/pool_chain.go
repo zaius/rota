@@ -204,8 +204,8 @@ func (c *PoolChain) sessionMode() bool {
 	return len(c.selectors) > 0 && c.selectors[0].method == "session"
 }
 
-// holdSession keeps alive the binding that selector selIdx served the request
-// under, until the hold closes. It returns nil when the request has no binding.
+// holdSession attaches the tunnel to the binding that selector selIdx served the
+// request under. It returns nil when the request has no binding.
 func (c *PoolChain) holdSession(ctx context.Context, selIdx int) *sessionHold {
 	if selIdx < 0 || selIdx >= len(c.selectors) || c.selectors[selIdx].sessionMgr == nil {
 		return nil
@@ -371,8 +371,8 @@ func (c *PoolChain) SendWithRetry(
 // The tunnel outlives ConnectWithRetry — it is handed to the caller to pump
 // bytes through — so the binding is what lets the caller attribute what happens
 // next (requests seen inside it, bytes moved, how long it lived) back to the
-// proxy, pool and user that served it. It also keeps the request's session
-// binding from expiring until Close.
+// proxy, pool and user that served it. Its traffic also keeps the request's
+// session binding alive, and the binding's idle expiry ends the tunnel.
 type TunnelBinding struct {
 	ProxyID  int
 	PoolID   int
@@ -384,8 +384,28 @@ type TunnelBinding struct {
 	session *sessionHold
 }
 
-// Close releases the tunnel's hold on its session binding, which then expires
-// after the pool's session TTL unless used again. Later calls do nothing.
+// touch records traffic through the tunnel against its session binding.
+func (b *TunnelBinding) touch() {
+	if b != nil {
+		b.session.touch()
+	}
+}
+
+// EndOnExpiry shuts down both sides of the tunnel if its session binding sits
+// idle for the pool's session TTL. Without a session binding it does nothing.
+func (b *TunnelBinding) EndOnExpiry(client, upstream net.Conn) {
+	if b == nil || b.session == nil {
+		return
+	}
+	b.session.onExpiry(func() {
+		shutdownConn(client)
+		shutdownConn(upstream)
+	})
+}
+
+// Close detaches the tunnel from its session binding, which then expires one
+// session TTL after the tunnel's last traffic unless used again. Later calls
+// do nothing.
 func (b *TunnelBinding) Close() {
 	if b == nil || b.session == nil {
 		return

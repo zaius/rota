@@ -55,7 +55,7 @@ func TestProxyRouter_TLSInspectionDiagnostics(t *testing.T) {
 		conn.SetDeadline(time.Now().Add(10 * time.Second))
 		target.SetDeadline(time.Now().Add(10 * time.Second))
 		fmt.Fprint(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
-		BidirectionalCopy(conn, target) //nolint:errcheck
+		BidirectionalCopy(conn, target, nil) //nolint:errcheck
 	}))
 	defer upstream.Close()
 

@@ -362,7 +362,7 @@ Each `(user, pool, token, scope)` has a sticky binding. Proxies are exclusive wi
 - **No/empty session token:** round-robin among unreserved proxies; no sticky reservation.
 - **No/empty scope:** use the target hostname.
 - **TLS profile override:** put it last: `alice-session-job42-scope-shopping-profile-ios`.
-- **Lifetime:** release explicitly, expire after `session_ttl_minutes` idle (default 10), or rebind when the proxy becomes unavailable. A binding with an open CONNECT tunnel is never idle; its idle time starts when its last tunnel closes, and `GET /api/v1/sessions` reports `expires_at` as one TTL from now while a tunnel is open. Bindings reset on restart and do not coordinate across Rota processes.
+- **Lifetime:** release explicitly, expire after `session_ttl_minutes` idle (default 10), or rebind when the proxy becomes unavailable. Traffic through the binding's CONNECT tunnels counts as use, so a busy kept-alive tunnel keeps its binding. When a binding expires, Rota also closes its tunnels that were idle for the whole TTL, so the client reconnects through selection instead of holding a proxy another session may now reserve. Tunnels without a session token have no idle limit. Bindings reset on restart and do not coordinate across Rota processes.
 - **Fallbacks:** a session main pool preserves reservations in fallback pools. Exhaustion returns [593 with Retry-After](#custom-http-status-codes).
 
 Inspect bindings with `GET /api/v1/sessions`. Release with `POST /api/v1/sessions/release` and `{"token":"job42"}`. Release and invalidation accept optional `pool_id` and `scope` filters; admins may also filter by `username`. Proxy users can only control their own bindings in assigned pools.

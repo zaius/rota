@@ -3,6 +3,7 @@ package proxy
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -15,8 +16,9 @@ var ErrNoProxyAvailable = errors.New("no proxy available; wait and retry")
 // SessionManager owns process-wide sticky bindings and exclusive reservations.
 // A proxy can have only one session owner per scope, including when that proxy
 // appears in several pools. Bindings survive per-user PoolChain rebuilds, and
-// are released explicitly, on idle expiry, or when the proxy is evicted. A
-// binding with an open tunnel never goes idle.
+// are released explicitly, on idle expiry, or when the proxy is evicted.
+// Traffic through a binding's tunnels counts as use, and idle expiry ends the
+// tunnels, so a quiet tunnel cannot hold a proxy past the session TTL.
 type SessionManager struct {
 	mu           sync.Mutex
 	sessions     map[sessionIdentity]*sessionEntry
@@ -44,16 +46,29 @@ type sessionEntry struct {
 	createdAt time.Time
 	lastUsed  time.Time
 	ttl       time.Duration
-	tunnels   int
+	tunnels   map[*sessionHold]struct{}
 }
 
-// sessionHold keeps one open tunnel's binding alive. It records the entry the
+// lastActive returns the binding's latest selection or tunnel traffic.
+func (e *sessionEntry) lastActive() time.Time {
+	t := e.lastUsed
+	for h := range e.tunnels {
+		if a := time.Unix(0, h.lastTraffic.Load()); a.After(t) {
+			t = a
+		}
+	}
+	return t
+}
+
+// sessionHold ties one open tunnel to its binding. It records the entry the
 // tunnel opened on, so closing the tunnel leaves alone a binding that was
 // released and recreated in the meantime.
 type sessionHold struct {
-	m     *SessionManager
-	key   sessionIdentity
-	entry *sessionEntry
+	m           *SessionManager
+	key         sessionIdentity
+	entry       *sessionEntry
+	lastTraffic atomic.Int64 // UnixNano
+	shutdown    func()       // guarded by m.mu
 }
 
 // SessionInfo is the externally-visible view of a live session binding.
@@ -152,40 +167,70 @@ func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, cho
 
 func (m *SessionManager) liveLocked(key sessionIdentity, now time.Time) *sessionEntry {
 	e := m.sessions[key]
-	if e != nil && e.tunnels == 0 && now.Sub(e.lastUsed) > e.ttl {
+	if e != nil && now.Sub(e.lastActive()) > e.ttl {
 		m.deleteLocked(key)
+		// The tunnels have been idle for the whole TTL too. Ending them sends
+		// the client back through selection instead of leaving it on a proxy
+		// that another session may now reserve.
+		for h := range e.tunnels {
+			if h.shutdown != nil {
+				go h.shutdown()
+			}
+		}
 		return nil
 	}
 	return e
 }
 
-// openTunnel holds key's live binding until the returned hold closes. It
-// returns nil when key has no live binding.
+// openTunnel attaches a tunnel to key's live binding until the returned hold
+// closes. It returns nil when key has no live binding.
 func (m *SessionManager) openTunnel(key sessionIdentity) *sessionHold {
 	if key.token == "" {
 		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	e := m.liveLocked(key, time.Now())
+	now := time.Now()
+	e := m.liveLocked(key, now)
 	if e == nil {
 		return nil
 	}
-	e.tunnels++
-	return &sessionHold{m: m, key: key, entry: e}
+	h := &sessionHold{m: m, key: key, entry: e}
+	h.lastTraffic.Store(now.UnixNano())
+	if e.tunnels == nil {
+		e.tunnels = make(map[*sessionHold]struct{})
+	}
+	e.tunnels[h] = struct{}{}
+	return h
 }
 
-// close drops the tunnel from its binding's count and marks the binding used,
-// so the idle clock starts from the last tunnel's close. It does nothing if the
-// binding was released, evicted, or replaced while the tunnel was open.
+// touch records traffic through the tunnel. It does nothing on a nil hold.
+func (h *sessionHold) touch() {
+	if h != nil {
+		h.lastTraffic.Store(time.Now().UnixNano())
+	}
+}
+
+// onExpiry sets how to end the tunnel if its binding goes idle.
+func (h *sessionHold) onExpiry(shutdown func()) {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	h.shutdown = shutdown
+}
+
+// close detaches the tunnel from its binding, whose idle clock then runs from
+// the tunnel's last traffic. It does nothing if the binding was released,
+// evicted, or replaced while the tunnel was open.
 func (h *sessionHold) close() {
 	h.m.mu.Lock()
 	defer h.m.mu.Unlock()
 	if h.m.sessions[h.key] != h.entry {
 		return
 	}
-	h.entry.tunnels--
-	h.entry.lastUsed = time.Now()
+	delete(h.entry.tunnels, h)
+	if t := time.Unix(0, h.lastTraffic.Load()); t.After(h.entry.lastUsed) {
+		h.entry.lastUsed = t
+	}
 }
 
 func (m *SessionManager) deleteLocked(key sessionIdentity) {
@@ -264,16 +309,11 @@ func (m *SessionManager) listMatching(matches func(sessionIdentity) bool) []Sess
 		if e == nil || !matches(key) {
 			continue
 		}
-		// An open tunnel holds the binding, so report the soonest it could
-		// expire: one TTL from now.
-		expiresAt := e.lastUsed.Add(e.ttl)
-		if e.tunnels > 0 {
-			expiresAt = now.Add(e.ttl)
-		}
+		lastActive := e.lastActive()
 		out = append(out, SessionInfo{
 			PoolID: key.poolID, Username: key.username, Token: key.token, Scope: key.scope,
-			ProxyID: e.proxyID, CreatedAt: e.createdAt, LastUsed: e.lastUsed,
-			ExpiresAt: expiresAt,
+			ProxyID: e.proxyID, CreatedAt: e.createdAt, LastUsed: lastActive,
+			ExpiresAt: lastActive.Add(e.ttl),
 		})
 	}
 	return out

@@ -11,7 +11,7 @@ import (
 // trySplice attempts zero-copy transfer using Linux splice(2) syscall.
 // Returns (true, bytesMoved, err) if splice was used, (false, 0, nil) if caller
 // should fall back to io.Copy (e.g. non-TCP connections).
-func trySplice(dst, src net.Conn) (bool, int64, error) {
+func trySplice(dst, src net.Conn, onTraffic func()) (bool, int64, error) {
 	// Both connections must be raw TCP to get file descriptors.
 	srcTCP, ok := src.(*net.TCPConn)
 	if !ok {
@@ -53,7 +53,7 @@ func trySplice(dst, src net.Conn) (bool, int64, error) {
 	srcRC.Read(func(srcFD uintptr) bool {
 		// The inner Write call gives us the dst fd.
 		dstRC.Write(func(dstFD uintptr) bool {
-			moved, spliceErr = splicePump(int(srcFD), int(dstFD), pipeR, pipeW)
+			moved, spliceErr = splicePump(int(srcFD), int(dstFD), pipeR, pipeW, onTraffic)
 			return true
 		})
 		return true
@@ -68,8 +68,9 @@ func trySplice(dst, src net.Conn) (bool, int64, error) {
 // splicePump moves data: src → pipeW → pipeR → dst using splice(2), returning
 // the total bytes delivered to dst. Runs until src returns EOF (n==0) or an
 // error occurs; the byte count is returned either way, so a tunnel that dies
-// mid-transfer still reports what it moved.
-func splicePump(srcFD, dstFD, pipeR, pipeW int) (int64, error) {
+// mid-transfer still reports what it moved. onTraffic, when non-nil, runs after
+// each chunk read from src.
+func splicePump(srcFD, dstFD, pipeR, pipeW int, onTraffic func()) (int64, error) {
 	const spliceFlags = unix.SPLICE_F_MOVE | unix.SPLICE_F_NONBLOCK
 
 	var total int64
@@ -90,6 +91,9 @@ func splicePump(srcFD, dstFD, pipeR, pipeW int) (int64, error) {
 		}
 		if n == 0 {
 			return total, nil // EOF — src closed
+		}
+		if onTraffic != nil {
+			onTraffic()
 		}
 
 		// Drain the pipe into the dst socket.
@@ -132,7 +136,8 @@ func pollFD(fd int, write bool) error {
 			// fallback imposes no idle limit either, so this keeps the two paths
 			// behaving alike. POLLERR/POLLHUP/POLLNVAL are reported regardless of
 			// Events, so a genuinely closed fd still wakes the poll and the next
-			// splice observes the error.
+			// splice observes the error. A session tunnel's idle limit comes
+			// from its binding, which ends the tunnel with shutdownConn.
 			continue
 		}
 		return nil

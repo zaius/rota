@@ -123,6 +123,7 @@ func (i *TLSInspector) Serve(
 	// Count at the wire, under TLS: the plaintext loop above cannot see record
 	// framing or handshake volume, and bandwidth is a wire question.
 	countedClient := newCountingConn(clientConn)
+	countedClient.onTraffic = binding.touch
 	countedUpstream := newCountingConn(upstreamConn)
 	counts := func() TunnelCounts {
 		return TunnelCounts{
@@ -309,7 +310,7 @@ func (i *TLSInspector) relayUpgrade(
 
 	i.logger.Debug("intercepted tunnel: relaying protocol upgrade",
 		"source", "proxy", "url", req.URL.String())
-	BidirectionalCopy(clientTLS, upstreamTLS) //nolint:errcheck
+	BidirectionalCopy(clientTLS, upstreamTLS, nil) //nolint:errcheck
 }
 
 // writeGatewayError reports an upstream failure to the client in-band, so a

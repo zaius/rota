@@ -200,6 +200,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		return
 	}
 	defer clientConn.Close()
+	binding.EndOnExpiry(clientConn, upstreamConn)
 
 	// Send 200 Connection Established to the client. The serving proxy's ID
 	// rides along as a header — the only response the client sees before the
@@ -242,7 +243,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 	// wrapper falls back to io.Copy. The payload is opaque, so bytes and
 	// lifetime are the only volume signal available; the CONNECT itself was
 	// already recorded by the chain.
-	counts, err := BidirectionalCopy(clientStream, upstreamConn)
+	counts, err := BidirectionalCopy(clientStream, upstreamConn, binding.touch)
 	binding.RecordClose(counts, 0, nil)
 
 	h.logger.Debug("tunnel closed",
