@@ -334,7 +334,7 @@ HTTP forwarding also stops when the client cancels or its request context expire
 | API case | Result |
 | --- | --- |
 | Malformed session request or missing `token` | `400` |
-| Invalidate an unknown, expired, or inaccessible session | `404` |
+| Invalidate an unknown, expired, or inaccessible session | `409` |
 | Release an unknown/already-released session | `200`, `count: 0` |
 | Explicit release from an unassigned pool | `403` |
 | Invalid credentials / auth rate limit | `401` / `429` (with `Retry-After`) |

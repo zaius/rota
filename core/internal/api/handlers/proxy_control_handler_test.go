@@ -74,8 +74,8 @@ func TestInvalidateSession_UnknownTokenNotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.InvalidateSession(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for an unknown token, got %d", w.Code)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for an unknown token, got %d", w.Code)
 	}
 }
 
@@ -92,7 +92,7 @@ func TestInvalidateSession_TokenRequired(t *testing.T) {
 }
 
 // A proxy user must not see (or invalidate) sessions bound in pools outside its
-// own chain; out-of-scope bindings read as not found.
+// own chain; out-of-scope bindings read as missing.
 func TestInvalidateSession_ProxyUserOutOfScopeIsNotFound(t *testing.T) {
 	ps := &fakeProxyServer{sessions: []proxy.SessionInfo{
 		{PoolID: 99, Token: "job42", ProxyID: 7},
@@ -104,8 +104,8 @@ func TestInvalidateSession_ProxyUserOutOfScopeIsNotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.InvalidateSession(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for a session outside the user's pools, got %d", w.Code)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for a session outside the user's pools, got %d", w.Code)
 	}
 }
 
@@ -208,7 +208,7 @@ func TestInvalidateSession_RestrictsScopeAndOwner(t *testing.T) {
 		req := asProxyUser(httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(body)), 1)
 		w := httptest.NewRecorder()
 		h.InvalidateSession(w, req)
-		if w.Code != http.StatusNotFound {
+		if w.Code != http.StatusConflict {
 			t.Fatalf("foreign session visible: %d", w.Code)
 		}
 	}
@@ -222,7 +222,7 @@ func TestInvalidateSession_UnknownScopeNotFound(t *testing.T) {
 	req := asProxyUser(httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(`{"token":"job42","scope":"other.com"}`)), 1)
 	w := httptest.NewRecorder()
 	h.InvalidateSession(w, req)
-	if w.Code != http.StatusNotFound {
+	if w.Code != http.StatusConflict {
 		t.Fatalf("unrelated scope matched: %d", w.Code)
 	}
 }

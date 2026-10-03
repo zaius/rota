@@ -449,6 +449,7 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 //	@Param			domain	body	string	false	"Scope the cooldown to this domain"
 //	@Param			global	body	bool	false	"Invalidate across all targets instead of the reservation scope"
 //	@Success		200	{object}	map[string]interface{}
+//	@Failure		409	{object}	models.ErrorResponse	"No live session for token"
 //	@Router			/sessions/invalidate [post]
 func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -495,7 +496,7 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 		sessions = filtered
 	}
 	// Proxy-user callers only see their own sessions in their assigned pools. Out-of-scope
-	// bindings are reported as not found, not as forbidden, so the endpoint
+	// bindings are reported as missing, not as forbidden, so the endpoint
 	// does not leak other pools' session tokens.
 	if pu := ProxyUserFrom(r.Context()); pu != nil {
 		scope := make(map[int]bool)
@@ -511,7 +512,7 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 		sessions = filtered
 	}
 	if len(sessions) == 0 {
-		writeError(w, http.StatusNotFound, "no live session for token")
+		writeError(w, http.StatusConflict, "no live session for token")
 		return
 	}
 
