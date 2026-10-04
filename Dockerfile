@@ -40,15 +40,18 @@ FROM alpine:3.24 AS runner
 RUN apk --no-cache add ca-certificates tzdata wget
 WORKDIR /app
 
-COPY --from=core-builder /out/server /app/server
-COPY --from=dashboard-builder /src/dist /app/web
+# /app/data holds downloaded GeoIP databases; creating it here lets a volume
+# mounted there inherit the rota user's ownership.
+RUN adduser -D -u 1000 rota && mkdir -p /app/data && chown -R rota:rota /app
+
+# --chown sets ownership in the copied layers themselves; a chown -R after the
+# copies would store the binary and dashboard a second time in its own layer.
+COPY --chown=rota:rota --from=core-builder /out/server /app/server
+COPY --chown=rota:rota --from=dashboard-builder /src/dist /app/web
 
 # Serve the dashboard from /app/web on the API port (same origin as the API).
 ENV WEB_DIR=/app/web
 
-# /app/data holds downloaded GeoIP databases; creating it here lets a volume
-# mounted there inherit the rota user's ownership.
-RUN adduser -D -u 1000 rota && mkdir -p /app/data && chown -R rota:rota /app
 USER rota
 
 EXPOSE 8000 8001
