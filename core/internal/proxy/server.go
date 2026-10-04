@@ -316,7 +316,8 @@ func (s *Server) InvalidateUser(username string) {
 
 // SetDomainCooldown puts a proxy on a domain-scoped cooldown: it is skipped
 // for requests to domain (and its subdomains) until the given time, but stays
-// in rotation for every other target. Takes effect immediately.
+// in rotation for every other target. Takes effect immediately, including on
+// session tunnels already open to domain through the proxy.
 func (s *Server) SetDomainCooldown(c models.ProxyDomainCooldown) {
 	s.domainCooldownMu.Lock()
 	defer s.domainCooldownMu.Unlock()
@@ -324,6 +325,9 @@ func (s *Server) SetDomainCooldown(c models.ProxyDomainCooldown) {
 		return
 	}
 	s.domainCD.SetCooldown(c)
+	if s.sessionMgr != nil {
+		s.sessionMgr.EndDomainTunnels(c.ProxyID, c.Domain)
+	}
 }
 
 // ClearDomainCooldown removes a single (proxy, domain) cooldown.

@@ -200,7 +200,7 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		return
 	}
 	defer clientConn.Close()
-	binding.EndOnExpiry(clientConn, upstreamConn)
+	binding.EndWithSession(clientConn, upstreamConn)
 
 	// Send 200 Connection Established to the client. The serving proxy's ID
 	// rides along as a header — the only response the client sees before the

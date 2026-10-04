@@ -204,15 +204,17 @@ func (c *PoolChain) sessionMode() bool {
 	return len(c.selectors) > 0 && c.selectors[0].method == "session"
 }
 
-// holdSession attaches the tunnel to the binding that selector selIdx served the
-// request under. It returns nil when the request has no binding.
-func (c *PoolChain) holdSession(ctx context.Context, selIdx int) *sessionHold {
+// holdSession attaches the tunnel through proxyID to the binding that selector
+// selIdx served the request under. It returns nil when the request has no
+// binding.
+func (c *PoolChain) holdSession(ctx context.Context, selIdx, proxyID int) *sessionHold {
 	if selIdx < 0 || selIdx >= len(c.selectors) || c.selectors[selIdx].sessionMgr == nil {
 		return nil
 	}
 	sel := c.selectors[selIdx]
 	ctx = context.WithValue(ctx, UserChainContextKey, c)
-	return sel.sessionMgr.openTunnel(sel.sessionKey(ctx, c.sessionMode()))
+	host, _ := ctx.Value(TargetHostContextKey).(string)
+	return sel.sessionMgr.openTunnel(sel.sessionKey(ctx, c.sessionMode()), proxyID, host)
 }
 
 // markFailed records a failure for the proxy, removing it from its pool's
@@ -372,7 +374,8 @@ func (c *PoolChain) SendWithRetry(
 // bytes through — so the binding is what lets the caller attribute what happens
 // next (requests seen inside it, bytes moved, how long it lived) back to the
 // proxy, pool and user that served it. Its traffic also keeps the request's
-// session binding alive, and the binding's idle expiry ends the tunnel.
+// session binding alive, and the binding ends the tunnel when it expires, is
+// released, or gives up or cools the tunnel's proxy.
 type TunnelBinding struct {
 	ProxyID  int
 	PoolID   int
@@ -391,13 +394,13 @@ func (b *TunnelBinding) touch() {
 	}
 }
 
-// EndOnExpiry shuts down both sides of the tunnel if its session binding sits
-// idle for the pool's session TTL. Without a session binding it does nothing.
-func (b *TunnelBinding) EndOnExpiry(client, upstream net.Conn) {
+// EndWithSession shuts down both sides of the tunnel when its session binding
+// ends it. Without a session binding it does nothing.
+func (b *TunnelBinding) EndWithSession(client, upstream net.Conn) {
 	if b == nil || b.session == nil {
 		return
 	}
-	b.session.onExpiry(func() {
+	b.session.onEnd(func() {
 		shutdownConn(client)
 		shutdownConn(upstream)
 	})
@@ -536,7 +539,7 @@ func (c *PoolChain) ConnectWithRetry(
 			Host:     host,
 			OpenedAt: attemptStart,
 			chain:    c,
-			session:  c.holdSession(ctx, selIdx),
+			session:  c.holdSession(ctx, selIdx, selectedProxy.ID),
 		}, nil
 	}
 

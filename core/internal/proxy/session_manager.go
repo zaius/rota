@@ -17,8 +17,9 @@ var ErrNoProxyAvailable = errors.New("no proxy available; wait and retry")
 // A proxy can have only one session owner per scope, including when that proxy
 // appears in several pools. Bindings survive per-user PoolChain rebuilds, and
 // are released explicitly, on idle expiry, or when the proxy is evicted.
-// Traffic through a binding's tunnels counts as use, and idle expiry ends the
-// tunnels, so a quiet tunnel cannot hold a proxy past the session TTL.
+// Traffic through a binding's tunnels counts as use. A binding's tunnels end
+// when it does, and when it moves off or cools the proxy they run through, so
+// an open tunnel never carries a session over a proxy the session gave up.
 type SessionManager struct {
 	mu           sync.Mutex
 	sessions     map[sessionIdentity]*sessionEntry
@@ -60,15 +61,27 @@ func (e *sessionEntry) lastActive() time.Time {
 	return t
 }
 
-// sessionHold ties one open tunnel to its binding. It records the entry the
-// tunnel opened on, so closing the tunnel leaves alone a binding that was
-// released and recreated in the meantime.
+// endTunnelsLocked ends the entry's tunnels that match.
+func (e *sessionEntry) endTunnelsLocked(match func(*sessionHold) bool) {
+	for h := range e.tunnels {
+		if match(h) {
+			h.endLocked()
+		}
+	}
+}
+
+// sessionHold ties one open tunnel to its binding. It records the proxy and
+// normalized host the tunnel runs through, so a scope or domain cooldown on
+// that proxy can end it.
 type sessionHold struct {
 	m           *SessionManager
 	key         sessionIdentity
 	entry       *sessionEntry
+	proxyID     int
+	host        string
 	lastTraffic atomic.Int64 // UnixNano
 	shutdown    func()       // guarded by m.mu
+	ended       bool         // guarded by m.mu
 }
 
 // SessionInfo is the externally-visible view of a live session binding.
@@ -158,6 +171,7 @@ func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, cho
 		e = &sessionEntry{createdAt: now}
 	} else {
 		delete(m.reservations, reservationKey{e.proxyID, key.scope})
+		e.endTunnelsLocked(func(h *sessionHold) bool { return h.proxyID != p.ID })
 	}
 	e.proxyID, e.lastUsed, e.ttl = p.ID, now, ttl
 	m.sessions[key] = e
@@ -169,22 +183,16 @@ func (m *SessionManager) liveLocked(key sessionIdentity, now time.Time) *session
 	e := m.sessions[key]
 	if e != nil && now.Sub(e.lastActive()) > e.ttl {
 		m.deleteLocked(key)
-		// The tunnels have been idle for the whole TTL too. Ending them sends
-		// the client back through selection instead of leaving it on a proxy
-		// that another session may now reserve.
-		for h := range e.tunnels {
-			if h.shutdown != nil {
-				go h.shutdown()
-			}
-		}
 		return nil
 	}
 	return e
 }
 
-// openTunnel attaches a tunnel to key's live binding until the returned hold
-// closes. It returns nil when key has no live binding.
-func (m *SessionManager) openTunnel(key sessionIdentity) *sessionHold {
+// openTunnel attaches a tunnel through proxyID to key's live binding until the
+// returned hold closes. It returns nil when key has no live binding, and a
+// hold that has already ended when the binding moved off proxyID after
+// selecting it.
+func (m *SessionManager) openTunnel(key sessionIdentity, proxyID int, host string) *sessionHold {
 	if key.token == "" {
 		return nil
 	}
@@ -195,8 +203,12 @@ func (m *SessionManager) openTunnel(key sessionIdentity) *sessionHold {
 	if e == nil {
 		return nil
 	}
-	h := &sessionHold{m: m, key: key, entry: e}
+	h := &sessionHold{m: m, key: key, entry: e, proxyID: proxyID, host: host}
 	h.lastTraffic.Store(now.UnixNano())
+	if e.proxyID != proxyID {
+		h.ended = true
+		return h
+	}
 	if e.tunnels == nil {
 		e.tunnels = make(map[*sessionHold]struct{})
 	}
@@ -211,20 +223,38 @@ func (h *sessionHold) touch() {
 	}
 }
 
-// onExpiry sets how to end the tunnel if its binding goes idle.
-func (h *sessionHold) onExpiry(shutdown func()) {
+// onEnd sets how to shut the tunnel down when its binding ends it, and runs
+// shutdown right away if that already happened.
+func (h *sessionHold) onEnd(shutdown func()) {
 	h.m.mu.Lock()
-	defer h.m.mu.Unlock()
 	h.shutdown = shutdown
+	ended := h.ended
+	h.m.mu.Unlock()
+	if ended {
+		shutdown()
+	}
+}
+
+// endLocked detaches the tunnel from its binding and shuts it down. A tunnel
+// without a shutdown yet ends as soon as onEnd sets one.
+func (h *sessionHold) endLocked() {
+	if h.ended {
+		return
+	}
+	h.ended = true
+	delete(h.entry.tunnels, h)
+	if h.shutdown != nil {
+		go h.shutdown()
+	}
 }
 
 // close detaches the tunnel from its binding, whose idle clock then runs from
-// the tunnel's last traffic. It does nothing if the binding was released,
-// evicted, or replaced while the tunnel was open.
+// the tunnel's last traffic. It does nothing if the binding already ended the
+// tunnel.
 func (h *sessionHold) close() {
 	h.m.mu.Lock()
 	defer h.m.mu.Unlock()
-	if h.m.sessions[h.key] != h.entry {
+	if h.ended {
 		return
 	}
 	delete(h.entry.tunnels, h)
@@ -233,10 +263,14 @@ func (h *sessionHold) close() {
 	}
 }
 
+// deleteLocked drops the binding and ends its tunnels, which send the client
+// back through selection instead of leaving it on a proxy that another session
+// may now reserve.
 func (m *SessionManager) deleteLocked(key sessionIdentity) {
 	if e := m.sessions[key]; e != nil {
 		delete(m.reservations, reservationKey{e.proxyID, key.scope})
 		delete(m.sessions, key)
+		e.endTunnelsLocked(func(*sessionHold) bool { return true })
 	}
 }
 
@@ -293,6 +327,18 @@ func (m *SessionManager) Evict(proxyID int) int {
 		}
 	}
 	return n
+}
+
+// EndDomainTunnels ends session tunnels through proxyID to domain or its
+// subdomains. Their bindings stay and reselect on the next request there.
+func (m *SessionManager) EndDomainTunnels(proxyID int, domain string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.sessions {
+		e.endTunnelsLocked(func(h *sessionHold) bool {
+			return h.proxyID == proxyID && hostMatchesDomain(h.host, domain)
+		})
+	}
 }
 
 func (m *SessionManager) List() []SessionInfo {

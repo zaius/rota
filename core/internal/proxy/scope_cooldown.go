@@ -7,11 +7,21 @@ import (
 )
 
 // SetScopeCooldown keeps other scopes' bindings intact. A cooled binding
-// reselects on its next request, including when it uses a fallback pool.
+// reselects on its next request, including when it uses a fallback pool. Its
+// tunnels through the cooled proxy end, so a client holding one open sends
+// that request.
 func (m *SessionManager) SetScopeCooldown(c models.ProxyScopeCooldown) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cooldowns[reservationKey{c.ProxyID, c.Scope}] = c
+	if !c.Invalid && !c.CooldownUntil.After(time.Now()) {
+		return
+	}
+	for key, e := range m.sessions {
+		if key.scope == c.Scope {
+			e.endTunnelsLocked(func(h *sessionHold) bool { return h.proxyID == c.ProxyID })
+		}
+	}
 }
 
 func (m *SessionManager) ReplaceScopeCooldowns(cooldowns []models.ProxyScopeCooldown) {
