@@ -28,7 +28,7 @@
 - **Monitoring:** Scheduled health checks, webhook alerts, and request/tunnel history.
 - **HTTPS inspection:** Optional per-user TLS interception and configurable TLS/HTTP fingerprint profiles.
 - **Security:** Authenticated proxy users, admin JWTs, bcrypt credentials, and login brute-force protection.
-- **Deployment:** Docker Compose, PostgreSQL/TimescaleDB, optional ClickHouse or Parquet event storage, and Prometheus/OTLP metrics.
+- **Deployment:** Docker Compose, PostgreSQL, file-based Parquet event storage (ClickHouse and TimescaleDB optional), and Prometheus/OTLP metrics.
 
 ---
 
@@ -75,7 +75,7 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `ROTA_ADMIN_USER` | `admin` | Initial dashboard username (seeded once) |
 | `ROTA_ADMIN_PASSWORD` | `admin` | Initial dashboard password (seeded once, min 6 chars) |
 | `DB_PASSWORD` | `rota_password` | Database password |
-| `EVENT_STORE` | `postgres` | Backend for request and tunnel history: `postgres`, `clickhouse` or `parquet` |
+| `EVENT_STORE` | `parquet` | Backend for request and tunnel history: `parquet`, `postgres` or `clickhouse` |
 | `CLICKHOUSE_PASSWORD` | `rota_password` | ClickHouse password (when `EVENT_STORE=clickhouse`) |
 | `EVENT_STORE_DIR` | `data/events` | History directory (when `EVENT_STORE=parquet`) |
 | `EVENT_STORE_SYNC` | `false` | Make every history append wait for the disk (when `EVENT_STORE=parquet`) |
@@ -187,9 +187,9 @@ The API is served at `http://localhost:8001/api/v1`. See [API Authentication](#-
 
 ## 🏗️ Architecture
 
-The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history use PostgreSQL, optional ClickHouse, or local Parquet files. Proxy requests follow each user's main and fallback pools.
+The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history use local Parquet files by default, or optional PostgreSQL or ClickHouse. Proxy requests follow each user's main and fallback pools.
 
-`EVENT_STORE=parquet` keeps history in `EVENT_STORE_DIR` with no extra server. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and one Parquet file per finished day, which tools like DuckDB can also read. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage. One Rota process owns it, so multiple replicas need PostgreSQL or ClickHouse.
+By default Rota keeps history in `EVENT_STORE_DIR` with no extra server. Installs upgrading from a version that kept history in PostgreSQL should set `EVENT_STORE=postgres` to keep it, or use `EVENT_STORE_MIRROR` below to move. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and one Parquet file per finished day, which tools like DuckDB can also read. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage. One Rota process owns it, so multiple replicas need PostgreSQL or ClickHouse.
 
 To move between backends without a gap, set `EVENT_STORE_MIRROR` to a second backend. `EVENT_STORE` keeps answering reads and both receive every new event, so you can switch `EVENT_STORE` once the new backend holds enough history, then unset the mirror. Existing history does not copy over.
 

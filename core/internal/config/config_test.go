@@ -106,6 +106,17 @@ func TestGeoIPASNDatabaseRequiresCity(t *testing.T) {
 	}
 }
 
+func TestEventStoreDefaultsToParquet(t *testing.T) {
+	t.Setenv("EVENT_STORE", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EventStore != "parquet" {
+		t.Fatalf("default event store: got %q", cfg.EventStore)
+	}
+}
+
 func TestEventStoreMirrorValidation(t *testing.T) {
 	for _, tc := range []struct {
 		store, mirror string

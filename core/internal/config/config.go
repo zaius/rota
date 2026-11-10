@@ -18,8 +18,8 @@ type Config struct {
 	AdminPass string
 
 	// EventStore selects the backend for request and tunnel history:
-	// "postgres" (default — events live in the primary database),
-	// "clickhouse", or "parquet" (local files, no extra server) (EVENT_STORE).
+	// "parquet" (default — local files, no extra server), "postgres" (events
+	// live in the primary database), or "clickhouse" (EVENT_STORE).
 	EventStore string
 
 	// EventStoreMirror names a second backend that also receives every write
@@ -196,7 +196,7 @@ func Load() (*Config, error) {
 		AdminUser:        getEnv("ROTA_ADMIN_USER", "admin"),
 		AdminPass:        getEnv("ROTA_ADMIN_PASSWORD", "admin"),
 		JWTSecret:        getEnv("JWT_SECRET", ""),
-		EventStore:       getEnv("EVENT_STORE", "postgres"),
+		EventStore:       getEnv("EVENT_STORE", "parquet"),
 		EventStoreMirror: getEnv("EVENT_STORE_MIRROR", ""),
 		ClickHouse: ClickHouseConfig{
 			Host:     getEnv("CLICKHOUSE_HOST", "localhost"),

@@ -36,11 +36,11 @@ services:
       - GEOIP_CITY_DB=${GEOIP_CITY_DB:-}
       - GEOIP_ASN_DB=${GEOIP_ASN_DB:-}
       - GEOIP_UPDATE_HOURS=${GEOIP_UPDATE_HOURS:-168}
-      # Event store: "postgres" (default) keeps request and tunnel history in the
-      # primary database; "clickhouse" moves them to the clickhouse service
-      # (start it with: docker compose --profile clickhouse up -d); "parquet"
-      # keeps them in files on the rota-data volume, with no extra service.
-      - EVENT_STORE=${EVENT_STORE:-postgres}
+      # Event store: "parquet" (default) keeps request and tunnel history in
+      # files on the rota-data volume, with no extra service; "postgres" keeps
+      # it in the primary database; "clickhouse" moves it to the clickhouse
+      # service (start it with: docker compose --profile clickhouse up -d).
+      - EVENT_STORE=${EVENT_STORE:-parquet}
       - CLICKHOUSE_HOST=${CLICKHOUSE_HOST:-clickhouse}
       - CLICKHOUSE_PORT=${CLICKHOUSE_PORT:-9000}
       - CLICKHOUSE_USER=${CLICKHOUSE_USER:-rota}
