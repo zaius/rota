@@ -48,6 +48,9 @@ services:
       - CLICKHOUSE_DB=${CLICKHOUSE_DB:-rota}
       - EVENT_STORE_DIR=${EVENT_STORE_DIR:-}
       - EVENT_STORE_SYNC=${EVENT_STORE_SYNC:-false}
+      # A second backend that also receives every write, for moving between
+      # backends without a gap. EVENT_STORE keeps answering reads.
+      - EVENT_STORE_MIRROR=${EVENT_STORE_MIRROR:-}
       # Prometheus metrics at GET :8001/metrics; see .env.example for the
       # OTEL_* vars that additionally enable OTLP push (e.g. to SigNoz).
       - METRICS_ENABLED=${METRICS_ENABLED:-true}

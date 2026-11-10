@@ -79,6 +79,7 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `CLICKHOUSE_PASSWORD` | `rota_password` | ClickHouse password (when `EVENT_STORE=clickhouse`) |
 | `EVENT_STORE_DIR` | `data/events` | History directory (when `EVENT_STORE=parquet`) |
 | `EVENT_STORE_SYNC` | `false` | Make every history append wait for the disk (when `EVENT_STORE=parquet`) |
+| `EVENT_STORE_MIRROR` | _(unset)_ | Second backend that also receives every write, for moving between backends |
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `METRICS_ENABLED` | `true` | Prometheus `/metrics` endpoint + optional OTLP push — see [Metrics & Observability](#-metrics--observability) |
 | `METRICS_BEARER_TOKEN` | *(empty)* | When set, `/metrics` requires `Authorization: Bearer <token>` |
@@ -189,6 +190,8 @@ The API is served at `http://localhost:8001/api/v1`. See [API Authentication](#-
 The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history use PostgreSQL, optional ClickHouse, or local Parquet files. Proxy requests follow each user's main and fallback pools.
 
 `EVENT_STORE=parquet` keeps history in `EVENT_STORE_DIR` with no extra server. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and one Parquet file per finished day, which tools like DuckDB can also read. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage. One Rota process owns it, so multiple replicas need PostgreSQL or ClickHouse.
+
+To move between backends without a gap, set `EVENT_STORE_MIRROR` to a second backend. `EVENT_STORE` keeps answering reads and both receive every new event, so you can switch `EVENT_STORE` once the new backend holds enough history, then unset the mirror. Existing history does not copy over.
 
 ### Rotation Strategies
 

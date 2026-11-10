@@ -106,6 +106,28 @@ func TestGeoIPASNDatabaseRequiresCity(t *testing.T) {
 	}
 }
 
+func TestEventStoreMirrorValidation(t *testing.T) {
+	for _, tc := range []struct {
+		store, mirror string
+		valid         bool
+	}{
+		{"postgres", "", true},
+		{"postgres", "parquet", true},
+		{"parquet", "postgres", true},
+		{"parquet", "clickhouse", true},
+		{"parquet", "parquet", false},
+		{"parquet", "mysql", false},
+	} {
+		t.Run(tc.store+"/"+tc.mirror, func(t *testing.T) {
+			t.Setenv("EVENT_STORE", tc.store)
+			t.Setenv("EVENT_STORE_MIRROR", tc.mirror)
+			if _, err := Load(); (err == nil) != tc.valid {
+				t.Fatalf("valid=%v, got error %v", tc.valid, err)
+			}
+		})
+	}
+}
+
 func TestLoadDotEnv(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
 	content := "# comment\n" +

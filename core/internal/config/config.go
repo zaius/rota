@@ -22,6 +22,11 @@ type Config struct {
 	// "clickhouse", or "parquet" (local files, no extra server) (EVENT_STORE).
 	EventStore string
 
+	// EventStoreMirror names a second backend that also receives every write
+	// while EventStore keeps answering reads, for moving between backends
+	// without a gap (EVENT_STORE_MIRROR). Empty disables it.
+	EventStoreMirror string
+
 	// Parquet configures the file-based event store when EVENT_STORE=parquet.
 	Parquet ParquetConfig
 
@@ -147,6 +152,10 @@ type ClickHouseConfig struct {
 	Name     string
 }
 
+func validEventStore(name string) bool {
+	return name == "parquet" || name == "postgres" || name == "clickhouse"
+}
+
 // ParquetConfig holds the settings of the file-based event store.
 type ParquetConfig struct {
 	// Dir holds the event logs and Parquet files. It must outlive the
@@ -184,10 +193,11 @@ func Load() (*Config, error) {
 			Name:     getEnv("DB_NAME", "rota"),
 			SSLMode:  getEnv("DB_SSLMODE", "disable"),
 		},
-		AdminUser:  getEnv("ROTA_ADMIN_USER", "admin"),
-		AdminPass:  getEnv("ROTA_ADMIN_PASSWORD", "admin"),
-		JWTSecret:  getEnv("JWT_SECRET", ""),
-		EventStore: getEnv("EVENT_STORE", "postgres"),
+		AdminUser:        getEnv("ROTA_ADMIN_USER", "admin"),
+		AdminPass:        getEnv("ROTA_ADMIN_PASSWORD", "admin"),
+		JWTSecret:        getEnv("JWT_SECRET", ""),
+		EventStore:       getEnv("EVENT_STORE", "postgres"),
+		EventStoreMirror: getEnv("EVENT_STORE_MIRROR", ""),
 		ClickHouse: ClickHouseConfig{
 			Host:     getEnv("CLICKHOUSE_HOST", "localhost"),
 			Port:     getEnvAsInt("CLICKHOUSE_PORT", 9000),
@@ -266,8 +276,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid log level: %s (must be debug, info, warn, or error)", c.LogLevel)
 	}
 
-	if c.EventStore != "postgres" && c.EventStore != "clickhouse" && c.EventStore != "parquet" {
-		return fmt.Errorf("invalid event store: %s (must be postgres, clickhouse or parquet)", c.EventStore)
+	if !validEventStore(c.EventStore) {
+		return fmt.Errorf("invalid event store: %s (must be parquet, postgres or clickhouse)", c.EventStore)
+	}
+	if c.EventStoreMirror != "" && (!validEventStore(c.EventStoreMirror) || c.EventStoreMirror == c.EventStore) {
+		return fmt.Errorf("invalid event store mirror: %s (must be a backend other than %s)", c.EventStoreMirror, c.EventStore)
 	}
 	if c.AuthIPMaxAttempts < 1 || c.AuthIPWindowMinutes < 1 || c.AuthIPBlockMinutes < 1 {
 		return fmt.Errorf("AUTH_IP_MAX_ATTEMPTS, AUTH_IP_WINDOW_MINUTES and AUTH_IP_BLOCK_MINUTES must be positive")

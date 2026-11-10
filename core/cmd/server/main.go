@@ -74,6 +74,41 @@ func flushHistory(w *events.BatchWriter, log *logger.Logger) {
 	}
 }
 
+// openedEventStore is one event backend and how to shut it down.
+type openedEventStore struct {
+	store events.Store
+	batch *events.BatchWriter // nil when the backend takes events directly
+	close func()
+}
+
+// openEventStore opens a backend by name. Database backends get a batch
+// writer, so a database takes one multi-row insert per flush instead of a
+// round trip per event. The parquet store appends each event directly.
+func openEventStore(ctx context.Context, name string, cfg *config.Config, db *database.DB, log *logger.Logger, observe events.FlushObserver) (*openedEventStore, error) {
+	var store events.Store
+	closeStore := func() {}
+	switch name {
+	case "parquet":
+		files, err := events.NewParquetStore(&cfg.Parquet, log, observe)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open parquet event store: %w", err)
+		}
+		return &openedEventStore{store: files, close: func() { files.Close() }}, nil
+	case "postgres":
+		store = events.NewPostgresStore(db, log)
+	case "clickhouse":
+		ch, err := events.NewClickHouseStore(ctx, &cfg.ClickHouse, log)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to clickhouse event store: %w", err)
+		}
+		store, closeStore = ch, func() { ch.Close() }
+	default:
+		return nil, fmt.Errorf("unsupported event store: %s", name)
+	}
+	batch := events.NewBatchWriter(store, log, observe)
+	return &openedEventStore{store: batch, batch: batch, close: closeStore}, nil
+}
+
 func run() error {
 	// Load configuration
 	cfg, err := config.Load()
@@ -116,41 +151,35 @@ func run() error {
 	}
 
 	// Create the event store — the single boundary for time-series event data
-	// (request and tunnel history). Config selects the backend: events
-	// in the primary Postgres database (default), or in ClickHouse.
-	var eventStore events.Store
-	switch cfg.EventStore {
-	case "postgres":
-		eventStore = events.NewPostgresStore(db, log)
-	case "clickhouse":
-		ch, err := events.NewClickHouseStore(ctx, &cfg.ClickHouse, log)
-		if err != nil {
-			return fmt.Errorf("failed to connect to clickhouse event store: %w", err)
-		}
-		defer ch.Close()
-		eventStore = ch
-	case "parquet":
-		files, err := events.NewParquetStore(&cfg.Parquet, log, metrics.RecordEventsWritten)
-		if err != nil {
-			return fmt.Errorf("failed to open parquet event store: %w", err)
-		}
-		defer files.Close()
-		eventStore = files
-	default:
-		return fmt.Errorf("unsupported event store: %s", cfg.EventStore)
+	// (request and tunnel history). Config selects the backend, and optionally
+	// a mirror that also receives every write. Only the primary reports
+	// metrics, so the written-events counter counts each event once.
+	primaryEvents, err := openEventStore(ctx, cfg.EventStore, cfg, db, log, metrics.RecordEventsWritten)
+	if err != nil {
+		return err
 	}
+	defer primaryEvents.close()
+	eventStore := primaryEvents.store
+	batchWriters := []*events.BatchWriter{primaryEvents.batch}
 
-	// The proxy records an event for every upstream attempt and tunnel; batch
-	// them so a database takes one multi-row insert per flush instead of a
-	// round trip per event. The parquet store appends each event directly.
-	var batchWriter *events.BatchWriter
-	if cfg.EventStore != "parquet" {
-		batchWriter = events.NewBatchWriter(eventStore, log, metrics.RecordEventsWritten)
-		eventStore = batchWriter
+	if cfg.EventStoreMirror != "" {
+		mirrorEvents, err := openEventStore(ctx, cfg.EventStoreMirror, cfg, db, log, nil)
+		if err != nil {
+			return err
+		}
+		defer mirrorEvents.close()
+		eventStore = events.NewMirrorStore(eventStore, mirrorEvents.store, log)
+		batchWriters = append(batchWriters, mirrorEvents.batch)
+		log.Info("mirroring event writes", "primary", cfg.EventStore, "mirror", cfg.EventStoreMirror)
+	}
+	flushAllHistory := func() {
+		for _, w := range batchWriters {
+			flushHistory(w, log)
+		}
 	}
 	// Registered after the store and database closes, so it runs before them
 	// on every return path, including a server failing to start.
-	defer flushHistory(batchWriter, log)
+	defer flushAllHistory()
 
 	// Create repositories once — this is the single place they are constructed.
 	proxyRepo := repository.NewProxyRepository(db)
@@ -295,7 +324,7 @@ func run() error {
 
 	// Flush buffered history once the servers have stopped producing it, while
 	// the metrics pipeline can still report the writes.
-	flushHistory(batchWriter, log)
+	flushAllHistory()
 
 	// Stop the metrics pipeline last, so the final OTLP push (if configured)
 	// still sees everything the servers recorded on the way down.
