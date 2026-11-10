@@ -18,9 +18,12 @@ type Config struct {
 	AdminPass string
 
 	// EventStore selects the backend for request and tunnel history:
-	// "postgres" (default — events live in the primary database) or
-	// "clickhouse" (EVENT_STORE).
+	// "postgres" (default — events live in the primary database),
+	// "clickhouse", or "parquet" (local files, no extra server) (EVENT_STORE).
 	EventStore string
+
+	// Parquet configures the file-based event store when EVENT_STORE=parquet.
+	Parquet ParquetConfig
 
 	// ClickHouse is the event-store connection when EVENT_STORE=clickhouse.
 	// The primary (Postgres) database is still required for control-plane
@@ -131,6 +134,10 @@ type GeoIPConfig struct {
 // database paths.
 const defaultGeoIPDir = "data/geoip"
 
+// defaultEventDir is relative to the working directory: /app/data/events in
+// the container, on the same volume as the GeoIP databases.
+const defaultEventDir = "data/events"
+
 // ClickHouseConfig holds the ClickHouse connection settings (native protocol).
 type ClickHouseConfig struct {
 	Host     string
@@ -138,6 +145,17 @@ type ClickHouseConfig struct {
 	User     string
 	Password string
 	Name     string
+}
+
+// ParquetConfig holds the settings of the file-based event store.
+type ParquetConfig struct {
+	// Dir holds the event logs and Parquet files. It must outlive the
+	// process, because the current day exists only here.
+	Dir string
+
+	// SyncWrites makes every append wait for the disk, so events survive
+	// power loss at the cost of write latency (EVENT_STORE_SYNC).
+	SyncWrites bool
 }
 
 // DSN returns the database connection string
@@ -176,6 +194,10 @@ func Load() (*Config, error) {
 			User:     getEnv("CLICKHOUSE_USER", "rota"),
 			Password: getEnv("CLICKHOUSE_PASSWORD", ""),
 			Name:     getEnv("CLICKHOUSE_DB", "rota"),
+		},
+		Parquet: ParquetConfig{
+			Dir:        getEnv("EVENT_STORE_DIR", defaultEventDir),
+			SyncWrites: getEnvAsBool("EVENT_STORE_SYNC", false),
 		},
 
 		CORSAllowedOrigins: getEnvAsSlice("CORS_ALLOWED_ORIGINS", []string{"*"}),
@@ -244,8 +266,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid log level: %s (must be debug, info, warn, or error)", c.LogLevel)
 	}
 
-	if c.EventStore != "postgres" && c.EventStore != "clickhouse" {
-		return fmt.Errorf("invalid event store: %s (must be postgres or clickhouse)", c.EventStore)
+	if c.EventStore != "postgres" && c.EventStore != "clickhouse" && c.EventStore != "parquet" {
+		return fmt.Errorf("invalid event store: %s (must be postgres, clickhouse or parquet)", c.EventStore)
 	}
 	if c.AuthIPMaxAttempts < 1 || c.AuthIPWindowMinutes < 1 || c.AuthIPBlockMinutes < 1 {
 		return fmt.Errorf("AUTH_IP_MAX_ATTEMPTS, AUTH_IP_WINDOW_MINUTES and AUTH_IP_BLOCK_MINUTES must be positive")

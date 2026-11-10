@@ -60,13 +60,22 @@ type storeBackend interface {
 }
 
 // newTestBackend returns the backend selected by EVENT_STORE_TEST (default
-// "postgres"), skipping unless ROTA_TEST_DB is set.
+// "postgres"). Database backends skip unless ROTA_TEST_DB is set; the parquet
+// backends need only a temporary directory. "parquet" answers from today's
+// log and "parquet-sealed" converts everything to Parquet before each read.
 func newTestBackend(t *testing.T) storeBackend {
 	t.Helper()
+	backend := os.Getenv("EVENT_STORE_TEST")
+	switch backend {
+	case "parquet":
+		return newParquetTestBackend(t, false)
+	case "parquet-sealed":
+		return newParquetTestBackend(t, true)
+	}
 	if os.Getenv("ROTA_TEST_DB") == "" {
 		t.Skip("set ROTA_TEST_DB=1 (with a running database) to run event store conformance tests")
 	}
-	switch backend := os.Getenv("EVENT_STORE_TEST"); backend {
+	switch backend {
 	case "", "postgres":
 		return newPGTestBackend(t)
 	case "clickhouse":

@@ -28,7 +28,7 @@
 - **Monitoring:** Scheduled health checks, webhook alerts, and request/tunnel history.
 - **HTTPS inspection:** Optional per-user TLS interception and configurable TLS/HTTP fingerprint profiles.
 - **Security:** Authenticated proxy users, admin JWTs, bcrypt credentials, and login brute-force protection.
-- **Deployment:** Docker Compose, PostgreSQL/TimescaleDB, optional ClickHouse event storage, and Prometheus/OTLP metrics.
+- **Deployment:** Docker Compose, PostgreSQL/TimescaleDB, optional ClickHouse or Parquet event storage, and Prometheus/OTLP metrics.
 
 ---
 
@@ -75,8 +75,10 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `ROTA_ADMIN_USER` | `admin` | Initial dashboard username (seeded once) |
 | `ROTA_ADMIN_PASSWORD` | `admin` | Initial dashboard password (seeded once, min 6 chars) |
 | `DB_PASSWORD` | `rota_password` | Database password |
-| `EVENT_STORE` | `postgres` | Backend for request and tunnel history: `postgres` or `clickhouse` |
+| `EVENT_STORE` | `postgres` | Backend for request and tunnel history: `postgres`, `clickhouse` or `parquet` |
 | `CLICKHOUSE_PASSWORD` | `rota_password` | ClickHouse password (when `EVENT_STORE=clickhouse`) |
+| `EVENT_STORE_DIR` | `data/events` | History directory (when `EVENT_STORE=parquet`) |
+| `EVENT_STORE_SYNC` | `false` | Make every history append wait for the disk (when `EVENT_STORE=parquet`) |
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `METRICS_ENABLED` | `true` | Prometheus `/metrics` endpoint + optional OTLP push — see [Metrics & Observability](#-metrics--observability) |
 | `METRICS_BEARER_TOKEN` | *(empty)* | When set, `/metrics` requires `Authorization: Bearer <token>` |
@@ -184,7 +186,9 @@ The API is served at `http://localhost:8001/api/v1`. See [API Authentication](#-
 
 ## 🏗️ Architecture
 
-The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history use PostgreSQL or optional ClickHouse. Proxy requests follow each user's main and fallback pools.
+The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history use PostgreSQL, optional ClickHouse, or local Parquet files. Proxy requests follow each user's main and fallback pools.
+
+`EVENT_STORE=parquet` keeps history in `EVENT_STORE_DIR` with no extra server. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and one Parquet file per finished day, which tools like DuckDB can also read. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage. One Rota process owns it, so multiple replicas need PostgreSQL or ClickHouse.
 
 ### Rotation Strategies
 
@@ -463,7 +467,7 @@ curl "http://localhost:8001/api/v1/dashboard/domains?range=24h&domain=example.co
 
 `range` accepts `1h`, `6h`, `24h` (default), `7d`, or `30d`. Omit `domain` for all hosts. `limit` is 1–1000 (default 100); rows are ranked by requests plus completed tunnels, then hostname. Each hostname has its own row; filtering to a parent includes subdomain rows without merging them.
 
-Responses include `requests`, `successes`, `failures`, `rate_limited`, `avg_response_time`, `p50_ms`, `p95_ms`, `tunnels`, `tunnel_errors`, `bytes_up`, and `bytes_down` per domain. Latencies are milliseconds and cover successful requests only. Request outcomes inside opaque HTTPS tunnels are unknown; tunnels and their bytes are counted separately at close time. Historical events without a recorded domain are excluded. Both PostgreSQL and ClickHouse event stores support these queries.
+Responses include `requests`, `successes`, `failures`, `rate_limited`, `avg_response_time`, `p50_ms`, `p95_ms`, `tunnels`, `tunnel_errors`, `bytes_up`, and `bytes_down` per domain. Latencies are milliseconds and cover successful requests only. Request outcomes inside opaque HTTPS tunnels are unknown; tunnels and their bytes are counted separately at close time. Historical events without a recorded domain are excluded. The PostgreSQL, ClickHouse and Parquet event stores all support these queries.
 
 ---
 
@@ -486,7 +490,7 @@ Every tunnel writes a record when it closes, whether or not inspection is enable
 
 The dashboard turns these into **Open Tunnels**, **Tunnels (24h)** and **Tunnel Data (24h)**, plus mean concurrency — the number that distinguishes "3 short tunnels" from "3 tunnels held open all day moving 2 GB".
 
-Tunnel and request records are written to the event store in batches, so they appear up to a second after the traffic. A graceful shutdown writes out whatever is still buffered.
+PostgreSQL and ClickHouse receive tunnel and request records in batches, so they appear up to a second after the traffic, and a graceful shutdown writes out whatever is still buffered. The Parquet store appends each record as it happens.
 
 ### Optional: inspecting HTTPS requests
 

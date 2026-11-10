@@ -64,6 +64,9 @@ func metricsHTTPHandler(p *metrics.Provider) http.Handler {
 // deadline: the servers may already have spent the shutdown context waiting on
 // requests that outlived it. Calls after the first return at once.
 func flushHistory(w *events.BatchWriter, log *logger.Logger) {
+	if w == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := w.Close(ctx); err != nil {
@@ -126,15 +129,25 @@ func run() error {
 		}
 		defer ch.Close()
 		eventStore = ch
+	case "parquet":
+		files, err := events.NewParquetStore(&cfg.Parquet, log, metrics.RecordEventsWritten)
+		if err != nil {
+			return fmt.Errorf("failed to open parquet event store: %w", err)
+		}
+		defer files.Close()
+		eventStore = files
 	default:
 		return fmt.Errorf("unsupported event store: %s", cfg.EventStore)
 	}
 
 	// The proxy records an event for every upstream attempt and tunnel; batch
-	// them so the store takes one multi-row insert per flush instead of a
-	// round trip per event.
-	batchWriter := events.NewBatchWriter(eventStore, log, metrics.RecordEventsWritten)
-	eventStore = batchWriter
+	// them so a database takes one multi-row insert per flush instead of a
+	// round trip per event. The parquet store appends each event directly.
+	var batchWriter *events.BatchWriter
+	if cfg.EventStore != "parquet" {
+		batchWriter = events.NewBatchWriter(eventStore, log, metrics.RecordEventsWritten)
+		eventStore = batchWriter
+	}
 	// Registered after the store and database closes, so it runs before them
 	// on every return path, including a server failing to start.
 	defer flushHistory(batchWriter, log)

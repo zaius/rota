@@ -38,13 +38,16 @@ services:
       - GEOIP_UPDATE_HOURS=${GEOIP_UPDATE_HOURS:-168}
       # Event store: "postgres" (default) keeps request and tunnel history in the
       # primary database; "clickhouse" moves them to the clickhouse service
-      # (start it with: docker compose --profile clickhouse up -d).
+      # (start it with: docker compose --profile clickhouse up -d); "parquet"
+      # keeps them in files on the rota-data volume, with no extra service.
       - EVENT_STORE=${EVENT_STORE:-postgres}
       - CLICKHOUSE_HOST=${CLICKHOUSE_HOST:-clickhouse}
       - CLICKHOUSE_PORT=${CLICKHOUSE_PORT:-9000}
       - CLICKHOUSE_USER=${CLICKHOUSE_USER:-rota}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-rota_password}
       - CLICKHOUSE_DB=${CLICKHOUSE_DB:-rota}
+      - EVENT_STORE_DIR=${EVENT_STORE_DIR:-}
+      - EVENT_STORE_SYNC=${EVENT_STORE_SYNC:-false}
       # Prometheus metrics at GET :8001/metrics; see .env.example for the
       # OTEL_* vars that additionally enable OTLP push (e.g. to SigNoz).
       - METRICS_ENABLED=${METRICS_ENABLED:-true}
