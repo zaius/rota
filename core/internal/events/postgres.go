@@ -278,6 +278,9 @@ func optString(v string) *string {
 func (s *PostgresStore) TunnelStats(ctx context.Context, window time.Duration) (*TunnelSummary, error) {
 	// Tunnels are bucketed by close time, not open time: a tunnel opened
 	// before the window but closed inside it did its work in the window.
+	// The timestamp bound lets the index skip old rows, because no index can
+	// serve the computed close time. It drops tunnels opened more than a day
+	// before the window that closed inside it.
 	query := `
 		SELECT
 			COUNT(*),
@@ -286,7 +289,8 @@ func (s *PostgresStore) TunnelStats(ctx context.Context, window time.Duration) (
 			COALESCE(SUM(requests), 0),
 			COALESCE(SUM(duration_ms), 0)
 		FROM proxy_tunnels
-		WHERE timestamp + make_interval(secs => duration_ms / 1000.0) >= NOW() - $1::interval
+		WHERE timestamp >= NOW() - $1::interval - INTERVAL '1 day'
+		  AND timestamp + make_interval(secs => duration_ms / 1000.0) >= NOW() - $1::interval
 	`
 
 	var stats TunnelSummary

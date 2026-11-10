@@ -32,7 +32,8 @@ func (s *PostgresStore) DomainStats(ctx context.Context, rng, domain string, lim
 			       COUNT(*) FILTER (WHERE error IS NOT NULL AND error <> ''),
 			       SUM(bytes_up), SUM(bytes_down)
 			FROM proxy_tunnels
-			WHERE timestamp + make_interval(secs => duration_ms / 1000.0) >= NOW() - make_interval(secs => $1)
+			WHERE timestamp >= NOW() - make_interval(secs => $1) - INTERVAL '1 day'
+			  AND timestamp + make_interval(secs => duration_ms / 1000.0) >= NOW() - make_interval(secs => $1)
 			  AND domain IS NOT NULL AND domain <> ''
 			  AND ($2 = '' OR domain = $2 OR RIGHT(domain, LENGTH($2) + 1) = '.' || $2)
 			GROUP BY domain
