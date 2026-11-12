@@ -186,7 +186,7 @@ The API is served at `http://localhost:8001/api/v1`. See [API Authentication](#-
 
 The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history live in local Parquet files. Proxy requests follow each user's main and fallback pools.
 
-Rota keeps history in `EVENT_STORE_DIR` with no extra server. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and one Parquet file per finished day, which tools like DuckDB can also read. Files are named `<day>.<instance>.log` and `<day>.<instance>.parquet` after `EVENT_STORE_INSTANCE`, and a day may have several. Rota reads every file in the directory, including `<day>.log` and `<day>.parquet` files without an instance name, but converts only its own logs and those without a name, so keep `EVENT_STORE_INSTANCE` the same across restarts. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage, and run one Rota process per directory.
+Rota keeps history in `EVENT_STORE_DIR` with no extra server. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and a Parquet file for each finished day, which tools like DuckDB can also read. Files are named `<day>.<instance>.log` and `<day>.<instance>.parquet` after `EVENT_STORE_INSTANCE`. Rota reads every file in the directory, including `<day>.log` and `<day>.parquet` files without an instance name, so a day can have more than one file. It converts only its own logs and unnamed ones, so keep `EVENT_STORE_INSTANCE` the same across restarts. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage, and run one Rota process per directory.
 
 ### Rotation Strategies
 
@@ -523,7 +523,7 @@ standalone server, export the settings into its environment and restart it.
 
 **2. Enable it per proxy user** with **Inspect HTTPS** or `inspect_tls` via the API. Both the CA and user opt-in are required.
 
-Once on, each request inside the tunnel produces a normal request event with its method, URL, latency and **status code** — which is what makes blocks visible. A `429` or a `403` block page is an answer, not a transport failure, so it still counts as a successful attempt (matching the plain-HTTP path); query `proxy_requests.status_code` to see blocking, rather than the success rate.
+Once on, each request inside the tunnel produces a normal request event with its method, URL, latency and **status code** — which is what makes blocks visible. A `429` or a `403` block page is an answer, not a transport failure, so it still counts as a successful attempt (matching the plain-HTTP path); look at status codes to see blocking, such as the `rate_limited` count in Traffic by Domain or the `status_code` column of the request history, rather than the success rate.
 
 > **Before enabling, understand the trade-offs:**
 > - The client must **trust the CA**, or every intercepted request fails its certificate check.

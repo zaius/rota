@@ -11,8 +11,7 @@ import (
 
 const (
 	historyCleanupInterval = 24 * time.Hour
-	// Matches the bootstrap retention policies for requests and tunnels.
-	requestRetentionDays = 90
+	requestRetentionDays   = 90
 )
 
 // HistoryCleanupService enforces retention for request and tunnel history.
