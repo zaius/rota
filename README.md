@@ -192,8 +192,6 @@ By default Rota keeps history in `EVENT_STORE_DIR` with no extra server. Install
 
 To move between backends without a gap, set `EVENT_STORE_MIRROR` to a second backend. `EVENT_STORE` keeps answering reads and both receive every new event, so you can switch `EVENT_STORE` once the new backend holds enough history, then unset the mirror.
 
-To copy history that PostgreSQL already holds into the Parquet store, run `rota import-postgres-history` (with Docker Compose: `docker compose exec rota /app/server import-postgres-history`) once the store has started receiving events. It copies every PostgreSQL event older than the earliest one in the files, one day at a time, while Rota keeps running, and records its progress so a second run resumes instead of copying a day twice. Pass `-before <RFC 3339 time>` to choose the cutoff yourself.
-
 ### Rotation Strategies
 
 Rotation is configured per pool via `rotation_method`:

@@ -52,9 +52,8 @@ type ParquetStore struct {
 	cancel        context.CancelFunc
 	closeOnce     sync.Once
 
-	// rollupClosed holds the rollup of the Parquet files rollupKey names with
-	// their sizes. Only a history import rewrites one of those files, and that
-	// changes its size, so each minute's refresh rescans only logs.
+	// rollupClosed holds the rollup of the Parquet files named by rollupKey.
+	// Those files never change, so each minute's refresh rescans only logs.
 	rollupMu     sync.Mutex
 	rollupKey    string
 	rollupClosed *proxyAgg
@@ -284,7 +283,7 @@ func (s *ParquetStore) ProxyRollup(ctx context.Context) ([]ProxyRequestStats, er
 	for _, f := range files {
 		if f.parquet {
 			closed = append(closed, f)
-			names = append(names, fmt.Sprintf("%s:%d", filepath.Base(f.path), f.size))
+			names = append(names, filepath.Base(f.path))
 		} else {
 			open = append(open, f)
 		}

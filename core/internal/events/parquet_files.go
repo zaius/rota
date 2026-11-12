@@ -208,12 +208,7 @@ func (t *eventTable) close() error {
 type dayFiles struct{ log, parquet bool }
 
 func (t *eventTable) list() (map[int64]dayFiles, error) {
-	return listDayFiles(t.dir)
-}
-
-// listDayFiles reports which files each day has in one table directory.
-func listDayFiles(dir string) (map[int64]dayFiles, error) {
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(t.dir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list event files: %w", err)
 	}
