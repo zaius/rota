@@ -125,7 +125,7 @@ func TestEventStoreMirrorValidation(t *testing.T) {
 		{"postgres", "", true},
 		{"postgres", "parquet", true},
 		{"parquet", "postgres", true},
-		{"parquet", "clickhouse", true},
+		{"parquet", "clickhouse", false},
 		{"parquet", "parquet", false},
 		{"parquet", "mysql", false},
 	} {

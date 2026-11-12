@@ -17,9 +17,9 @@ type Config struct {
 	AdminUser string
 	AdminPass string
 
-	// EventStore selects the backend for request and tunnel history:
-	// "parquet" (default — local files, no extra server), "postgres" (events
-	// live in the primary database), or "clickhouse" (EVENT_STORE).
+	// EventStore selects the backend for request and tunnel history
+	// (EVENT_STORE): "parquet" (default — local files, no extra server) or
+	// "postgres" (events live in the primary database).
 	EventStore string
 
 	// EventStoreMirror names a second backend that also receives every write
@@ -29,11 +29,6 @@ type Config struct {
 
 	// Parquet configures the file-based event store when EVENT_STORE=parquet.
 	Parquet ParquetConfig
-
-	// ClickHouse is the event-store connection when EVENT_STORE=clickhouse.
-	// The primary (Postgres) database is still required for control-plane
-	// data either way.
-	ClickHouse ClickHouseConfig
 
 	// JWTSecret, when set, signs dashboard session tokens in place of the key
 	// the server generates once and stores in the database. Set it only to
@@ -143,17 +138,8 @@ const defaultGeoIPDir = "data/geoip"
 // the container, on the same volume as the GeoIP databases.
 const defaultEventDir = "data/events"
 
-// ClickHouseConfig holds the ClickHouse connection settings (native protocol).
-type ClickHouseConfig struct {
-	Host     string
-	Port     int
-	User     string
-	Password string
-	Name     string
-}
-
 func validEventStore(name string) bool {
-	return name == "parquet" || name == "postgres" || name == "clickhouse"
+	return name == "parquet" || name == "postgres"
 }
 
 // ParquetConfig holds the settings of the file-based event store.
@@ -198,13 +184,6 @@ func Load() (*Config, error) {
 		JWTSecret:        getEnv("JWT_SECRET", ""),
 		EventStore:       getEnv("EVENT_STORE", "parquet"),
 		EventStoreMirror: getEnv("EVENT_STORE_MIRROR", ""),
-		ClickHouse: ClickHouseConfig{
-			Host:     getEnv("CLICKHOUSE_HOST", "localhost"),
-			Port:     getEnvAsInt("CLICKHOUSE_PORT", 9000),
-			User:     getEnv("CLICKHOUSE_USER", "rota"),
-			Password: getEnv("CLICKHOUSE_PASSWORD", ""),
-			Name:     getEnv("CLICKHOUSE_DB", "rota"),
-		},
 		Parquet: ParquetConfig{
 			Dir:        getEnv("EVENT_STORE_DIR", defaultEventDir),
 			SyncWrites: getEnvAsBool("EVENT_STORE_SYNC", false),
@@ -277,7 +256,7 @@ func (c *Config) Validate() error {
 	}
 
 	if !validEventStore(c.EventStore) {
-		return fmt.Errorf("invalid event store: %s (must be parquet, postgres or clickhouse)", c.EventStore)
+		return fmt.Errorf("invalid event store: %s (must be parquet or postgres)", c.EventStore)
 	}
 	if c.EventStoreMirror != "" && (!validEventStore(c.EventStoreMirror) || c.EventStoreMirror == c.EventStore) {
 		return fmt.Errorf("invalid event store mirror: %s (must be a backend other than %s)", c.EventStoreMirror, c.EventStore)

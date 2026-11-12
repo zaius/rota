@@ -12,8 +12,7 @@ import (
 // This file is the event-store conformance suite: every Store implementation
 // must pass it. Test bodies talk only to the Store interface plus the small
 // storeBackend hook set below — no backend-specific SQL — so a new backend
-// (e.g. ClickHouse) joins by adding a case to newTestBackend, with zero new
-// tests.
+// joins by adding a case to newTestBackend, with zero new tests.
 //
 // The suite needs a real database and is skipped unless ROTA_TEST_DB is set,
 // so `go test ./...` stays hermetic. To run it locally:
@@ -78,8 +77,6 @@ func newTestBackend(t *testing.T) storeBackend {
 	switch backend {
 	case "", "postgres":
 		return newPGTestBackend(t)
-	case "clickhouse":
-		return newCHTestBackend(t)
 	default:
 		t.Fatalf("unknown EVENT_STORE_TEST %q", backend)
 		return nil

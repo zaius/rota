@@ -126,7 +126,6 @@ type openedEventStore struct {
 // round trip per event. The parquet store appends each event directly.
 func openEventStore(ctx context.Context, name string, cfg *config.Config, db *database.DB, log *logger.Logger, observe events.FlushObserver) (*openedEventStore, error) {
 	var store events.Store
-	closeStore := func() {}
 	switch name {
 	case "parquet":
 		files, err := events.NewParquetStore(&cfg.Parquet, log, observe)
@@ -136,17 +135,11 @@ func openEventStore(ctx context.Context, name string, cfg *config.Config, db *da
 		return &openedEventStore{store: files, close: func() { files.Close() }}, nil
 	case "postgres":
 		store = events.NewPostgresStore(db, log)
-	case "clickhouse":
-		ch, err := events.NewClickHouseStore(ctx, &cfg.ClickHouse, log)
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to clickhouse event store: %w", err)
-		}
-		store, closeStore = ch, func() { ch.Close() }
 	default:
 		return nil, fmt.Errorf("unsupported event store: %s", name)
 	}
 	batch := events.NewBatchWriter(store, log, observe)
-	return &openedEventStore{store: batch, batch: batch, close: closeStore}, nil
+	return &openedEventStore{store: batch, batch: batch, close: func() {}}, nil
 }
 
 func run() error {
