@@ -644,6 +644,19 @@ var migrations = []Migration{
 		`,
 		Down: `ALTER TABLE proxy_users DROP COLUMN IF EXISTS allow_proxy_export;`,
 	},
+	{
+		Version:     36,
+		Description: "Drop the Postgres event tables",
+		// Request and tunnel history lives in Parquet files. On TimescaleDB the
+		// tables are hypertables, which take one DROP each and lose their
+		// chunks and policy jobs with it; the extension stays installed. Down
+		// cannot bring the history back.
+		Up: `
+			DROP TABLE IF EXISTS proxy_requests;
+			DROP TABLE IF EXISTS proxy_tunnels;
+		`,
+		Down: `SELECT 1;`,
+	},
 }
 
 // migrationLockKey serializes each migration transaction across instances.
