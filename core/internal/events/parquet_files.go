@@ -208,7 +208,12 @@ func (t *eventTable) close() error {
 type dayFiles struct{ log, parquet bool }
 
 func (t *eventTable) list() (map[int64]dayFiles, error) {
-	entries, err := os.ReadDir(t.dir)
+	return listDayFiles(t.dir)
+}
+
+// listDayFiles reports which files each day has in one table directory.
+func listDayFiles(dir string) (map[int64]dayFiles, error) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list event files: %w", err)
 	}
@@ -282,22 +287,27 @@ func (t *eventTable) openFiles(fromDay int64) ([]*eventFile, error) {
 		if listed[day].parquet {
 			suffix = parquetSuffix
 		}
-		path := t.path(day, suffix)
-		file, err := os.Open(path)
-		if err == nil {
-			var info os.FileInfo
-			if info, err = file.Stat(); err == nil {
-				files = append(files, &eventFile{
-					table: t, file: file, path: path, size: info.Size(), parquet: listed[day].parquet,
-				})
-				continue
-			}
-			file.Close()
+		f, err := openEventFile(t, t.path(day, suffix), listed[day].parquet)
+		if err != nil {
+			closeEventFiles(files)
+			return nil, err
 		}
-		closeEventFiles(files)
-		return nil, fmt.Errorf("failed to open event file: %w", err)
+		files = append(files, f)
 	}
 	return files, nil
+}
+
+func openEventFile(t *eventTable, path string, isParquet bool) (*eventFile, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open event file: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, fmt.Errorf("failed to open event file: %w", err)
+	}
+	return &eventFile{table: t, file: file, path: path, size: info.Size(), parquet: isParquet}, nil
 }
 
 func closeEventFiles(files []*eventFile) {

@@ -24,6 +24,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -45,10 +46,49 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	command := run
+	if len(os.Args) > 1 && os.Args[1] == "import-postgres-history" {
+		command = func() error { return importPostgresHistory(os.Args[2:]) }
+	}
+	if err := command(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// importPostgresHistory copies request and tunnel history from the Postgres
+// event tables into the parquet store, then exits. Rota may keep running.
+func importPostgresHistory(args []string) error {
+	flags := flag.NewFlagSet("import-postgres-history", flag.ContinueOnError)
+	beforeFlag := flags.String("before", "", "copy events from before this RFC 3339 time (default: the earliest event already in the parquet store)")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	var before time.Time
+	if *beforeFlag != "" {
+		var err error
+		if before, err = time.Parse(time.RFC3339Nano, *beforeFlag); err != nil {
+			return fmt.Errorf("invalid -before: %w", err)
+		}
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
+	}
+	log := logger.New(cfg.LogLevel)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	db, err := database.New(ctx, &cfg.Database, nil, log)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer db.Close()
+
+	return events.ImportPostgresHistory(ctx, db.Pool, cfg.Parquet.Dir, before, func(r events.ImportReport) {
+		log.Info("imported event history", "table", r.Table, "day", r.Day, "action", r.Action, "rows", r.Rows)
+	})
 }
 
 // metricsHTTPHandler returns the /metrics handler, or nil when metrics are

@@ -191,7 +191,9 @@ The Go server serves the proxy on **:8000** and the API/React dashboard on **:80
 
 By default Rota keeps history in `EVENT_STORE_DIR` with no extra server. Installs upgrading from a version that kept history in PostgreSQL should set `EVENT_STORE=postgres` to keep it, or use `EVENT_STORE_MIRROR` below to move. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and one Parquet file per finished day, which tools like DuckDB can also read. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage. One Rota process owns it, so multiple replicas need PostgreSQL or ClickHouse.
 
-To move between backends without a gap, set `EVENT_STORE_MIRROR` to a second backend. `EVENT_STORE` keeps answering reads and both receive every new event, so you can switch `EVENT_STORE` once the new backend holds enough history, then unset the mirror. Existing history does not copy over.
+To move between backends without a gap, set `EVENT_STORE_MIRROR` to a second backend. `EVENT_STORE` keeps answering reads and both receive every new event, so you can switch `EVENT_STORE` once the new backend holds enough history, then unset the mirror.
+
+To copy history that PostgreSQL already holds into the Parquet store, run `rota import-postgres-history` (with Docker Compose: `docker compose exec rota /app/server import-postgres-history`) once the store has started receiving events. It copies every PostgreSQL event older than the earliest one in the files, one day at a time, while Rota keeps running, and records its progress so a second run resumes instead of copying a day twice. Pass `-before <RFC 3339 time>` to choose the cutoff yourself.
 
 ### Rotation Strategies
 
