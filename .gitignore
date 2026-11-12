@@ -55,7 +55,7 @@ test_client/
 .claude/
 old_codes/
 
-# Local data volumes (TimescaleDB, etc.)
+# Local data (event history, GeoIP databases)
 data/
 # Playwright MCP test artifacts
 .playwright-mcp/

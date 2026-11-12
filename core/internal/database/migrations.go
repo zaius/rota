@@ -35,26 +35,9 @@ var migrations = []Migration{
 	},
 	{
 		Version:     2,
-		Description: "Enable TimescaleDB extension when available",
-		// TimescaleDB is an optional accelerator: rota runs on plain Postgres,
-		// so only create the extension where the server actually ships it.
-		// On managed Postgres (e.g. Azure Flexible Server) CREATE EXTENSION is
-		// admin-only, and the permission check fires before IF NOT EXISTS gets
-		// a chance to skip — so also only issue it when the extension is
-		// actually missing (an admin pre-creates it there).
-		Up: `
-			DO $do$
-			BEGIN
-				IF NOT EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb')
-				   AND EXISTS (SELECT FROM pg_available_extensions WHERE name = 'timescaledb') THEN
-					CREATE EXTENSION timescaledb;
-				END IF;
-			END
-			$do$;
-		`,
-		Down: `
-			DROP EXTENSION IF EXISTS timescaledb;
-		`,
+		Description: "Reserved (TimescaleDB support removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     3,
@@ -113,57 +96,9 @@ var migrations = []Migration{
 	},
 	{
 		Version:     6,
-		Description: "Create proxy_requests table (hypertable when TimescaleDB is available)",
-		Up: `
-			CREATE TABLE IF NOT EXISTS proxy_requests (
-				id BIGSERIAL,
-				timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
-				proxy_id INTEGER REFERENCES proxies(id) ON DELETE CASCADE,
-				proxy_address VARCHAR(255) NOT NULL,
-				method VARCHAR(10) NOT NULL,
-				url TEXT,
-				status_code INTEGER,
-				response_time INTEGER,
-				success BOOLEAN NOT NULL,
-				error TEXT
-			);
-
-			-- Convert to hypertable where TimescaleDB exists; a plain table
-			-- (with the timestamp indexes below) works fine on stock Postgres.
-			DO $ts$
-			BEGIN
-				IF EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb') THEN
-					PERFORM create_hypertable('proxy_requests', 'timestamp', if_not_exists => TRUE);
-				END IF;
-			END
-			$ts$;
-
-			-- Create indexes
-			CREATE INDEX idx_proxy_requests_proxy_id ON proxy_requests(proxy_id, timestamp DESC);
-			CREATE INDEX idx_proxy_requests_success ON proxy_requests(success, timestamp DESC);
-			CREATE INDEX idx_proxy_requests_timestamp ON proxy_requests(timestamp DESC);
-
-			-- Retention/compression policies are TSL-licensed and unavailable on
-			-- Apache-only builds (e.g. Azure Flexible Server) — skip them there.
-			DO $ts$
-			BEGIN
-				IF current_setting('timescaledb.license', true) = 'timescale' THEN
-					-- Add retention policy (keep request logs for 90 days)
-					PERFORM add_retention_policy('proxy_requests', INTERVAL '90 days', if_not_exists => TRUE);
-
-					-- Add compression policy (compress data older than 14 days)
-					ALTER TABLE proxy_requests SET (
-						timescaledb.compress,
-						timescaledb.compress_segmentby = 'proxy_id'
-					);
-					PERFORM add_compression_policy('proxy_requests', INTERVAL '14 days', if_not_exists => TRUE);
-				END IF;
-			END
-			$ts$;
-		`,
-		Down: `
-			DROP TABLE IF EXISTS proxy_requests;
-		`,
+		Description: "Reserved (Postgres event store removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     7,
@@ -579,26 +514,9 @@ var migrations = []Migration{
 	},
 	{
 		Version:     26,
-		Description: "Add pool/user/domain dimensions to proxy_requests",
-		// Dimension columns only — no foreign keys: request history is an
-		// event record that must survive pool/user deletion and stay portable
-		// across event-store backends. domain is normalized the same way as
-		// proxy_domain_cooldowns entries (NormalizeCooldownDomain), so the two
-		// can be joined for per-domain analytics. Historical rows stay NULL
-		// and age out with retention. Indexes come with the queries that need
-		// them.
-		Up: `
-			ALTER TABLE proxy_requests
-				ADD COLUMN IF NOT EXISTS pool_id  INTEGER,
-				ADD COLUMN IF NOT EXISTS username VARCHAR(255),
-				ADD COLUMN IF NOT EXISTS domain   VARCHAR(255);
-		`,
-		Down: `
-			ALTER TABLE proxy_requests
-				DROP COLUMN IF EXISTS domain,
-				DROP COLUMN IF EXISTS username,
-				DROP COLUMN IF EXISTS pool_id;
-		`,
+		Description: "Reserved (Postgres event store removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     27,
@@ -617,58 +535,8 @@ var migrations = []Migration{
 	},
 	{
 		Version:     28,
-		Description: "Create proxy_tunnels table and add proxy_users.inspect_tls",
-		// A CONNECT tunnel is not a request: one tunnel carries every HTTPS
-		// request the client sends over that connection. Recording tunnels in
-		// their own stream keeps request counts honest while still capturing
-		// the volume that flows through opaque tunnels (bytes, lifetime, and —
-		// when TLS interception is enabled for the user — the request count).
-		//
-		// Dimension columns only, no foreign keys beyond proxy_id, matching
-		// proxy_requests: event records must survive pool/user deletion.
+		Description: "Add proxy_users.inspect_tls",
 		Up: `
-			CREATE TABLE IF NOT EXISTS proxy_tunnels (
-				id BIGSERIAL,
-				timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
-				proxy_id INTEGER REFERENCES proxies(id) ON DELETE CASCADE,
-				proxy_address VARCHAR(255) NOT NULL,
-				pool_id INTEGER,
-				username VARCHAR(255),
-				host VARCHAR(255) NOT NULL,
-				domain VARCHAR(255),
-				bytes_up BIGINT NOT NULL DEFAULT 0,
-				bytes_down BIGINT NOT NULL DEFAULT 0,
-				requests INTEGER NOT NULL DEFAULT 0,
-				duration_ms INTEGER NOT NULL DEFAULT 0,
-				error TEXT
-			);
-
-			DO $ts$
-			BEGIN
-				IF EXISTS (SELECT FROM pg_extension WHERE extname = 'timescaledb') THEN
-					PERFORM create_hypertable('proxy_tunnels', 'timestamp', if_not_exists => TRUE);
-				END IF;
-			END
-			$ts$;
-
-			CREATE INDEX IF NOT EXISTS idx_proxy_tunnels_proxy_id  ON proxy_tunnels(proxy_id, timestamp DESC);
-			CREATE INDEX IF NOT EXISTS idx_proxy_tunnels_timestamp ON proxy_tunnels(timestamp DESC);
-			CREATE INDEX IF NOT EXISTS idx_proxy_tunnels_domain    ON proxy_tunnels(domain, timestamp DESC);
-
-			DO $ts$
-			BEGIN
-				IF current_setting('timescaledb.license', true) = 'timescale' THEN
-					PERFORM add_retention_policy('proxy_tunnels', INTERVAL '90 days', if_not_exists => TRUE);
-
-					ALTER TABLE proxy_tunnels SET (
-						timescaledb.compress,
-						timescaledb.compress_segmentby = 'proxy_id'
-					);
-					PERFORM add_compression_policy('proxy_tunnels', INTERVAL '14 days', if_not_exists => TRUE);
-				END IF;
-			END
-			$ts$;
-
 			-- Per-user opt-in for HTTPS interception. Default false: without it
 			-- a tunnel stays opaque and the client owns its own TLS, which is
 			-- the behaviour every existing user already has.
@@ -677,7 +545,6 @@ var migrations = []Migration{
 		`,
 		Down: `
 			ALTER TABLE proxy_users DROP COLUMN IF EXISTS inspect_tls;
-			DROP TABLE IF EXISTS proxy_tunnels;
 		`,
 	},
 	{
@@ -700,7 +567,7 @@ var migrations = []Migration{
 	},
 	{
 		Version:     30,
-		Description: "Persist reservation scope cooldowns and index domain request stats",
+		Description: "Persist reservation scope cooldowns",
 		Up: `
 			CREATE TABLE IF NOT EXISTS proxy_scope_cooldowns (
 				proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,
@@ -710,10 +577,8 @@ var migrations = []Migration{
 				PRIMARY KEY (proxy_id, scope)
 			);
 			CREATE INDEX IF NOT EXISTS idx_proxy_scope_cooldowns_until ON proxy_scope_cooldowns(cooldown_until);
-			CREATE INDEX IF NOT EXISTS idx_proxy_requests_domain ON proxy_requests(domain, timestamp DESC);
 		`,
 		Down: `
-			DROP INDEX IF EXISTS idx_proxy_requests_domain;
 			DROP TABLE IF EXISTS proxy_scope_cooldowns;
 		`,
 	},
@@ -743,12 +608,9 @@ var migrations = []Migration{
 	},
 	{
 		Version:     32,
-		Description: "Separate target failures from proxy reliability statistics",
-		Up: `
-			ALTER TABLE proxy_requests
-			  ADD COLUMN target_failure BOOLEAN NOT NULL DEFAULT FALSE;
-		`,
-		Down: `ALTER TABLE proxy_requests DROP COLUMN target_failure;`,
+		Description: "Reserved (Postgres event store removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     33,

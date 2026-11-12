@@ -9,7 +9,6 @@
 <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
 <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.27.1-00ADD8?logo=go"></a>
 <a href="https://react.dev"><img src="https://img.shields.io/badge/React-19-61DAFB?logo=react"></a>
-<a href="https://www.timescale.com/"><img src="https://img.shields.io/badge/TimescaleDB-2.22-FDB515?logo=timescale"></a>
 <a href="https://github.com/zaius/rota/releases"><img src="https://img.shields.io/github/release/zaius/rota"></a>
 <a href="https://github.com/zaius/rota/actions"><img src="https://img.shields.io/github/actions/workflow/status/zaius/rota/release.yaml"></a>
 </p>
@@ -28,7 +27,7 @@
 - **Monitoring:** Scheduled health checks, webhook alerts, and request/tunnel history.
 - **HTTPS inspection:** Optional per-user TLS interception and configurable TLS/HTTP fingerprint profiles.
 - **Security:** Authenticated proxy users, admin JWTs, bcrypt credentials, and login brute-force protection.
-- **Deployment:** Docker Compose, PostgreSQL, file-based Parquet event storage (TimescaleDB optional), and Prometheus/OTLP metrics.
+- **Deployment:** Docker Compose, PostgreSQL, file-based Parquet event storage, and Prometheus/OTLP metrics.
 
 ---
 
@@ -123,12 +122,12 @@ docker run -d \
   ghcr.io/zaius/rota:latest
 ```
 
-Or run the whole stack (rota + TimescaleDB) with `docker compose up -d`.
+Or run the whole stack (rota + PostgreSQL) with `docker compose up -d`.
 
 ### From Source
 
 ```bash
-# Prerequisites: Go 1.27.1+, Node.js 22+, pnpm, PostgreSQL 14+ (TimescaleDB optional)
+# Prerequisites: Go 1.27.1+, Node.js 22+, pnpm, PostgreSQL 14+
 
 # Clone the repository
 git clone https://github.com/zaius/rota.git

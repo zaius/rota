@@ -12,23 +12,15 @@ concurrency:
 
 jobs:
   core:
-    name: Core (Go, ${{ matrix.database }})
+    name: Core (Go)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: core
 
-    # Repository integration tests run against plain Postgres and TimescaleDB.
-    strategy:
-      fail-fast: false
-      matrix:
-        database:
-          - postgres:17-alpine
-          - timescale/timescaledb:2.22.1-pg17
-
     services:
       database:
-        image: ${{ matrix.database }}
+        image: postgres:17-alpine
         env:
           POSTGRES_USER: rota
           POSTGRES_PASSWORD: rota_password
@@ -69,8 +61,8 @@ jobs:
       - name: Test (hermetic, race detector)
         run: go test -race ./...
 
-      # -count=1 defeats caching so both matrix legs really run.
-      - name: Integration tests (${{ matrix.database }})
+      # -count=1 defeats the test cache, which cannot see the database.
+      - name: Integration tests
         env:
           ROTA_TEST_DB: "1"
           TEST_DB_HOST: localhost

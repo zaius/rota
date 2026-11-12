@@ -15,12 +15,12 @@ import (
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
-// These tests exercise the real SQL against a Postgres/TimescaleDB instance.
+// These tests exercise the real SQL against a Postgres instance.
 // They are skipped unless ROTA_TEST_DB is set, so `go test ./...` stays
 // hermetic. To run them locally:
 //
 //	docker run -d --name pg -e POSTGRES_USER=rota -e POSTGRES_PASSWORD=rota_password \
-//	  -e POSTGRES_DB=rota_test -p 55432:5432 timescale/timescaledb:2.22.1-pg17   # or postgres:17
+//	  -e POSTGRES_DB=rota_test -p 55432:5432 postgres:17-alpine
 //	ROTA_TEST_DB=1 TEST_DB_PORT=55432 go test ./internal/repository/ -run Integration -v
 
 func getenv(key, def string) string {

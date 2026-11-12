@@ -12,7 +12,7 @@ services:
       - PROXY_PORT=8000
       - API_PORT=8001
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - DB_HOST=${DB_HOST:-timescaledb}
+      - DB_HOST=${DB_HOST:-postgres}
       - DB_PORT=${DB_PORT:-5432}
       - DB_USER=${DB_USER:-rota}
       - DB_PASSWORD=${DB_PASSWORD:-rota_password}
@@ -73,21 +73,20 @@ services:
       start_period: 5s
       retries: 3
     depends_on:
-      timescaledb:
+      postgres:
         condition: service_healthy
 
-  timescaledb:
-    image: timescale/timescaledb:2.22.1-pg17
-    container_name: rota-timescaledb
+  postgres:
+    image: postgres:17-alpine
+    container_name: rota-postgres
     restart: unless-stopped
     # Port intentionally NOT exposed to host — DB is internal only.
     environment:
       - POSTGRES_USER=${DB_USER:-rota}
       - POSTGRES_PASSWORD=${DB_PASSWORD:-rota_password}
       - POSTGRES_DB=${DB_NAME:-rota}
-      - TIMESCALEDB_TELEMETRY=off
     volumes:
-      - timescaledb-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     networks:
       - rota-network
     healthcheck:
@@ -100,7 +99,7 @@ services:
 volumes:
   rota-data:
     driver: local
-  timescaledb-data:
+  postgres-data:
     driver: local
 
 networks:
