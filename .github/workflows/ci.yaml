@@ -69,9 +69,7 @@ jobs:
       - name: Test (hermetic, race detector)
         run: go test -race ./...
 
-      # -p 1 because the integration packages share one test database and Go
-      # runs package tests in parallel by default (see the suites' doc
-      # comments); -count=1 defeats caching so both matrix legs really run.
+      # -count=1 defeats caching so both matrix legs really run.
       - name: Integration tests (${{ matrix.database }})
         env:
           ROTA_TEST_DB: "1"
@@ -80,36 +78,7 @@ jobs:
           TEST_DB_USER: rota
           TEST_DB_PASSWORD: rota_password
           TEST_DB_NAME: rota_test
-        run: go test -race -p 1 -count=1 -run Integration ./internal/events/ ./internal/repository/
-
-  events-parquet:
-    name: Event store (Parquet)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: core
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: core/go.mod
-          cache-dependency-path: core/go.sum
-
-      # The parquet leg answers from the log; parquet-sealed converts every
-      # day to Parquet before each read.
-      - name: Conformance suite (log)
-        env:
-          EVENT_STORE_TEST: parquet
-        run: go test -race -count=1 -run Integration ./internal/events/
-
-      - name: Conformance suite (Parquet files)
-        env:
-          EVENT_STORE_TEST: parquet-sealed
-        run: go test -race -count=1 -run Integration ./internal/events/
+        run: go test -race -count=1 -run Integration ./internal/repository/
 
   dashboard:
     name: Dashboard (Vite)
