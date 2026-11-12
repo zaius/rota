@@ -76,6 +76,7 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `ROTA_ADMIN_PASSWORD` | `admin` | Initial dashboard password (seeded once, min 6 chars) |
 | `DB_PASSWORD` | `rota_password` | Database password |
 | `EVENT_STORE_DIR` | `data/events` | Directory for request and tunnel history |
+| `EVENT_STORE_INSTANCE` | `rota` | Name in this instance's history file names; keep it fixed |
 | `EVENT_STORE_SYNC` | `false` | Make every history append wait for the disk |
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `METRICS_ENABLED` | `true` | Prometheus `/metrics` endpoint + optional OTLP push — see [Metrics & Observability](#-metrics--observability) |
@@ -186,7 +187,7 @@ The API is served at `http://localhost:8001/api/v1`. See [API Authentication](#-
 
 The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history live in local Parquet files. Proxy requests follow each user's main and fallback pools.
 
-Rota keeps history in `EVENT_STORE_DIR` with no extra server. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and one Parquet file per finished day, which tools like DuckDB can also read. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage, and run one Rota process per directory.
+Rota keeps history in `EVENT_STORE_DIR` with no extra server. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and one Parquet file per finished day, which tools like DuckDB can also read. Files are named `<day>.<instance>.log` and `<day>.<instance>.parquet` after `EVENT_STORE_INSTANCE`, and a day may have several. Rota reads every file in the directory, including `<day>.log` and `<day>.parquet` files without an instance name, but converts only its own logs and those without a name, so keep `EVENT_STORE_INSTANCE` the same across restarts. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage, and run one Rota process per directory.
 
 ### Rotation Strategies
 

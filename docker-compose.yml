@@ -39,6 +39,7 @@ services:
       # Request and tunnel history lives in Parquet files on the rota-data
       # volume; see .env.example.
       - EVENT_STORE_DIR=${EVENT_STORE_DIR:-}
+      - EVENT_STORE_INSTANCE=${EVENT_STORE_INSTANCE:-rota}
       - EVENT_STORE_SYNC=${EVENT_STORE_SYNC:-false}
       # Prometheus metrics at GET :8001/metrics; see .env.example for the
       # OTEL_* vars that additionally enable OTLP push (e.g. to SigNoz).

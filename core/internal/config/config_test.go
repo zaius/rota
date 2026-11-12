@@ -128,6 +128,25 @@ func TestEventStoreAcceptsOnlyParquet(t *testing.T) {
 	}
 }
 
+func TestEventInstanceValidation(t *testing.T) {
+	for instance, valid := range map[string]bool{
+		"":          true, // the default
+		"rota-2":    true,
+		"edge_eu1":  true,
+		"a.b":       false,
+		"../escape": false,
+		"x/y":       false,
+		"Rota":      false,
+	} {
+		t.Run(instance, func(t *testing.T) {
+			t.Setenv("EVENT_STORE_INSTANCE", instance)
+			if _, err := Load(); (err == nil) != valid {
+				t.Fatalf("valid=%v, got error %v", valid, err)
+			}
+		})
+	}
+}
+
 func TestLoadDotEnv(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
 	content := "# comment\n" +

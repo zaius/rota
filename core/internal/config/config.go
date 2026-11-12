@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -128,6 +129,20 @@ const defaultGeoIPDir = "data/geoip"
 // the container, on the same volume as the GeoIP databases.
 const defaultEventDir = "data/events"
 
+// defaultEventInstance is fixed rather than the hostname, which changes when a
+// container is recreated.
+const defaultEventInstance = "rota"
+
+// eventInstancePattern keeps an instance name safe in a file name on every
+// platform. It has no dots, which separate the name from the day and the
+// extension.
+var eventInstancePattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+
+// ValidEventInstance reports whether name can name event store files.
+func ValidEventInstance(name string) bool {
+	return eventInstancePattern.MatchString(name)
+}
+
 // checkEventStore fails on settings that ask for history anywhere but the
 // Parquet files, so a stale setting stops startup instead of being ignored.
 func checkEventStore() error {
@@ -145,6 +160,11 @@ type ParquetConfig struct {
 	// Dir holds the event logs and Parquet files. It must outlive the
 	// process, because the current day exists only here.
 	Dir string
+
+	// Instance names the files this process writes in Dir
+	// (EVENT_STORE_INSTANCE). The store converts only logs with its own name,
+	// so the name must stay the same across restarts.
+	Instance string
 
 	// SyncWrites makes every append wait for the disk, so events survive
 	// power loss at the cost of write latency (EVENT_STORE_SYNC).
@@ -186,6 +206,7 @@ func Load() (*Config, error) {
 		JWTSecret: getEnv("JWT_SECRET", ""),
 		Parquet: ParquetConfig{
 			Dir:        getEnv("EVENT_STORE_DIR", defaultEventDir),
+			Instance:   getEnv("EVENT_STORE_INSTANCE", defaultEventInstance),
 			SyncWrites: getEnvAsBool("EVENT_STORE_SYNC", false),
 		},
 
@@ -272,6 +293,10 @@ func (c *Config) Validate() error {
 	}
 	if c.GeoIP.UpdateHours < 1 {
 		return fmt.Errorf("GEOIP_UPDATE_HOURS must be positive")
+	}
+
+	if !ValidEventInstance(c.Parquet.Instance) {
+		return fmt.Errorf("invalid EVENT_STORE_INSTANCE %q (must be 1-64 lowercase letters, digits, hyphens or underscores)", c.Parquet.Instance)
 	}
 
 	return nil

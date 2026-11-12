@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,10 +20,11 @@ import (
 // ParquetStore implements Store on local files, so request and tunnel history
 // needs no database server.
 //
-// Each event table is a directory with one file per UTC day. The open day is a
-// tab-separated log; every event is a single append, and queries scan the log
-// directly. When a day ends, one conversion replaces its log with a Parquet
-// file. Queries read logs and Parquet files through the same aggregations.
+// Each event table is a directory with one file per UTC day and instance
+// (EVENT_STORE_INSTANCE). The open day is a tab-separated log; every event is a
+// single append, and queries scan the log directly. When a day ends, one
+// conversion replaces its log with a Parquet file. Queries read logs and
+// Parquet files through the same aggregations.
 //
 // A completed append survives a crash or kill of this process. Surviving power
 // loss or a kernel crash takes EVENT_STORE_SYNC, which makes every append wait
@@ -35,6 +34,7 @@ import (
 type ParquetStore struct {
 	logger       *logger.Logger
 	observe      WriteObserver
+	instance     string
 	syncWrites   bool
 	partitionDay func() int64
 
@@ -76,10 +76,14 @@ func NewParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe Writ
 }
 
 func newParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe WriteObserver, partitionDay func() int64) (*ParquetStore, error) {
+	if !config.ValidEventInstance(cfg.Instance) {
+		return nil, fmt.Errorf("invalid event store instance %q", cfg.Instance)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &ParquetStore{
 		logger:        log,
 		observe:       observe,
+		instance:      cfg.Instance,
 		syncWrites:    cfg.SyncWrites,
 		partitionDay:  partitionDay,
 		convertSignal: make(chan struct{}, 1),
@@ -115,7 +119,7 @@ func newParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe Writ
 
 	go s.runConverter(ctx)
 	s.requestConversion()
-	log.Info("parquet event store ready", "dir", cfg.Dir, "sync_writes", cfg.SyncWrites)
+	log.Info("parquet event store ready", "dir", cfg.Dir, "instance", cfg.Instance, "sync_writes", cfg.SyncWrites)
 	return s, nil
 }
 
@@ -158,8 +162,9 @@ func (s *ParquetStore) runConverter(ctx context.Context) {
 	}
 }
 
-// convertPending converts every log older than the day being written. A log
-// that fails stays queryable, and the next rotation or start retries it.
+// convertPending converts every log of this store older than the day being
+// written. A log that fails stays queryable, and the next rotation or start
+// retries it.
 func (s *ParquetStore) convertPending(ctx context.Context) {
 	s.convertMu.Lock()
 	defer s.convertMu.Unlock()
@@ -171,18 +176,19 @@ func (s *ParquetStore) convertPending(ctx context.Context) {
 			s.logger.Error("failed to list event logs", "error", err)
 			continue
 		}
-		for _, day := range slices.Sorted(maps.Keys(listed)) {
-			if day >= writing || !listed[day].log || ctx.Err() != nil {
+		for _, key := range sortedKeys(listed) {
+			if key.day >= writing || !listed[key].log || !t.owns(key) || ctx.Err() != nil {
 				continue
 			}
+			file := filepath.Base(t.path(key, logSuffix))
 			started := time.Now()
-			if err := t.convert(ctx, day, listed[day]); err != nil {
+			if err := t.convert(ctx, key, listed[key]); err != nil {
 				if ctx.Err() == nil {
-					s.logger.Error("failed to convert event log", "dir", t.dir, "day", dayName(day), "error", err)
+					s.logger.Error("failed to convert event log", "dir", t.dir, "file", file, "error", err)
 				}
 				continue
 			}
-			s.logger.Info("converted event log to parquet", "dir", t.dir, "day", dayName(day), "elapsed", time.Since(started).String())
+			s.logger.Info("converted event log to parquet", "dir", t.dir, "file", file, "elapsed", time.Since(started).String())
 		}
 	}
 }
