@@ -18,8 +18,7 @@ jobs:
       run:
         working-directory: core
 
-    # The event store must work on plain Postgres AND TimescaleDB — the
-    # integration/conformance suites run against both.
+    # Repository integration tests run against plain Postgres and TimescaleDB.
     strategy:
       fail-fast: false
       matrix:

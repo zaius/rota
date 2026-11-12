@@ -217,8 +217,8 @@ func RecordSourceFetch(ctx context.Context, success bool, imported int) {
 	}
 }
 
-// RecordEventsWritten records a batch write of history events; kind is
-// "request" or "tunnel". A failed write loses its events.
+// RecordEventsWritten records a write of history events; kind is "request" or
+// "tunnel". A failed write loses its events.
 func RecordEventsWritten(ctx context.Context, kind string, count int, success bool) {
 	eventsWritten.Add(ctx, int64(count), metric.WithAttributes(
 		attribute.String("kind", kind),

@@ -17,17 +17,7 @@ type Config struct {
 	AdminUser string
 	AdminPass string
 
-	// EventStore selects the backend for request and tunnel history
-	// (EVENT_STORE): "parquet" (default — local files, no extra server) or
-	// "postgres" (events live in the primary database).
-	EventStore string
-
-	// EventStoreMirror names a second backend that also receives every write
-	// while EventStore keeps answering reads, for moving between backends
-	// without a gap (EVENT_STORE_MIRROR). Empty disables it.
-	EventStoreMirror string
-
-	// Parquet configures the file-based event store when EVENT_STORE=parquet.
+	// Parquet configures the file-based store for request and tunnel history.
 	Parquet ParquetConfig
 
 	// JWTSecret, when set, signs dashboard session tokens in place of the key
@@ -138,8 +128,16 @@ const defaultGeoIPDir = "data/geoip"
 // the container, on the same volume as the GeoIP databases.
 const defaultEventDir = "data/events"
 
-func validEventStore(name string) bool {
-	return name == "parquet" || name == "postgres"
+// checkEventStore fails on settings that ask for history anywhere but the
+// Parquet files, so a stale setting stops startup instead of being ignored.
+func checkEventStore() error {
+	if store := os.Getenv("EVENT_STORE"); store != "" && store != "parquet" {
+		return fmt.Errorf("EVENT_STORE=%s is not supported: request and tunnel history lives in Parquet files; unset EVENT_STORE", store)
+	}
+	if os.Getenv("EVENT_STORE_MIRROR") != "" {
+		return fmt.Errorf("EVENT_STORE_MIRROR is not supported: request and tunnel history lives only in Parquet files; unset EVENT_STORE_MIRROR")
+	}
+	return nil
 }
 
 // ParquetConfig holds the settings of the file-based event store.
@@ -167,6 +165,10 @@ func (d *DatabaseConfig) DSN() string {
 func Load() (*Config, error) {
 	loadDotEnv(".env")
 
+	if err := checkEventStore(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
 	cfg := &Config{
 		ProxyPort: getEnvAsInt("PROXY_PORT", 8000),
 		APIPort:   getEnvAsInt("API_PORT", 8001),
@@ -179,11 +181,9 @@ func Load() (*Config, error) {
 			Name:     getEnv("DB_NAME", "rota"),
 			SSLMode:  getEnv("DB_SSLMODE", "disable"),
 		},
-		AdminUser:        getEnv("ROTA_ADMIN_USER", "admin"),
-		AdminPass:        getEnv("ROTA_ADMIN_PASSWORD", "admin"),
-		JWTSecret:        getEnv("JWT_SECRET", ""),
-		EventStore:       getEnv("EVENT_STORE", "parquet"),
-		EventStoreMirror: getEnv("EVENT_STORE_MIRROR", ""),
+		AdminUser: getEnv("ROTA_ADMIN_USER", "admin"),
+		AdminPass: getEnv("ROTA_ADMIN_PASSWORD", "admin"),
+		JWTSecret: getEnv("JWT_SECRET", ""),
 		Parquet: ParquetConfig{
 			Dir:        getEnv("EVENT_STORE_DIR", defaultEventDir),
 			SyncWrites: getEnvAsBool("EVENT_STORE_SYNC", false),
@@ -255,12 +255,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid log level: %s (must be debug, info, warn, or error)", c.LogLevel)
 	}
 
-	if !validEventStore(c.EventStore) {
-		return fmt.Errorf("invalid event store: %s (must be parquet or postgres)", c.EventStore)
-	}
-	if c.EventStoreMirror != "" && (!validEventStore(c.EventStoreMirror) || c.EventStoreMirror == c.EventStore) {
-		return fmt.Errorf("invalid event store mirror: %s (must be a backend other than %s)", c.EventStoreMirror, c.EventStore)
-	}
 	if c.AuthIPMaxAttempts < 1 || c.AuthIPWindowMinutes < 1 || c.AuthIPBlockMinutes < 1 {
 		return fmt.Errorf("AUTH_IP_MAX_ATTEMPTS, AUTH_IP_WINDOW_MINUTES and AUTH_IP_BLOCK_MINUTES must be positive")
 	}

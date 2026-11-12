@@ -106,28 +106,17 @@ func TestGeoIPASNDatabaseRequiresCity(t *testing.T) {
 	}
 }
 
-func TestEventStoreDefaultsToParquet(t *testing.T) {
-	t.Setenv("EVENT_STORE", "")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.EventStore != "parquet" {
-		t.Fatalf("default event store: got %q", cfg.EventStore)
-	}
-}
-
-func TestEventStoreMirrorValidation(t *testing.T) {
+func TestEventStoreAcceptsOnlyParquet(t *testing.T) {
 	for _, tc := range []struct {
 		store, mirror string
 		valid         bool
 	}{
-		{"postgres", "", true},
-		{"postgres", "parquet", true},
-		{"parquet", "postgres", true},
-		{"parquet", "clickhouse", false},
-		{"parquet", "parquet", false},
-		{"parquet", "mysql", false},
+		{"", "", true},
+		{"parquet", "", true},
+		{"postgres", "", false},
+		{"clickhouse", "", false},
+		{"parquet", "postgres", false},
+		{"", "parquet", false},
 	} {
 		t.Run(tc.store+"/"+tc.mirror, func(t *testing.T) {
 			t.Setenv("EVENT_STORE", tc.store)

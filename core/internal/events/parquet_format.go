@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -181,6 +182,13 @@ func (p *fieldParser) int64(b []byte) int64 {
 func (p *fieldParser) int32(b []byte) int32 {
 	v := p.int64(b)
 	return saturateInt32(int(v))
+}
+
+// saturateInt32 clamps v to the int32 column range, so a tunnel open for
+// weeks records the largest duration the column holds instead of wrapping
+// negative.
+func saturateInt32(v int) int32 {
+	return int32(max(min(v, math.MaxInt32), math.MinInt32))
 }
 
 func (p *fieldParser) bool(b []byte) bool {

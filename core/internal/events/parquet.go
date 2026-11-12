@@ -31,11 +31,10 @@ import (
 // loss or a kernel crash takes EVENT_STORE_SYNC, which makes every append wait
 // for the disk.
 //
-// One process owns a directory: replicas sharing history need a database
-// backend.
+// One process owns a directory.
 type ParquetStore struct {
 	logger       *logger.Logger
-	observe      FlushObserver
+	observe      WriteObserver
 	syncWrites   bool
 	partitionDay func() int64
 
@@ -61,6 +60,10 @@ type ParquetStore struct {
 
 var _ Store = (*ParquetStore)(nil)
 
+// WriteObserver hears the outcome of every event write. kind is "request" or
+// "tunnel"; a failed write loses its events.
+type WriteObserver func(ctx context.Context, kind string, count int, success bool)
+
 var lineBuffers = sync.Pool{New: func() any {
 	b := make([]byte, 0, 1024)
 	return &b
@@ -68,11 +71,11 @@ var lineBuffers = sync.Pool{New: func() any {
 
 // NewParquetStore opens the event directory and converts any logs left over
 // from earlier days. observe, which may be nil, hears every write.
-func NewParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe FlushObserver) (*ParquetStore, error) {
+func NewParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe WriteObserver) (*ParquetStore, error) {
 	return newParquetStore(cfg, log, observe, func() int64 { return dayOf(time.Now().UnixMilli()) })
 }
 
-func newParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe FlushObserver, partitionDay func() int64) (*ParquetStore, error) {
+func newParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe WriteObserver, partitionDay func() int64) (*ParquetStore, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &ParquetStore{
 		logger:        log,
@@ -184,10 +187,10 @@ func (s *ParquetStore) convertPending(ctx context.Context) {
 	}
 }
 
-func (s *ParquetStore) write(ctx context.Context, t *eventTable, kind string, count int, lines []byte) error {
-	err := t.append(lines)
+func (s *ParquetStore) write(ctx context.Context, t *eventTable, kind string, line []byte) error {
+	err := t.append(line)
 	if s.observe != nil {
-		s.observe(ctx, kind, count, err == nil)
+		s.observe(ctx, kind, 1, err == nil)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to append %s event: %w", kind, err)
@@ -197,40 +200,18 @@ func (s *ParquetStore) write(ctx context.Context, t *eventTable, kind string, co
 
 // InsertRequest appends one proxied request outcome.
 func (s *ParquetStore) InsertRequest(ctx context.Context, event RequestEvent) error {
-	return s.InsertRequests(ctx, []RequestEvent{event})
-}
-
-// InsertRequests appends a batch of request outcomes in one write.
-func (s *ParquetStore) InsertRequests(ctx context.Context, events []RequestEvent) error {
-	if len(events) == 0 {
-		return nil
-	}
 	buf := lineBuffers.Get().(*[]byte)
 	defer lineBuffers.Put(buf)
-	*buf = (*buf)[:0]
-	for i := range events {
-		*buf = appendRequestLine(*buf, &events[i])
-	}
-	return s.write(ctx, s.requests, "request", len(events), *buf)
+	*buf = appendRequestLine((*buf)[:0], &event)
+	return s.write(ctx, s.requests, "request", *buf)
 }
 
 // InsertTunnel appends one completed CONNECT tunnel.
 func (s *ParquetStore) InsertTunnel(ctx context.Context, event TunnelEvent) error {
-	return s.InsertTunnels(ctx, []TunnelEvent{event})
-}
-
-// InsertTunnels appends a batch of completed tunnels in one write.
-func (s *ParquetStore) InsertTunnels(ctx context.Context, events []TunnelEvent) error {
-	if len(events) == 0 {
-		return nil
-	}
 	buf := lineBuffers.Get().(*[]byte)
 	defer lineBuffers.Put(buf)
-	*buf = (*buf)[:0]
-	for i := range events {
-		*buf = appendTunnelLine(*buf, &events[i])
-	}
-	return s.write(ctx, s.tunnels, "tunnel", len(events), *buf)
+	*buf = appendTunnelLine((*buf)[:0], &event)
+	return s.write(ctx, s.tunnels, "tunnel", *buf)
 }
 
 // RequestStats returns today/yesterday request aggregates for the dashboard.

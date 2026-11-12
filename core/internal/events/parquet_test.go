@@ -604,8 +604,10 @@ func TestParquetReportsWritesToObserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := store.InsertRequests(ctx, []RequestEvent{request(1), request(2)}); err != nil {
-		t.Fatal(err)
+	for _, ms := range []int{1, 2} {
+		if err := store.InsertRequest(ctx, request(ms)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	store.Close()
 	if err := store.InsertRequest(ctx, request(3)); err == nil || !strings.Contains(err.Error(), "closed") {

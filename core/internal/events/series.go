@@ -8,9 +8,8 @@ import (
 
 // SeriesWindow maps a chart range to its bucket width and lookback period.
 // Bucket widths aim for roughly 50 points per series. Unknown ranges fall
-// back to 24h. All widths divide a day evenly, so epoch-aligned bucketing
-// (ClickHouse toStartOfInterval) and date_bin with a midnight origin
-// (Postgres) land on identical boundaries.
+// back to 24h. All widths divide a day evenly, so epoch-aligned buckets land
+// on the boundaries of fillTrafficGaps' grid.
 func SeriesWindow(rng string) (bucket, lookback time.Duration) {
 	switch rng {
 	case "1h":
@@ -38,7 +37,7 @@ func chartBucketLabel(bucket time.Time, interval string) string {
 
 // fillTrafficGaps expands a sparse, time-ascending traffic series into a
 // dense one: every bucket from (now - lookback) through now is present, with
-// zero-valued points where the backend returned no row. Charts then render
+// zero-valued points for buckets without traffic. Charts then render
 // quiet periods as zero traffic instead of interpolating across them.
 func fillTrafficGaps(points []models.TrafficPoint, bucket, lookback time.Duration, now time.Time) []models.TrafficPoint {
 	byBucket := make(map[int64]models.TrafficPoint, len(points))
