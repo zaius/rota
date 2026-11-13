@@ -17,16 +17,15 @@
 
 ## 🎯 Overview
 
-**Rota** manages rotating proxies through a Go server and React dashboard, with per-user routing, sticky sessions, health checks, and traffic analytics.
+**Rota** manages rotating proxies through a Go server and React dashboard, with per-request options, sticky sessions, health checks, and traffic analytics. It is meant for trusted clients on a private network: one shared password guards everything.
 
 ## ✨ Key Features
 
-- **Proxy routing:** HTTP and SOCKS proxies, per-pool rotation, ordered fallback pools, retries, and failed-auth protection.
-- **Pools and sources:** Scheduled imports, GeoIP enrichment, geo/ISP/tag filters, automatic or manual membership, and exports.
+- **Proxy routing:** HTTP and SOCKS proxies, least-recently-used or random rotation, country and tag filters chosen per request, and retries.
+- **Sources:** Scheduled imports, GeoIP enrichment, tags, and exports.
 - **Sessions:** Exclusive reservations per target or custom scope, idle expiry, and explicit release/invalidation.
 - **Monitoring:** Scheduled health checks and request/tunnel history.
-- **HTTPS inspection:** Optional per-user TLS interception and configurable TLS/HTTP fingerprint profiles.
-- **Security:** Authenticated proxy users, admin JWTs, bcrypt credentials, and login brute-force protection.
+- **HTTPS inspection:** Optional per-request TLS interception with configurable TLS/HTTP fingerprint profiles.
 - **Deployment:** Docker Compose, PostgreSQL, file-based Parquet event storage, and Prometheus/OTLP metrics.
 
 ---
@@ -42,9 +41,8 @@ The fastest way to get Rota up and running:
 git clone https://github.com/zaius/rota.git
 cd rota
 
-# 2. Create your environment file
+# 2. Create your environment file and set ROTA_PASSWORD in it
 cp .env.example .env
-# For local development the defaults work as-is.
 
 # 3. Start all services
 docker compose up -d
@@ -58,10 +56,7 @@ docker compose ps
 - 🌐 **Dashboard + API**: http://localhost:8001
 - 🔄 **Proxy**: http://localhost:8000
 
-**Default credentials for dashboard:**
-
-- Username: `admin`
-- Password: `admin`
+Sign in to the dashboard with `ROTA_PASSWORD`.
 
 ### Configuration
 
@@ -71,8 +66,7 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 |---|---|---|
 | `PROXY_PORT` | `8000` | Host port for the proxy server |
 | `API_PORT` | `8001` | Host port for the REST API + dashboard UI |
-| `ROTA_ADMIN_USER` | `admin` | Initial dashboard username (seeded once) |
-| `ROTA_ADMIN_PASSWORD` | `admin` | Initial dashboard password (seeded once, min 6 chars) |
+| `ROTA_PASSWORD` | *(required)* | Shared password for the proxy port, the API and the dashboard; Rota refuses to start without it |
 | `DB_PASSWORD` | `rota_password` | Database password |
 | `EVENT_STORE_DIR` | `data/events` | Directory for request and tunnel history |
 | `EVENT_STORE_INSTANCE` | `rota` | Name in this instance's history file names; keep it fixed |
@@ -80,11 +74,6 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `METRICS_ENABLED` | `true` | Prometheus `/metrics` endpoint + optional OTLP push — see [Metrics & Observability](#-metrics--observability) |
 | `METRICS_BEARER_TOKEN` | *(empty)* | When set, `/metrics` requires `Authorization: Bearer <token>` |
-| `AUTH_IP_MAX_ATTEMPTS` | `10` | Authentication failures across proxy/API entry points before an IP is blocked |
-| `AUTH_IP_WINDOW_MINUTES` | `10` | Sliding window (minutes) to count per-IP failures |
-| `AUTH_IP_BLOCK_MINUTES` | `30` | How long a blocked IP cannot attempt password authentication |
-
-> **Note**: `ROTA_ADMIN_USER` and `ROTA_ADMIN_PASSWORD` are only used when the database is empty (first start). After that, use the **Settings → Admin Account** page to change credentials.
 
 ### Production Deployment
 
@@ -93,10 +82,10 @@ For production, set at minimum:
 ```bash
 # .env
 DB_PASSWORD=a-strong-random-password
-ROTA_ADMIN_PASSWORD=a-strong-password
+ROTA_PASSWORD=a-strong-password
 ```
 
-Dashboard sessions survive restarts without further setup: the server generates its JWT signing key once and stores it in the database. Set `JWT_SECRET` only to manage or rotate that key yourself.
+Rota has no accounts and no login rate limiting, so keep both ports on a private network or VPN.
 
 Start with `docker compose up -d`; the Compose file already sets `restart: unless-stopped`.
 
@@ -119,6 +108,7 @@ docker run -d \
   -e DB_HOST=your-db-host \
   -e DB_USER=rota \
   -e DB_PASSWORD=your-password \
+  -e ROTA_PASSWORD=your-rota-password \
   ghcr.io/zaius/rota:latest
 ```
 
@@ -154,7 +144,7 @@ Every release attaches archives for Linux (amd64, arm64), macOS (arm64, amd64) a
 
 ```bash
 # Unpack the archive for your platform, then configure it
-cp .env.example .env   # set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, ROTA_ADMIN_PASSWORD
+cp .env.example .env   # set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, ROTA_PASSWORD
 
 # The binary reads .env from its working directory; real environment variables win
 ./rota                 # Windows: rota.exe
@@ -164,15 +154,14 @@ To build the archives yourself, run `scripts/release-binaries.sh <version>`; the
 
 ### Testing the Proxy
 
-The proxy only serves authenticated proxy users — create one first in the dashboard (**Proxy Users → Add User**), then:
+The proxy password is `ROTA_PASSWORD`. The username carries [request options](#-proxy-username-options) and may be a bare client label:
 
 ```bash
-# Route traffic through Rota with your proxy-user credentials
-curl -x http://myuser:mypassword@localhost:8000 https://api.ipify.org?format=json
+curl -x http://scraper:$ROTA_PASSWORD@localhost:8000 https://api.ipify.org?format=json
 
 # Using environment variables
-export HTTP_PROXY=http://myuser:mypassword@localhost:8000
-export HTTPS_PROXY=http://myuser:mypassword@localhost:8000
+export HTTP_PROXY=http://scraper:$ROTA_PASSWORD@localhost:8000
+export HTTPS_PROXY=http://scraper:$ROTA_PASSWORD@localhost:8000
 curl https://api.ipify.org?format=json
 ```
 
@@ -184,22 +173,43 @@ The API is served at `http://localhost:8001/api/v1`. See [API Authentication](#-
 
 ## 🏗️ Architecture
 
-The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history live in local Parquet files. Proxy requests follow each user's main and fallback pools.
+The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history live in local Parquet files. The proxy keeps one in-memory list of selectable proxies (active or idle, outside a global cooldown), refreshed from the database every 30 seconds.
 
 Rota keeps history in `EVENT_STORE_DIR` with no extra server. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and a Parquet file for each finished day, which tools like DuckDB can also read. Files are named `<day>.<instance>.log` and `<day>.<instance>.parquet` after `EVENT_STORE_INSTANCE`. Rota reads every file in the directory, including `<day>.log` and `<day>.parquet` files without an instance name, so a day can have more than one file. It converts only its own logs and unnamed ones, so keep `EVENT_STORE_INSTANCE` the same across restarts. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage, and run one Rota process per directory.
 
-### Rotation Strategies
+### Rotation
 
-Rotation is configured per pool via `rotation_method`:
+Each request picks among the proxies it is eligible for: those matching its `country` and `tag` options, not yet tried by this request, not on a cooldown for the target domain or the request's scope, and not reserved by another session in that scope.
 
-- **`roundrobin`**: Cycle through the pool's proxies in order
-- **`random`**: Pick a random proxy from the pool each request
-- **`stick`**: Hold one proxy for `stick_count` requests, then advance
-- **`session`**: Hold one proxy per **client session** until released, idle past `session_ttl_minutes`, or invalidated — see [Session Stickiness](#-session-stickiness--proxy-invalidation)
+- **Default:** the least recently used eligible proxy. With one filter this is round-robin, and it stays fair when requests with different filters interleave.
+- **`rotation-random`:** a uniformly random eligible proxy.
+- **`session-<token>`:** hold one proxy for the token until released, idle past the session TTL, or invalidated — see [Session Stickiness](#-session-stickiness--proxy-invalidation).
+
+A request tries up to five proxies. A proxy that fails three times in a row leaves the in-memory list until the next refresh.
+
+## 🧩 Proxy Username Options
+
+The proxy username carries options, not an account. Split on `-`: with an odd number of parts the first is a free-form **client label**, used only to attribute events and metrics; the rest are `key-value` pairs. An empty username means no options.
+
+| Option | Meaning |
+|---|---|
+| `session-<token>` | Hold one proxy for this token until released, idle past the session TTL, or invalidated |
+| `scope-<name>` | Reservation scope; defaults to the target host |
+| `profile-<name>` | Intercept TLS and present this fingerprint — see [TLS fingerprint profiles](#tls-fingerprint-profiles). Without it a tunnel stays opaque |
+| `country-<cc>` | Only proxies whose country code matches (case-insensitive) |
+| `tag-<tag>` | Only proxies carrying this tag; repeatable, all must match |
+| `rotation-random` | Pick a random eligible proxy instead of the least recently used |
+
+```bash
+# Client "scraper", sticky session abc123, German proxies tagged "residential"
+curl -x "http://scraper-session-abc123-country-de-tag-residential:$ROTA_PASSWORD@localhost:8000" https://example.com
+```
+
+Parsing is strict so a typo never silently downgrades a session to plain rotation: an empty part, an unknown key, a repeated non-`tag` key or an invalid value returns `407` with `X-Rota-Error: invalid_proxy_options` and a message naming the problem. Values cannot contain `-`.
 
 ---
 
-## 🗂️ Proxy Sources & Pools
+## 🗂️ Proxy Sources
 
 ### How Proxy Sources work
 
@@ -208,17 +218,7 @@ Rotation is configured per pool via `rotation_method`:
 3. Choose the protocol and refresh interval
 4. Click **Fetch Now** or wait for the scheduler
 
-Each import upserts proxies, enriches new entries with GeoIP data, and re-syncs automatic pools.
-
-### Geo Distribution & Pools
-
-After proxies are geolocated, open the **Proxy Pools → Geo Distribution** tab:
-
-- Browse all proxy-holding countries; click a country to expand cities
-- Check individual countries or cities; mix them freely
-- Click **Create Pool from selection** — the pool is created and filled instantly
-
-Pools also support **ISP filters** (substring match, OR logic) and **tag filters** (AND logic — proxy must carry all specified tags). Combine geo + ISP + tags in any combination. Tag proxies on the **Proxy Management** page, one at a time or in bulk; tags let pools hold proxies that have no GeoIP data, such as local or VPN proxies. Proxies can also be added to and removed from a pool by hand.
+Each import upserts proxies and enriches new entries with GeoIP data. Tag proxies on the **Proxies** page, one at a time or in bulk; clients select them with `tag-<tag>`, which also reaches proxies without GeoIP data, such as local or VPN proxies.
 
 #### GeoIP Source
 
@@ -231,40 +231,11 @@ Locations come from the free [ip-api.com](https://ip-api.com) web service unless
 | `GEOIP_CITY_DB` / `GEOIP_ASN_DB` | Paths to existing `.mmdb` files, e.g. kept current by `geoipupdate`; a replaced file is reloaded within the hour |
 | `GEOIP_UPDATE_HOURS` | Re-download age for managed databases (default `168`) |
 
-The ASN database supplies the ISP names that ISP filters match. Until the City database loads, lookups keep using ip-api.com, as do proxies given by hostname rather than IP address.
+The ASN database supplies proxies' ISP names. Until the City database loads, lookups keep using ip-api.com, as do proxies given by hostname rather than IP address.
 
-#### Pool Sync Modes
+### Health checks
 
-| Mode | Behaviour |
-|------|-----------|
-| `auto` | Pool membership is rebuilt automatically after every proxy import or geo-enrichment |
-| `manual` | Membership only changes when you press **Sync** — useful for curated pools |
-
-#### Exporting a Pool
-
-```bash
-# Plain text — one protocol://ip:port per line
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8001/api/v1/pools/{id}/export?format=txt" -o pool.txt
-
-# CSV — with status, geo, ISP, success rate
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8001/api/v1/pools/{id}/export?format=csv" -o pool.csv
-```
-
-### Per-User Routing
-
-1. Create pools for each location/use-case
-2. Go to **Proxy Users**, click **Add User**
-3. Set a main pool and optional fallback pools (in priority order)
-4. Configure max retries across the chain
-
-Users connect as:
-```
-http://username:password@your-proxy-host:8000
-```
-
-If the main pool has no live IPs the request automatically cascades to the next fallback pool.
+Every `interval_minutes` (Settings → Health check, default 30) Rota checks every proxy, including failed ones, against the configured URL. A passing check marks a proxy active, which is how a failed proxy returns to rotation.
 
 ---
 
@@ -290,7 +261,7 @@ Rota returns `593` before forwarding. Its `Retry-After` is a polling delay, not 
 | `upstream_connect_rejected` | The upstream proxy returned a 4xx/5xx CONNECT response other than `407`, and so did one retry through a different proxy when another was available. The target may have refused or timed out, the upstream may block the domain, or the target may block both exit IPs. `X-Rota-Upstream-Status` carries the last upstream status code. No proxy-health strike. |
 | `upstream_proxy_auth_failed` | Upstream HTTP proxy returned `407` during CONNECT or HTTP forwarding; check its stored credentials. Counts against proxy health and retries another proxy. |
 | `upstream_timeout` | Connection, tunnel, or request timed out. |
-| `client_request_aborted` | The HTTP client canceled the request or its request context expired. No pool retry or proxy-health strike. |
+| `client_request_aborted` | The HTTP client canceled the request or its request context expired. No retry or proxy-health strike. |
 | `proxy_configuration_error` | Invalid proxy URL or unsupported transport/protocol. |
 | `upstream_request_failed` | Other forwarding failures, including unclassified SOCKS errors. |
 
@@ -302,15 +273,14 @@ An upstream CONNECT rejection records one failed request per attempt but leaves 
 
 HTTP forwarding also stops when the client cancels or its request context expires. An in-flight abort records one failed attempt with `target_failure = true` and a `client request aborted` error; it neither adds nor resets a proxy strike and is excluded from proxy reliability statistics and cleanup. Cancellation before proxy selection records no attempt. An upstream timeout while the client context is still active remains a proxy failure and retries normally.
 
-**Standard codes:** Client proxy authentication returns `407` with `Proxy-Authenticate` and reason `proxy_auth_required` or `invalid_tls_profile`. An IP blocked after authentication failures also receives `407`, with `X-Rota-Error: proxy_auth_rate_limited` and `Retry-After` in seconds. Internal proxy/authentication failures use `500` with `rota_internal_error`. The directly addressed control API uses standard codes:
+**Standard codes:** Client proxy authentication returns `407` with `Proxy-Authenticate` and reason `proxy_auth_required` (missing or wrong password) or `invalid_proxy_options` (an unparseable username, with the problem in the body). The directly addressed control API uses standard codes:
 
 | API case | Result |
 | --- | --- |
-| Malformed session request or missing `token` | `400` |
-| Invalidate an unknown, expired, or inaccessible session | `409` |
+| Malformed session request, missing `token` or invalid `scope` | `400` |
+| Invalidate an unknown or expired session | `409` |
 | Release an unknown/already-released session | `200`, `count: 0` |
-| Explicit release from an unassigned pool | `403` |
-| Invalid credentials / auth rate limit | `401` / `429` (with `Retry-After`) |
+| Missing or wrong password | `401` |
 | Internal failure / source-fetch failure / unavailable service | `500` / `502` / `503` |
 
 **HTTPS:** Errors before tunnel establishment appear on the CONNECT response. After CONNECT succeeds, opaque-tunnel/TLS failures close the connection; Rota cannot inject HTTP into encrypted traffic. TLS inspection can return `592` for failed HTTP forwarding. Errors after response headers are sent cannot change the status.
@@ -319,26 +289,26 @@ HTTP forwarding also stops when the client cancels or its request context expire
 
 ### Session-based rotation
 
-Set the pool's `rotation_method` to `session`, then include a token in the proxy username:
+Include a `session-<token>` option in the proxy username:
 
 ```bash
 # Reuse job42's proxy for this target
-curl -x "http://alice-session-job42:password@localhost:8000" https://example.com
+curl -x "http://scraper-session-job42:$ROTA_PASSWORD@localhost:8000" https://example.com
 
 # Use a shared scope to prevent overlap across different hostnames
-curl -x "http://alice-session-job42-scope-shopping:password@localhost:8000" https://www.example.com
-curl -x "http://alice-session-job43-scope-shopping:password@localhost:8000" https://api.example.com
+curl -x "http://scraper-session-job42-scope-shopping:$ROTA_PASSWORD@localhost:8000" https://www.example.com
+curl -x "http://scraper-session-job43-scope-shopping:$ROTA_PASSWORD@localhost:8000" https://api.example.com
 ```
 
-Each `(user, pool, token, scope)` has a sticky binding. Proxies are exclusive within a scope across users and pools in one Rota process. The default scope is the lowercase target hostname without a port or trailing dot; subdomains are separate scopes. Custom scopes use the same normalization. Sessions sharing `shopping` above receive different proxies; different scopes may reuse them.
+Each `(token, scope)` has a sticky binding; the client label plays no part. Proxies are exclusive within a scope in one Rota process. The default scope is the lowercase target hostname without a port or trailing dot; subdomains are separate scopes. Custom scopes use the same normalization. Sessions sharing `shopping` above receive different proxies; different scopes may reuse them.
 
-- **No/empty session token:** round-robin among unreserved proxies; no sticky reservation.
-- **No/empty scope:** use the target hostname.
-- **TLS profile override:** put it last: `alice-session-job42-scope-shopping-profile-ios`.
-- **Lifetime:** release explicitly, expire after `session_ttl_minutes` idle (default 10), or rebind when the proxy becomes unavailable. Traffic through the binding's CONNECT tunnels counts as use, so a busy kept-alive tunnel keeps its binding. Rota closes a binding's tunnels when it expires, is released, or leaves or cools their proxy (invalidation, eviction, or rebinding), so a client reusing a kept-alive connection reconnects through selection instead of staying on the old proxy. Tunnels without a session token have no idle limit and stay open through invalidation. Bindings reset on restart and do not coordinate across Rota processes.
-- **Fallbacks:** a session main pool preserves reservations in fallback pools. Exhaustion returns [593 with Retry-After](#custom-http-status-codes).
+- **No session token:** rotation among proxies unreserved in the scope; no sticky reservation.
+- **No scope:** use the target hostname.
+- **Filters:** `country` and `tag` options apply to the binding too; a bound proxy that stops matching is replaced.
+- **Lifetime:** release explicitly, expire after the session TTL idle (Settings → Upstream requests, default 10 minutes), or rebind when the proxy becomes unavailable. Traffic through the binding's CONNECT tunnels counts as use, so a busy kept-alive tunnel keeps its binding. Rota closes a binding's tunnels when it expires, is released, or leaves or cools their proxy (invalidation, eviction, or rebinding), so a client reusing a kept-alive connection reconnects through selection instead of staying on the old proxy. Tunnels without a session token have no idle limit and stay open through invalidation. Bindings reset on restart and do not coordinate across Rota processes.
+- **Exhaustion** returns [593 with Retry-After](#custom-http-status-codes).
 
-Inspect bindings with `GET /api/v1/sessions`. Release with `POST /api/v1/sessions/release` and `{"token":"job42"}`. Release and invalidation accept optional `pool_id` and `scope` filters; admins may also filter by `username`. Proxy users can only control their own bindings in assigned pools.
+Inspect bindings with `GET /api/v1/sessions`. Release with `POST /api/v1/sessions/release` and `{"token":"job42"}`. Release and invalidation accept an optional `scope` filter.
 
 ### Knowing which proxy served a request
 
@@ -351,13 +321,13 @@ When you detect a proxy is rate-limited (or otherwise bad) while using it, pull 
 ```bash
 # Cooldown for a caller-selected duration (defaults to 30 minutes if omitted)
 curl -X POST "http://localhost:8001/api/v1/proxies/123/invalidate" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $ROTA_PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{"minutes": 30, "reason": "429 from target"}'
 
 # Put it back early
 curl -X POST "http://localhost:8001/api/v1/proxies/123/reactivate" \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer $ROTA_PASSWORD"
 ```
 
 Proxy-ID invalidation without `domain` immediately removes the proxy from all rotation and drops its bindings. It returns when the cooldown expires. Pass `domain` (for example `"example.com"`) to cool it only for that domain and its subdomains. `minutes` must be a positive integer; zero and negative durations are rejected. The dashboard also provides **Invalidate / Reactivate** actions.
@@ -368,70 +338,58 @@ When a session-bound client only knows its own session token — not the proxy I
 
 ```bash
 curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $ROTA_PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{"token": "job42", "scope": "example.com", "minutes": 15, "reason": "429 from target"}'
 ```
 
-**Session invalidation defaults to the reservation's scope.** The bound proxy goes on cooldown only within that exact scope, the session's open tunnels through it close, and the session rebinds on its next request. Other scopes keep their bindings and can continue using the same proxy. A default hostname scope such as `example.com` is separate from `api.example.com`; a custom service scope such as `shopping` applies across all hostnames using that scope. Cooldowns apply across pools and users sharing the scope, including non-session rotation, and persist across restarts.
+**Session invalidation defaults to the reservation's scope.** The bound proxy goes on cooldown only within that exact scope, the session's open tunnels through it close, and the session rebinds on its next request. Other scopes keep their bindings and can continue using the same proxy. A default hostname scope such as `example.com` is separate from `api.example.com`; a custom service scope such as `shopping` applies across all hostnames using that scope. Cooldowns apply to every request in the scope, including non-session rotation, and persist across restarts.
 
-The caller controls the **base duration** with `minutes` (positive integer, default **30**). Consecutive session invalidations for the same proxy and scope use **1×, 2×, then 4×** that duration. The **fourth invalidation** flags the proxy as invalid and excludes it from that scope until an admin reactivates it. For example, sending `minutes: 360` each time gives **6h → 12h → 24h → excluded**. This also applies when session invalidation explicitly supplies a `domain`. Counts belong to the proxy and scope/domain, survive cooldown expiry, session rebinding, and restarts, and do not affect the proxy's availability for unrelated targets.
+The caller controls the **base duration** with `minutes` (positive integer, default **30**). Consecutive session invalidations for the same proxy and scope use **1×, 2×, then 4×** that duration. The **fourth invalidation** flags the proxy as invalid and excludes it from that scope until it is reactivated. For example, sending `minutes: 360` each time gives **6h → 12h → 24h → excluded**. This also applies when session invalidation explicitly supplies a `domain`. Counts belong to the proxy and scope/domain, survive cooldown expiry, session rebinding, and restarts, and do not affect the proxy's availability for unrelated targets.
 
-Recovery is inferred from the client's lack of invalidation, independent of HTTP status codes. The first session request using that proxy after its cooldown starts a grace period equal to the serving session's `session_ttl_minutes`. An invalidation during that period advances the streak; once that period passes without invalidation, the streak resets. Further requests do not extend the grace period. **No resumed session traffic means no reset.** This works for opaque HTTPS tunnels too; it requires no success-reporting API call. A late invalidation after the grace period starts again at the base duration.
+Recovery is inferred from the client's lack of invalidation, independent of HTTP status codes. The first session request using that proxy after its cooldown starts a grace period equal to the session TTL. An invalidation during that period advances the streak; once that period passes without invalidation, the streak resets. Further requests do not extend the grace period. **No resumed session traffic means no reset.** This works for opaque HTTPS tunnels too; it requires no success-reporting API call. A late invalidation after the grace period starts again at the base duration.
 
-Optional `scope`, `pool_id`, and admin-only `username` filters select bindings. Without a `scope` filter, every matching binding is invalidated within its own scope, including when one proxy is bound in several scopes. Responses include `failure_count` and `invalid`; a permanent exclusion returns `invalid: true` and `cooldown_until: null` in the invalidation response.
+An optional `scope` filter selects bindings. Without it, every matching binding is invalidated within its own scope, including when one proxy is bound in several scopes. Responses include `failure_count` and `invalid`; a permanent exclusion returns `invalid: true` and `cooldown_until: null` in the invalidation response.
 
 Two explicit overrides are available:
 
 - `"domain": "example.com"` cools each matched proxy for that domain and its subdomains, regardless of reservation scope. Include `scope` to select a particular binding when the token is used in multiple scopes.
 - `"global": true` cools each matched proxy across all targets and drops all of its bindings. `global` and `domain` cannot be combined.
 
-Inspect active cooldowns and permanent exclusions with admin-authenticated `GET /api/v1/proxies/scope-cooldowns` or `GET /api/v1/proxies/domain-cooldowns`. In these lists, `invalid: true` means the exclusion has no expiry, regardless of the stored `cooldown_until` timestamp. Reactivate an exact scope with `POST /api/v1/proxies/{id}/reactivate` and `{"scope":"shopping"}`; use `{"domain":"example.com"}` for an explicit domain exclusion, or omit both to clear all cooldowns and exclusions for that proxy. Reactivation also clears the failure history. Global session invalidation (`global: true`) and direct proxy-ID invalidation retain their fixed-duration behavior; only admin reactivation lifts a permanent scope/domain exclusion.
+Inspect active cooldowns and permanent exclusions with `GET /api/v1/proxies/scope-cooldowns` or `GET /api/v1/proxies/domain-cooldowns`. In these lists, `invalid: true` means the exclusion has no expiry, regardless of the stored `cooldown_until` timestamp. Reactivate an exact scope with `POST /api/v1/proxies/{id}/reactivate` and `{"scope":"shopping"}`; use `{"domain":"example.com"}` for an explicit domain exclusion, or omit both to clear all cooldowns and exclusions for that proxy. Reactivation also clears the failure history. Global session invalidation (`global: true`) and direct proxy-ID invalidation retain their fixed-duration behavior; only reactivation lifts a permanent scope/domain exclusion.
 
-**Behavior change:** session invalidation without `domain` used to invalidate globally; callers that need that behavior must now send `global: true`. An omitted duration now means 30 minutes (the previous implementation used 24 hours despite the API comment saying 30). `minutes: 0` no longer selects that legacy 24-hour fallback.
-
-### Invalidating with proxy-user credentials
-
-The scraping client usually holds proxy-user credentials, not an admin JWT. These client-control endpoints therefore also accept **HTTP Basic auth with proxy-user credentials**:
-
-- `POST /api/v1/proxies/{id}/invalidate`
-- `POST /api/v1/sessions/invalidate`
-- `POST /api/v1/sessions/release`
-- `GET /api/v1/proxies/working`
+A client can call these endpoints with the same credentials it uses on the proxy port, since the API accepts `ROTA_PASSWORD` as a Basic password with any username:
 
 ```bash
-# Same credentials the client already uses on the proxy port
 curl -X POST "http://localhost:8001/api/v1/sessions/invalidate" \
-  -u "myuser:mypassword" \
+  -u "scraper:$ROTA_PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{"token": "job42", "minutes": 30}'
 ```
 
-Proxy-user calls are scoped to the user's own pools: only proxies that belong to the user's main/fallback pools can be invalidated, and session operations only match that user's own bindings in those pools. The endpoints share the same brute-force protection as the login endpoint. Reactivation stays admin-only. Temporary cooldowns expire automatically; permanent exclusions after repeated session invalidations require admin reactivation.
-
 ### Exporting working proxies
 
-A client that connects to upstream proxies directly, rather than through Rota, can download them from `GET /api/v1/proxies/working`, one per line with their credentials. A proxy user needs **Allow proxy export** turned on in its settings, and can only read its own pools:
+A client that connects to upstream proxies directly, rather than through Rota, can download them from `GET /api/v1/proxies/working`, one per line with their credentials, fastest first:
 
 ```bash
-# The user's main pool, fastest first, as protocol://user:pass@host:port
-curl -u "myuser:mypassword" "http://localhost:8001/api/v1/proxies/working"
+# All working proxies as protocol://user:pass@host:port
+curl -u "scraper:$ROTA_PASSWORD" "http://localhost:8001/api/v1/proxies/working"
 
-# A fallback pool, at most 20 proxies, as host:port:user:pass
-curl -u "myuser:mypassword" "http://localhost:8001/api/v1/proxies/working?pool=3&limit=20&format=colon"
+# At most 20 German proxies tagged "residential", as host:port:user:pass
+curl -u "scraper:$ROTA_PASSWORD" "http://localhost:8001/api/v1/proxies/working?country=de&tag=residential&limit=20&format=colon"
 ```
 
-By default only active proxies outside a cooldown are listed; `status=all` includes the rest. Admins can read any pool with a JWT, but must pass `pool`.
+`country` and `tag` (repeatable; all must match) filter like the proxy username options. By default only active proxies outside a cooldown are listed; `status=all` includes the rest.
 
 ### Per-domain statistics
 
 The dashboard's **Traffic by Domain** table follows the traffic time range, refreshes every 30 seconds, and can filter to a domain and its subdomains. It shows visible HTTP requests, success rate, failures, 429 responses, p50/p95 latency, completed HTTPS tunnels, tunnel errors, and bytes sent/received.
 
-The same stats are available with an admin JWT:
+The same stats are available from the API:
 
 ```bash
 curl "http://localhost:8001/api/v1/dashboard/domains?range=24h&domain=example.com&limit=100" \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer $ROTA_PASSWORD"
 ```
 
 `range` accepts `1h`, `6h`, `24h` (default), `7d`, or `30d`. Omit `domain` for all hosts. `limit` is 1–1000 (default 100); rows are ranked by requests plus completed tunnels, then hostname. Each hostname has its own row; filtering to a parent includes subdomain rows without merging them.
@@ -455,7 +413,7 @@ Every tunnel writes a record when it closes, whether or not inspection is enable
 | `bytes_up` / `bytes_down` | Wire bytes each way — real volume even when the payload is opaque |
 | `duration_ms` | How long the tunnel lived |
 | `host` / `domain` | The CONNECT target |
-| `proxy_id`, `pool_id`, `username` | Which proxy, pool and user served it |
+| `proxy_id`, `username` | Which proxy served it, and the client label from the proxy username. The column keeps its historical name; `pool_id` is always 0 |
 
 The dashboard turns these into **Open Tunnels**, **Tunnels (24h)** and **Tunnel Data (24h)**, plus mean concurrency — the number that distinguishes "3 short tunnels" from "3 tunnels held open all day moving 2 GB".
 
@@ -492,14 +450,14 @@ The container runs as UID 1000 and must be able to read both files. Include the
 overlay on subsequent Compose commands so the mounts stay configured. For a
 standalone server, export the settings into its environment and restart it.
 
-**2. Enable it per proxy user** with **Inspect HTTPS** or `inspect_tls` via the API. Both the CA and user opt-in are required.
+**2. Request it per connection** with a `profile-<name>` option in the proxy username. Both the CA and the profile are required.
 
 Once on, each request inside the tunnel produces a normal request event with its method, URL, latency and **status code** — which is what makes blocks visible. A `429` or a `403` block page is an answer, not a transport failure, so it still counts as a successful attempt (matching the plain-HTTP path); look at status codes to see blocking, such as the `rate_limited` count in Traffic by Domain or the `status_code` column of the request history, rather than the success rate.
 
 > **Before enabling, understand the trade-offs:**
 > - The client must **trust the CA**, or every intercepted request fails its certificate check.
-> - **The target sees Rota's handshake, not the client's.** Which handshake that is depends on the user's TLS fingerprint profile — see below. The default is Go's, which is recognizable.
-> - **Certificate-pinning targets will fail** regardless of trust. `TLS_INSPECT_BYPASS_DOMAINS` prevents inspection of those targets; inspection requests to them return `594`. Use an opted-out proxy user without a profile override for opaque access.
+> - **The target sees Rota's handshake, not the client's.** Which handshake that is depends on the requested profile — see below. `go` is Go's, which is recognizable.
+> - **Certificate-pinning targets will fail** regardless of trust. `TLS_INSPECT_BYPASS_DOMAINS` prevents inspection of those targets; inspection requests to them return `594`. Connect without a profile for opaque access.
 > - The CA key can mint a certificate for **any** host. Treat it like any other signing key.
 
 ### TLS fingerprint profiles
@@ -508,45 +466,38 @@ With HTTPS inspection enabled, profiles control Rota's TLS ClientHello and HTTP/
 
 | Profile | Presents |
 |---------|----------|
-| `go` (default) | Go's stdlib TLS, HTTP/1.1 only — no impersonation |
+| `go` | Go's stdlib TLS, HTTP/1.1 only — no impersonation |
 | `ios` | Safari on iOS 26 (iPhone) |
-| `ios-18` | Safari on iOS 18.5 (iPhone) |
+| `ios18` | Safari on iOS 18.5 (iPhone) |
 | `android` | Chrome on Android (phone browser) |
-| `android-okhttp` | OkHttp 4 on Android 13 — the stack behind most native Android apps |
+| `okhttp` | OkHttp 4 on Android 13 — the stack behind most native Android apps |
 | `chrome` | Chrome 146 desktop |
 | `firefox` | Firefox 148 desktop |
 
-**Set a default per user** with the **TLS fingerprint** dropdown, or `tls_profile` via the API.
-
-**Override per connection** with a `-profile-<name>` suffix on the proxy username, which composes with the existing session marker:
+Request a profile per connection with the `profile-<name>` option, which composes with the others:
 
 ```bash
-# Use the user's configured default
-curl --cacert ca.crt -x http://alice:pass@localhost:8000 https://example.com
+# Inspect with an iPhone fingerprint
+curl --cacert ca.crt -x http://scraper-profile-ios:$ROTA_PASSWORD@localhost:8000 https://example.com
 
-# Override for this connection
-curl --cacert ca.crt -x http://alice-profile-ios:pass@localhost:8000 https://example.com
-
-# Sticky session and a fingerprint together — profile goes last
-curl --cacert ca.crt -x http://alice-session-abc123-profile-android:pass@localhost:8000 https://example.com
+# Sticky session and a fingerprint together
+curl --cacert ca.crt -x http://scraper-session-abc123-profile-android:$ROTA_PASSWORD@localhost:8000 https://example.com
 ```
 
-Unknown profile names return `407` with `X-Rota-Error: invalid_tls_profile`.
+Unknown profile names return `407` with `X-Rota-Error: invalid_proxy_options`.
 
 **Verify inspection before testing profiles:** startup logs must include
-`HTTPS interception available for opted-in proxy users`. Add `-v` to a curl
-command above and check that the target certificate's issuer is your inspection
-CA. If you still see the origin's issuer (such as Let's Encrypt), the tunnel is
-opaque: check the server's CA environment and mounts, the user's `inspect_tls`,
-and `TLS_INSPECT_BYPASS_DOMAINS`. A `-profile-...` suffix only selects a fingerprint;
-it does not enable inspection. With `LOG_LEVEL=debug`, an inspected connection
+`HTTPS interception available for requests that name a profile`. Add `-v` to a
+curl command above and check that the target certificate's issuer is your
+inspection CA. If you still see the origin's issuer (such as Let's Encrypt), the
+tunnel is opaque: check the username's `profile` option and
+`TLS_INSPECT_BYPASS_DOMAINS`. With `LOG_LEVEL=debug`, an inspected connection
 logs `intercepted tunnel established` with its profile and upstream protocol.
 
-When requested inspection or a TLS profile cannot run, Rota rejects CONNECT with
-**594** before DNS lookup, proxy selection, or session reservation. This covers
-`inspect_tls=true` and explicit `-profile-...` overrides (including `go`). Rota
-logs an **error** with the username, target host,
-effective profile, reason, and corrective action. The response includes an
+When a requested profile cannot run, Rota rejects CONNECT with **594** before
+DNS lookup, proxy selection, or session reservation. This covers every profile,
+including `go`. Rota logs an **error** with the client label, target host,
+profile, reason, and corrective action. The response includes an
 `X-Rota-Error` code and an actionable text body:
 
 ```text
@@ -559,24 +510,24 @@ TLS inspection required for profile ios but unavailable: Set TLS_INSPECT_CA_CERT
 | `594` reason | Corrective action |
 |--------|-------------------|
 | `tls_inspection_ca_not_configured` | Set both `TLS_INSPECT_CA_CERT` and `TLS_INSPECT_CA_KEY`, mount readable CA files, and restart Rota. |
-| `tls_inspection_disabled` | Enable `inspect_tls` for the proxy user. A profile suffix alone does not enable inspection. |
 | `tls_inspection_bypassed` | Check `TLS_INSPECT_BYPASS_DOMAINS`; the error identifies the matching entry. |
 | `tls_inspection_invalid_host` | Use a valid CONNECT target host. |
 
 Rota never silently falls back to an opaque tunnel for these requests, including
-on bypass domains. Ordinary clients without inspection or profile requests keep
-their opaque tunnels. A `594` carries no `Retry-After`: waiting or rotating
-proxies does not fix the configuration. TLS handshake failures after CONNECT
-succeeds close the connection and log the user, host, profile, and error.
-A stored profile stays dormant while `inspect_tls=false`; only a per-connection
-override requests a replacement TLS stack in that case.
+on bypass domains. Clients without a profile keep their opaque tunnels. A `594`
+carries no `Retry-After`: waiting or rotating proxies does not fix the
+configuration. TLS handshake failures after CONNECT succeeds close the
+connection and log the client label, host, profile, and error.
 
 For aiohttp, load the inspection CA into the SSL context used by the session:
 
 ```python
 import asyncio
+import os
 import ssl
 import aiohttp
+
+ROTA_PASSWORD = os.environ["ROTA_PASSWORD"]
 
 async def main():
     context = ssl.create_default_context()
@@ -585,7 +536,7 @@ async def main():
         async with session.get(
             "https://example.com",
             proxy="http://localhost:8000",
-            proxy_auth=aiohttp.BasicAuth("alice-profile-chrome", "pass"),
+            proxy_auth=aiohttp.BasicAuth("scraper-profile-chrome", ROTA_PASSWORD),
         ) as response:
             body = await response.read()
             print(response.status, len(body))
@@ -608,24 +559,22 @@ Rota instruments itself once with OpenTelemetry and exports through two paths �
 
 | Metric | Type | Labels |
 |---|---|---|
-| `rota_proxy_requests_total` | counter | `pool`, `user`, `outcome`, `status_class` — every upstream attempt (retries count separately) |
-| `rota_proxy_request_duration_seconds` | histogram | `pool`, `outcome` |
-| `rota_proxy_tunnels_total` / `rota_proxy_tunnel_duration_seconds` | counter / histogram | completed CONNECT tunnels by `pool`, `user`, `outcome` |
-| `rota_proxy_tunnel_io_bytes_total` | counter | tunnel volume by `direction` (`up`/`down`), `pool`, `user` |
+| `rota_proxy_requests_total` | counter | `client`, `outcome`, `status_class` — every upstream attempt (retries count separately) |
+| `rota_proxy_request_duration_seconds` | histogram | `outcome` |
+| `rota_proxy_tunnels_total` / `rota_proxy_tunnel_duration_seconds` | counter / histogram | completed CONNECT tunnels; the counter by `client`, `outcome` |
+| `rota_proxy_tunnel_io_bytes_total` | counter | tunnel volume by `direction` (`up`/`down`), `client` |
 | `rota_proxy_open_tunnels` | gauge | CONNECT tunnels live right now |
 | `rota_proxy_sessions_active` | gauge | live sticky-session bindings |
 | `rota_proxy_domain_cooldowns_active` | gauge | active domain-scoped cooldowns |
 | `rota_proxy_auth_rejections_total` | counter | 407s by `reason` |
 | `rota_proxies` | gauge | fleet size by `status` |
-| `rota_pool_proxies` | gauge | per-pool proxy counts by `pool`, `status` |
-| `rota_proxy_users` | gauge | configured proxy users by `enabled` |
 | `rota_healthcheck_checks_total` / `rota_healthcheck_duration_seconds` | counter / histogram | health-check probes by `outcome` |
 | `rota_source_fetches_total` / `rota_source_proxies_imported_total` | counter | source list fetches and new proxies imported |
 | `rota_events_written_total` | counter | request/tunnel history writes by `kind` and `outcome`; failures are lost history |
 | `rota_api_requests_total` / `rota_api_request_duration_seconds` | counter / histogram | management API traffic by `route`, `method`, `status` |
 | `go_*` / `process_*` | various | Go runtime: memory, GC, goroutines |
 
-Labels stay bounded by design: pools and proxy users are labels, individual proxy IDs and target domains are not — per-proxy and per-domain analytics live in the event store and dashboard instead.
+Labels stay bounded by design: client labels from proxy usernames are labels, individual proxy IDs and target domains are not — per-proxy and per-domain analytics live in the event store and dashboard instead. Keep client labels to a handful of fixed names.
 
 ### Scraping (Prometheus, SigNoz collector, ...)
 
@@ -657,35 +606,16 @@ All standard OpenTelemetry variables are honored (`OTEL_EXPORTER_OTLP_PROTOCOL` 
 
 ## 🔐 API Authentication
 
-Management endpoints require an admin JWT. The three [client-control endpoints](#invalidating-with-proxy-user-credentials) also accept proxy-user Basic credentials.
-
-Proxy traffic and client-control Basic auth share a process-local credential cache (up to 1,024 users). After a successful bcrypt check, repeat requests compare an HMAC-SHA-256 digest in constant time for a fixed 60 seconds, avoiding further database lookups and bcrypt work. Session/profile suffixes on proxy usernames share the base user's entry. User edits and deletions through this instance's API invalidate the cache immediately; direct database edits or changes through another instance take effect when the entry expires.
+Every `/api/v1` endpoint and the dashboard WebSocket accept `ROTA_PASSWORD` as a Basic-auth password (any username), as `Authorization: Bearer <password>`, or as `?token=<password>`. A missing or wrong password returns `401`.
 
 ```bash
-# Login
-TOKEN=$(curl -s -X POST http://localhost:8001/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"yourpassword"}' | jq -r '.token')
-
-# Use token
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8001/api/v1/proxies
+curl -H "Authorization: Bearer $ROTA_PASSWORD" http://localhost:8001/api/v1/proxies
+curl -u "scraper:$ROTA_PASSWORD" http://localhost:8001/api/v1/sessions
 ```
 
-Public endpoints: `GET /health`, `HEAD /health`, and `POST /api/v1/auth/login`. `/metrics` is available when enabled and uses the optional `METRICS_BEARER_TOKEN`.
+Public endpoints: `GET /health` and `HEAD /health`. `/metrics` is available when enabled and uses the optional `METRICS_BEARER_TOKEN`.
 
-### Brute-Force Protection
-
-Rota limits **failed authentication only**. Successful proxy traffic and release/invalidate calls have no request-volume limit.
-
-Proxy authentication, admin login, and client-control API authentication share a per-IP failure counter within each process. By default, **10 failures within 10 minutes block password authentication from that IP for 30 minutes**. The threshold-reaching request receives the normal authentication failure; subsequent attempts skip credential verification until the block expires. Correct passwords from a blocked IP must also wait; valid admin JWTs remain usable.
-
-Invalid proxy credentials, failed admin logins, and invalid client-control credentials count as failures. Requests that present no credentials do not: many clients send credentials only after the `407`/`401` challenge, so a challenge is not a failed guess. Handler-level `403`s, malformed request bodies, invalid TLS-profile options, and database/server errors do not count either. Successes do not add or reset failures. Blocks do not extend when clients retry, and expiry starts a fresh failure window.
-
-Blocked API authentication returns `429`; blocked proxy authentication retains `407` with `X-Rota-Error: proxy_auth_rate_limited`. Both include `Retry-After` in whole seconds. Proxy auth metrics record these blocks under `rota_proxy_auth_rejections_total{reason="rate_limited"}`.
-
-Configure `AUTH_IP_MAX_ATTEMPTS`, `AUTH_IP_WINDOW_MINUTES`, and `AUTH_IP_BLOCK_MINUTES` through the environment or Compose `.env`; all must be positive. Counters live in memory, reset on restart, and are independent across replicas. The API trusts forwarded client-IP headers only with `TRUST_PROXY_HEADERS=true`; the forward proxy always uses its socket peer.
-
-The dashboard automatically redirects to the login page with a *"Session expired"* message when a `401` response is received.
+The dashboard stores the password in the browser and sends it as the Bearer token. When the API rejects it (the password changed), the dashboard returns to the sign-in page.
 
 ---
 
