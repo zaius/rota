@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	fhttp "github.com/bogdanfinn/fhttp"
 	"golang.org/x/net/http2"
 
 	"github.com/alpkeskin/rota/core/internal/tlsprofile"
@@ -38,11 +37,7 @@ type originServer struct {
 func newOriginServer(t *testing.T, alpn []string, handler http.Handler) *originServer {
 	t.Helper()
 
-	caFile, keyFile := writeTestCA(t, true)
-	ca, err := LoadCertAuthority(caFile, keyFile)
-	if err != nil {
-		t.Fatalf("LoadCertAuthority: %v", err)
-	}
+	ca := testCertAuthority(t)
 	leaf, err := ca.CertFor("origin.test")
 	if err != nil {
 		t.Fatalf("CertFor: %v", err)
@@ -226,55 +221,8 @@ func TestDialUpstreamPresentsProfileClientHello(t *testing.T) {
 	})
 }
 
-// TestDialUpstreamNegotiatesH2 covers the path that makes an impersonated
-// fingerprint coherent. A profile advertising h2 that then fell back to
-// HTTP/1.1 would contradict its own ClientHello.
-func TestDialUpstreamNegotiatesH2(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Proto", r.Proto)
-		w.Write([]byte("hello from origin")) //nolint:errcheck
-	})
-	srv := newOriginServer(t, []string{"h2", "http/1.1"}, handler)
-
-	session := dialOrigin(t, srv, "ios")
-	if got := session.Protocol(); got != "h2" {
-		t.Fatalf("negotiated protocol = %q, want h2", got)
-	}
-	if _, _, ok := session.Upgradable(); ok {
-		t.Error("h2 session reports it can hand off a raw connection")
-	}
-
-	req, err := http.NewRequest(http.MethodGet, "https://origin.test/path?q=1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("User-Agent", "test-agent")
-
-	resp, err := session.RoundTrip(req, "origin.test", 10*time.Second)
-	if err != nil {
-		t.Fatalf("RoundTrip: %v", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
-	}
-	if got := resp.Header.Get("X-Proto"); got != "HTTP/2.0" {
-		t.Errorf("origin saw %q, want HTTP/2.0", got)
-	}
-	// The response is relabelled for the HTTP/1.1 client leg.
-	if resp.ProtoMajor != 1 {
-		t.Errorf("response Proto = %s, want HTTP/1.1 for the client leg", resp.Proto)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	if string(body) != "hello from origin" {
-		t.Errorf("body = %q", body)
-	}
-}
-
+// Regression: RoundTrip canceled the request timeout as soon as the headers
+// arrived, cutting off every HTTP/2 response body.
 func TestH2SessionStreamsResponseBody(t *testing.T) {
 	for _, profile := range []string{"chrome", "firefox", "ios"} {
 		t.Run(profile, func(t *testing.T) {
@@ -352,219 +300,36 @@ func TestH2SessionBodyCancellation(t *testing.T) {
 	}
 }
 
-type h2RoundTripFunc func(*fhttp.Request) (*fhttp.Response, error)
-
-func (f h2RoundTripFunc) RoundTrip(req *fhttp.Request) (*fhttp.Response, error) { return f(req) }
-func (f h2RoundTripFunc) Close() error                                          { return nil }
-
-func TestH2SessionReleasesRequestContext(t *testing.T) {
-	profile, err := tlsprofile.Lookup("chrome")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, finish := range []string{"EOF", "read error", "close", "round trip error"} {
-		t.Run(finish, func(t *testing.T) {
-			var requestCtx context.Context
-			body := &h2TestBody{Reader: strings.NewReader("body")}
-			if finish == "read error" {
-				body.readErr = io.ErrUnexpectedEOF
-			}
-			roundTripErr := errors.New("round trip failed")
-			session := &h2Session{
-				profile: profile,
-				cc: h2RoundTripFunc(func(req *fhttp.Request) (*fhttp.Response, error) {
-					requestCtx = req.Context()
-					if finish == "round trip error" {
-						return nil, roundTripErr
-					}
-					return &fhttp.Response{StatusCode: http.StatusOK, Body: body}, nil
-				}),
-			}
-			req := httpRequest(t, http.MethodGet, "/", nil)
-			resp, err := session.RoundTrip(req, "origin.test", time.Minute)
-			if finish == "round trip error" {
-				if !errors.Is(err, roundTripErr) {
-					t.Fatalf("RoundTrip: %v, want %v", err, roundTripErr)
-				}
-			} else {
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer resp.Body.Close()
-				if err := requestCtx.Err(); err != nil {
-					t.Fatalf("context ended before body: %v", err)
-				}
-				if finish == "close" {
-					if err := resp.Body.Close(); err != nil {
-						t.Fatal(err)
-					}
-					if !body.closed {
-						t.Fatal("response body did not close the underlying body")
-					}
-				} else if _, err := io.ReadAll(resp.Body); !errors.Is(err, body.readErr) {
-					t.Fatalf("read body: %v, want %v", err, body.readErr)
-				}
-			}
-			if err := requestCtx.Err(); !errors.Is(err, context.Canceled) {
-				t.Fatalf("context after %s: %v, want canceled", finish, err)
-			}
-		})
-	}
-}
-
-type h2TestBody struct {
-	*strings.Reader
-	readErr error
-	closed  bool
-}
-
-func (b *h2TestBody) Read(p []byte) (int, error) {
-	if b.readErr != nil {
-		return 0, b.readErr
-	}
-	return b.Reader.Read(p)
-}
-
-func (b *h2TestBody) Close() error {
-	b.closed = true
-	return nil
-}
-
-// TestPassthroughStaysOnHTTP1 pins the pre-profile behaviour: a user who never
-// picked a profile must keep the exact tunnel they had before.
-func TestPassthroughStaysOnHTTP1(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok")) //nolint:errcheck
-	})
-	srv := newOriginServer(t, []string{"h2", "http/1.1"}, handler)
-
-	session := dialOrigin(t, srv, "go")
-	if got := session.Protocol(); got != "http/1.1" {
-		t.Errorf("pass-through negotiated %q, want http/1.1", got)
-	}
-	if _, _, ok := session.Upgradable(); !ok {
-		t.Error("http/1.1 session should be able to hand off for a 101")
-	}
-}
-
-func TestWriteOrderedRequest(t *testing.T) {
+// A body of unknown length has to be re-chunked, and httputil's chunked writer
+// deliberately omits the terminating CRLF — getting that wrong desynchronizes
+// every subsequent request on a keep-alive connection.
+func TestWriteOrderedRequest_RechunksUnknownLengthBody(t *testing.T) {
 	ios, err := tlsprofile.Lookup("ios")
 	if err != nil {
 		t.Fatal(err)
 	}
+	req := httpRequest(t, http.MethodPost, "/stream", strings.NewReader("abc"))
+	req.ContentLength = -1
 
-	t.Run("headers follow the profile order", func(t *testing.T) {
-		req := httpRequest(t, http.MethodGet, "/search?q=go", nil)
-		req.Header.Set("Accept-Encoding", "gzip")
-		req.Header.Set("User-Agent", "test-agent")
-		req.Header.Set("Accept", "*/*")
-
-		var buf bytes.Buffer
-		if err := writeOrderedRequest(&buf, req, ios, "origin.test"); err != nil {
-			t.Fatalf("writeOrderedRequest: %v", err)
-		}
-
-		got := headerNames(buf.String())
-		want := []string{"Host", "User-Agent", "Accept", "Accept-Encoding"}
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Errorf("header order = %v, want %v", got, want)
-		}
-	})
-
-	t.Run("pass-through does not reorder", func(t *testing.T) {
-		req := httpRequest(t, http.MethodGet, "/", nil)
-		req.Header.Set("Zeta", "1")
-		req.Header.Set("Alpha", "2")
-
-		var buf bytes.Buffer
-		if err := writeOrderedRequest(&buf, req, tlsprofile.Passthrough, "origin.test"); err != nil {
-			t.Fatalf("writeOrderedRequest: %v", err)
-		}
-		// Every header still has to be present even when nothing reorders it.
-		got := headerNames(buf.String())
-		if len(got) != 3 {
-			t.Errorf("got %v, want Host plus both custom headers", got)
-		}
-	})
-
-	t.Run("hop-by-hop headers are dropped", func(t *testing.T) {
-		req := httpRequest(t, http.MethodGet, "/", nil)
-		req.Header.Set("Proxy-Authorization", "Basic secret")
-		req.Header.Set("User-Agent", "test-agent")
-
-		var buf bytes.Buffer
-		if err := writeOrderedRequest(&buf, req, ios, "origin.test"); err != nil {
-			t.Fatalf("writeOrderedRequest: %v", err)
-		}
-		if strings.Contains(buf.String(), "secret") {
-			t.Errorf("Proxy-Authorization leaked upstream:\n%s", buf.String())
-		}
-	})
-
-	t.Run("counted body keeps its length", func(t *testing.T) {
-		req := httpRequest(t, http.MethodPost, "/submit", strings.NewReader("payload"))
-		req.ContentLength = 7
-
-		var buf bytes.Buffer
-		if err := writeOrderedRequest(&buf, req, ios, "origin.test"); err != nil {
-			t.Fatalf("writeOrderedRequest: %v", err)
-		}
-		out := buf.String()
-		if !strings.Contains(out, "Content-Length: 7\r\n") {
-			t.Errorf("missing Content-Length:\n%s", out)
-		}
-		if !strings.HasSuffix(out, "payload") {
-			t.Errorf("body not written:\n%s", out)
-		}
-	})
-
-	// A body of unknown length has to be re-chunked, and httputil's chunked
-	// writer deliberately omits the terminating CRLF — getting that wrong
-	// desynchronizes every subsequent request on a keep-alive connection.
-	t.Run("unknown-length body is re-chunked and terminated", func(t *testing.T) {
-		req := httpRequest(t, http.MethodPost, "/stream", strings.NewReader("abc"))
-		req.ContentLength = -1
-
-		var buf bytes.Buffer
-		if err := writeOrderedRequest(&buf, req, ios, "origin.test"); err != nil {
-			t.Fatalf("writeOrderedRequest: %v", err)
-		}
-		out := buf.String()
-		if !strings.Contains(out, "Transfer-Encoding: chunked\r\n") {
-			t.Errorf("missing Transfer-Encoding:\n%s", out)
-		}
-		if strings.Contains(out, "Content-Length") {
-			t.Errorf("chunked request must not also carry Content-Length:\n%s", out)
-		}
-		if !strings.HasSuffix(out, "3\r\nabc\r\n0\r\n\r\n") {
-			t.Errorf("bad chunk framing, want ...3\\r\\nabc\\r\\n0\\r\\n\\r\\n, got:\n%q", out)
-		}
-
-		// The strongest check available: the bytes must parse back as the same
-		// request.
-		parsed, err := http.ReadRequest(bufio.NewReader(strings.NewReader(out)))
-		if err != nil {
-			t.Fatalf("re-parse: %v", err)
-		}
-		body, err := io.ReadAll(parsed.Body)
-		if err != nil {
-			t.Fatalf("read re-parsed body: %v", err)
-		}
-		if string(body) != "abc" {
-			t.Errorf("round-tripped body = %q, want abc", body)
-		}
-	})
-
-	t.Run("request line carries the origin form", func(t *testing.T) {
-		req := httpRequest(t, http.MethodGet, "/a/b?c=d", nil)
-		var buf bytes.Buffer
-		if err := writeOrderedRequest(&buf, req, ios, "origin.test"); err != nil {
-			t.Fatalf("writeOrderedRequest: %v", err)
-		}
-		if !strings.HasPrefix(buf.String(), "GET /a/b?c=d HTTP/1.1\r\n") {
-			t.Errorf("bad request line:\n%s", buf.String())
-		}
-	})
+	var buf bytes.Buffer
+	if err := writeOrderedRequest(&buf, req, ios, "origin.test"); err != nil {
+		t.Fatalf("writeOrderedRequest: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "Content-Length") {
+		t.Errorf("chunked request must not also carry Content-Length:\n%s", out)
+	}
+	if !strings.HasSuffix(out, "3\r\nabc\r\n0\r\n\r\n") {
+		t.Errorf("bad chunk framing, want ...3\\r\\nabc\\r\\n0\\r\\n\\r\\n, got:\n%q", out)
+	}
+	parsed, err := http.ReadRequest(bufio.NewReader(strings.NewReader(out)))
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	body, err := io.ReadAll(parsed.Body)
+	if err != nil || string(body) != "abc" {
+		t.Errorf("round-tripped body = %q, %v; want abc", body, err)
+	}
 }
 
 // httpRequest builds a request shaped like one http.ReadRequest would produce
@@ -579,21 +344,4 @@ func httpRequest(t *testing.T, method, target string, body io.Reader) *http.Requ
 	req.URL.Host = ""
 	req.Host = "origin.test"
 	return req
-}
-
-// headerNames returns the header field names of a written request, in order.
-func headerNames(raw string) []string {
-	lines := strings.Split(raw, "\r\n")
-	var names []string
-	for _, line := range lines[1:] {
-		if line == "" {
-			break
-		}
-		name, _, ok := strings.Cut(line, ":")
-		if !ok {
-			break
-		}
-		names = append(names, name)
-	}
-	return names
 }

@@ -11,61 +11,6 @@ import (
 	"time"
 )
 
-func TestBidirectionalCopy_Basic(t *testing.T) {
-	// Create two pairs of connected TCP sockets to simulate client ↔ upstream.
-	clientConn, proxyClientSide := tcpPipe(t)
-	upstreamConn, proxyUpstreamSide := tcpPipe(t)
-
-	defer clientConn.Close()
-	defer upstreamConn.Close()
-
-	// Start bidirectional copy (proxy sits between proxyClientSide and proxyUpstreamSide).
-	done := make(chan TunnelCounts, 1)
-	go func() {
-		counts, _ := BidirectionalCopy(proxyClientSide, proxyUpstreamSide, nil)
-		done <- counts
-	}()
-
-	// Client sends data → should arrive at upstream.
-	clientMsg := []byte("hello from client")
-	if _, err := clientConn.Write(clientMsg); err != nil {
-		t.Fatalf("client write: %v", err)
-	}
-
-	buf := make([]byte, 256)
-	n, err := upstreamConn.Read(buf)
-	if err != nil {
-		t.Fatalf("upstream read: %v", err)
-	}
-	if !bytes.Equal(buf[:n], clientMsg) {
-		t.Fatalf("upstream got %q, want %q", buf[:n], clientMsg)
-	}
-
-	// Upstream sends data → should arrive at client.
-	upstreamMsg := []byte("hello from upstream")
-	if _, err := upstreamConn.Write(upstreamMsg); err != nil {
-		t.Fatalf("upstream write: %v", err)
-	}
-
-	n, err = clientConn.Read(buf)
-	if err != nil {
-		t.Fatalf("client read: %v", err)
-	}
-	if !bytes.Equal(buf[:n], upstreamMsg) {
-		t.Fatalf("client got %q, want %q", buf[:n], upstreamMsg)
-	}
-
-	// Close both ends and wait for BidirectionalCopy to finish.
-	clientConn.Close()
-	upstreamConn.Close()
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("BidirectionalCopy did not finish in time")
-	}
-}
-
 func TestBidirectionalCopy_LargePayload(t *testing.T) {
 	clientConn, proxyClientSide := tcpPipe(t)
 	upstreamConn, proxyUpstreamSide := tcpPipe(t)

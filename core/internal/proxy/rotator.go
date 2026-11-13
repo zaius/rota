@@ -38,13 +38,11 @@ const (
 // individual attempt took, so per-proxy stats are charged per attempt, not per
 // retry loop.
 type Rotator struct {
-	proxyRepo      *repository.ProxyRepository
-	sessions       *SessionManager
-	domainCD       *DomainCooldownManager
-	tracker        *UsageTracker
-	recoveryRepo   cooldownRecoveryRepository
-	logger         *logger.Logger
-	targetResolver targetIPResolver // nil uses net.DefaultResolver
+	proxyRepo *repository.ProxyRepository
+	sessions  *SessionManager
+	domainCD  *DomainCooldownManager
+	tracker   *UsageTracker
+	logger    *logger.Logger
 
 	// settings is swapped by ReloadSettings while requests read it.
 	settings atomic.Pointer[models.RotationSettings]
@@ -68,10 +66,6 @@ func NewRotator(proxyRepo *repository.ProxyRepository, sessions *SessionManager,
 		logger:     log,
 		lastUsed:   map[int]uint64{},
 		failCounts: map[int]int{},
-	}
-	// Keep a nil repository a nil interface, which disables recovery.
-	if proxyRepo != nil {
-		r.recoveryRepo = proxyRepo
 	}
 	r.SetSettings(settings)
 	return r

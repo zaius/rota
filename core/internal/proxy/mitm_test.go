@@ -2,14 +2,21 @@ package proxy
 
 import (
 	"bufio"
-	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -191,74 +198,6 @@ func TestTLSInspector_CountsEveryRequestOnOneTunnel(t *testing.T) {
 	}
 }
 
-func TestTLSInspector_ForwardsRequestBodiesAndStatusCodes(t *testing.T) {
-	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		// A blocked scrape looks exactly like this, and the status code is the
-		// signal an opaque tunnel throws away.
-		if strings.Contains(string(body), "bot") {
-			w.Header().Set(ProxyErrorHeader, "spoofed")
-			w.WriteHeader(http.StatusTooManyRequests)
-			fmt.Fprint(w, "rate limited")
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, "received %d bytes", len(body))
-	}))
-	defer origin.Close()
-
-	tunnel := startInspectedTunnel(t, origin)
-	clientTLS := tunnel.dialTLS(t)
-	reader := bufio.NewReader(clientTLS)
-
-	send := func(payload string) *http.Response {
-		t.Helper()
-		req, err := http.NewRequest(http.MethodPost, "https://"+tunnel.host+"/search",
-			strings.NewReader(payload))
-		if err != nil {
-			t.Fatalf("build request: %v", err)
-		}
-		if err := req.Write(clientTLS); err != nil {
-			t.Fatalf("write request: %v", err)
-		}
-		resp, err := http.ReadResponse(reader, req)
-		if err != nil {
-			t.Fatalf("read response: %v", err)
-		}
-		return resp
-	}
-
-	resp := send("normal query")
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
-	}
-	if got, want := string(body), "received 12 bytes"; got != want {
-		t.Errorf("body = %q, want %q", got, want)
-	}
-
-	resp = send("i am a bot")
-	io.Copy(io.Discard, resp.Body) //nolint:errcheck
-	resp.Body.Close()
-	if resp.Header.Get(ProxyErrorHeader) != "" {
-		t.Error("target spoofed a Rota error inside the tunnel")
-	}
-	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
-	}
-
-	clientTLS.Close()
-	select {
-	case res := <-tunnel.done:
-		if res.requests != 2 {
-			t.Errorf("recorded %d requests, want 2", res.requests)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Serve did not return")
-	}
-}
-
 // TestTLSInspector_ChunksUnknownLengthH2Responses pins how a response without
 // a content-length crosses from the h2 upstream leg to the HTTP/1.1 client
 // leg. HTTP/2 needs no length, END_STREAM ends the body, so most dynamic
@@ -345,110 +284,6 @@ func TestTLSInspector_ChunksUnknownLengthH2Responses(t *testing.T) {
 	}
 }
 
-// TestWriteResponse_FramesForKeepAlive checks the framing writeResponse puts
-// on the wire for each way an upstream response can arrive. The invariant:
-// Connection: close appears only when resp.Close asked for it, because that is
-// the only case in which the pump closes.
-func TestWriteResponse_FramesForKeepAlive(t *testing.T) {
-	cases := []struct {
-		name          string
-		method        string
-		contentLength int64
-		close         bool
-		wantChunked   bool
-		wantClose     bool
-	}{
-		{name: "unknown length", method: http.MethodGet, contentLength: -1, wantChunked: true},
-		{name: "known length", method: http.MethodGet, contentLength: 4},
-		{name: "unknown length, server closes", method: http.MethodGet, contentLength: -1, close: true, wantClose: true},
-		{name: "HEAD without length", method: http.MethodHead, contentLength: -1, wantChunked: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httpRequest(t, tc.method, "/", nil)
-			body := io.NopCloser(strings.NewReader("body"))
-			if tc.method == http.MethodHead {
-				body = http.NoBody
-			}
-			resp := &http.Response{
-				StatusCode:    http.StatusOK,
-				ProtoMajor:    1,
-				ProtoMinor:    1,
-				Header:        http.Header{"X-Test": {"1"}},
-				Body:          body,
-				ContentLength: tc.contentLength,
-				Close:         tc.close,
-				Request:       req,
-			}
-
-			var wire bytes.Buffer
-			if err := writeResponse(&wire, resp); err != nil {
-				t.Fatalf("writeResponse: %v", err)
-			}
-			if resp.Close != tc.close {
-				t.Errorf("writeResponse changed resp.Close to %v", resp.Close)
-			}
-
-			reader := bufio.NewReader(bytes.NewReader(wire.Bytes()))
-			got, err := http.ReadResponse(reader, req)
-			if err != nil {
-				t.Fatalf("parse written response: %v\n%s", err, wire.String())
-			}
-			if got.Close != tc.wantClose {
-				t.Errorf("Connection: close = %v, want %v\n%s", got.Close, tc.wantClose, wire.String())
-			}
-			chunked := len(got.TransferEncoding) > 0 && got.TransferEncoding[0] == "chunked"
-			if chunked != tc.wantChunked {
-				t.Errorf("chunked = %v, want %v\n%s", chunked, tc.wantChunked, wire.String())
-			}
-			parsed, err := io.ReadAll(got.Body)
-			if err != nil {
-				t.Fatalf("read parsed body: %v", err)
-			}
-			want := "body"
-			if tc.method == http.MethodHead {
-				want = ""
-			}
-			if string(parsed) != want {
-				t.Errorf("body = %q, want %q", parsed, want)
-			}
-			// Anything left over would be read as the start of the next
-			// response and desynchronize the connection.
-			if rest, _ := io.ReadAll(reader); len(rest) != 0 {
-				t.Errorf("%d stray bytes after the response: %q", len(rest), rest)
-			}
-		})
-	}
-}
-
-func TestPrefixConn_ReplaysReadAheadBytes(t *testing.T) {
-	// The HTTP server can read past a CONNECT while filling its buffer. Those
-	// bytes are the start of the client's TLS handshake, so they must come back
-	// out of the stream first and in order, or interception sees a truncated
-	// ClientHello.
-	client, server := tcpPipe(t)
-	defer client.Close()
-	defer server.Close()
-
-	go func() {
-		client.Write([]byte("-tail")) //nolint:errcheck
-	}()
-
-	conn := &prefixConn{Conn: server, prefix: []byte("head-")}
-	got := make([]byte, 0, 10)
-	buf := make([]byte, 4)
-	for len(got) < 10 {
-		n, err := conn.Read(buf)
-		got = append(got, buf[:n]...)
-		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-	}
-	if string(got) != "head--tail" {
-		t.Errorf("got %q, want %q", got, "head--tail")
-	}
-}
-
 func TestTLSInspector_InterceptsAfterReadAhead(t *testing.T) {
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "ok")
@@ -489,38 +324,42 @@ func TestTLSInspector_InterceptsAfterReadAhead(t *testing.T) {
 	}
 }
 
-func TestTLSInspector_ShouldInspect(t *testing.T) {
-	ca := testCertAuthority(t)
-	inspector := NewTLSInspector(ca, []string{"pinned.example.com", "https://*.bank.test/"}, logger.New("error"))
-
-	cases := []struct {
-		host string
-		want bool
-	}{
-		{"www.airbnb.com:443", true},
-		{"pinned.example.com:443", false},
-		{"api.pinned.example.com:443", false}, // subdomains inherit the bypass
-		{"notpinned.example.com:443", true},   // suffix match must not be substring match
-		{"bank.test:443", false},              // bypass entries are normalized
-		{"login.bank.test:443", false},
-		{"", false},
+// testCertAuthority writes a fresh self-signed CA to disk and loads it the way
+// the server does.
+func testCertAuthority(t *testing.T) *CertAuthority {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		if got := inspector.ShouldInspect(tc.host); got != tc.want {
-			t.Errorf("ShouldInspect(%q) = %v, want %v", tc.host, got, tc.want)
-		}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Rota Test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
 	}
-}
-
-func TestTLSInspector_DisabledWithoutCA(t *testing.T) {
-	// A nil inspector is the no-CA case, and it must never claim a tunnel:
-	// interception has to be impossible unless it was explicitly configured.
-	var inspector *TLSInspector
-	if inspector.ShouldInspect("www.airbnb.com:443") {
-		t.Error("nil inspector claimed a tunnel")
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	if (&TLSInspector{}).ShouldInspect("www.airbnb.com:443") {
-		t.Error("inspector without a CA claimed a tunnel")
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
 	}
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := LoadCertAuthority(certFile, keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ca
 }

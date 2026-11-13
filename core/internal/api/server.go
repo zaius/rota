@@ -49,7 +49,7 @@ type Server struct {
 	metricsHTTP http.Handler
 
 	// Proxy server reference for reloading
-	proxyServer handlers.ProxyServer
+	proxyServer *proxy.Server
 
 	// Handlers
 	healthHandler        *handlers.HealthHandler
@@ -260,7 +260,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // SetProxyServer sets the proxy server reference after initialization. It is
 // also handed to the proxy-control handler, which drives reload/session/cooldown
 // endpoints against the running proxy server.
-func (s *Server) SetProxyServer(ps handlers.ProxyServer) {
+func (s *Server) SetProxyServer(ps *proxy.Server) {
 	s.proxyServer = ps
 	s.proxyControlHandler.SetProxyServer(ps)
 	s.dashboardHandler.SetProxyServer(ps)

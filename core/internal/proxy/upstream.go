@@ -16,6 +16,7 @@ import (
 	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
+	http2 "github.com/bogdanfinn/fhttp/http2"
 	utls "github.com/bogdanfinn/utls"
 
 	"github.com/alpkeskin/rota/core/internal/tlsprofile"
@@ -268,16 +269,8 @@ func writeOrderedRequest(w io.Writer, req *http.Request, profile *tlsprofile.Pro
 // fingerprint that differ per client stack as much as the ClientHello does.
 type h2Session struct {
 	conn    net.Conn
-	client  *fhttp.Client
-	cc      h2ClientConn
+	cc      *http2.ClientConn
 	profile *tlsprofile.Profile
-}
-
-// h2ClientConn is the slice of *http2.ClientConn this file uses, named so the
-// session can be exercised without a live HTTP/2 server.
-type h2ClientConn interface {
-	RoundTrip(*fhttp.Request) (*fhttp.Response, error)
-	Close() error
 }
 
 func newH2Session(conn net.Conn, profile *tlsprofile.Profile) (*h2Session, error) {

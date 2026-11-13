@@ -58,7 +58,7 @@ func TestProxyRouter_SessionInvalidateEndsOpenTunnel(t *testing.T) {
 		}
 		t.Cleanup(func() { conn.Close() })
 		conn.SetDeadline(time.Now().Add(10 * time.Second))
-		req := httptest.NewRequest(http.MethodConnect, "target.example:443", nil)
+		req := httptest.NewRequest(http.MethodConnect, "192.0.2.1:443", nil)
 		basicProxyAuth(req, "alice-session-abc", "secret")
 		if err := req.Write(conn); err != nil {
 			t.Fatal(err)
@@ -83,7 +83,7 @@ func TestProxyRouter_SessionInvalidateEndsOpenTunnel(t *testing.T) {
 		t.Fatalf("tunnel did not reach proxy %d: %q %v", first, line, err)
 	}
 
-	r.sessions.SetScopeCooldown(models.ProxyScopeCooldown{ProxyID: first, Scope: "target.example", CooldownUntil: time.Now().Add(time.Hour)})
+	r.sessions.SetScopeCooldown(models.ProxyScopeCooldown{ProxyID: first, Scope: "192.0.2.1", CooldownUntil: time.Now().Add(time.Hour)})
 
 	held.SetDeadline(time.Now().Add(5 * time.Second))
 	if line, err := exchange(held, heldReader); err == nil {

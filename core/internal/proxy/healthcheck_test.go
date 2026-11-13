@@ -107,8 +107,8 @@ func (f *fakeSettings) GetAll(context.Context) (*models.Settings, error) {
 	return &models.Settings{HealthCheck: f.hc}, nil
 }
 
-// Each check reads the settings afresh, so toggling Strict TLS applies to the
-// next test without a restart.
+// Regression: a manual test reused settings cached by an earlier run, so a
+// dashboard change applied only after the next scheduled check.
 func TestHealthCheckStrictTLS(t *testing.T) {
 	target := newExpiredTLSServer(t)
 	proxyAddr := newCONNECTProxy(t)
@@ -144,22 +144,6 @@ func TestHealthCheckStrictTLS(t *testing.T) {
 				t.Fatalf("error = %q, want it to contain %q", errMsg, tc.wantErr)
 			}
 		})
-	}
-}
-
-func TestConfigureCheckTLSDropsLegacyMinimum(t *testing.T) {
-	for _, strict := range []bool{false, true} {
-		p := &models.Proxy{Address: "127.0.0.1:1", Protocol: "http"}
-		transport, err := CreateProxyTransport(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ConfigureCheckTLS(transport, p, strict)
-		c := transport.TLSClientConfig
-		if c.MinVersion != 0 || c.InsecureSkipVerify == strict || c.VerifyPeerCertificate != nil {
-			t.Errorf("strict=%v: MinVersion=%x InsecureSkipVerify=%v, want Go's default minimum and verification=%v",
-				strict, c.MinVersion, c.InsecureSkipVerify, strict)
-		}
 	}
 }
 

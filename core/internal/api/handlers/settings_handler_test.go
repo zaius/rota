@@ -31,6 +31,8 @@ func (f *fakeSettingsStore) UpdateAll(_ context.Context, s *models.Settings) err
 
 func (f *fakeSettingsStore) Reset(context.Context) error { return nil }
 
+// Regression: a partial settings update reset the sections and fields it
+// omitted.
 func TestSettingsUpdate_KeepsOmittedSectionsAndFields(t *testing.T) {
 	store := &fakeSettingsStore{current: models.Settings{
 		Rotation: models.RotationSettings{FollowRedirect: true, Timeout: 90, SessionTTLMinutes: 10},

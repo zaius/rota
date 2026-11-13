@@ -29,21 +29,15 @@ const maxBulkTest = 100000
 // each burn the full timeout.
 const bulkTestTimeoutSecs = 15
 
-// HealthChecker interface for testing proxies
-type HealthChecker interface {
-	CheckProxy(ctx context.Context, proxy *models.Proxy) (*models.ProxyTestResult, error)
-	CheckProxies(ctx context.Context, proxies []*models.Proxy, timeoutSecs int, progressFn func(checked, active, failed int)) ([]models.ProxyTestResult, error)
-}
-
 // ProxyHandler handles proxy management endpoints
 type ProxyHandler struct {
 	proxyRepo     *repository.ProxyRepository
-	healthChecker HealthChecker
+	healthChecker *proxy.HealthChecker
 	logger        *logger.Logger
 }
 
 // NewProxyHandler creates a new ProxyHandler
-func NewProxyHandler(proxyRepo *repository.ProxyRepository, healthChecker HealthChecker, log *logger.Logger) *ProxyHandler {
+func NewProxyHandler(proxyRepo *repository.ProxyRepository, healthChecker *proxy.HealthChecker, log *logger.Logger) *ProxyHandler {
 	return &ProxyHandler{
 		proxyRepo:     proxyRepo,
 		healthChecker: healthChecker,

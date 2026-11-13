@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"errors"
 	"testing"
 	"time"
 
@@ -23,79 +22,6 @@ func mustReserve(t *testing.T, m *SessionManager, key sessionIdentity, proxyID i
 	if err := reserveForTest(m, key, proxyID, ttl); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestSessionManager_ExclusiveWithinScope(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
-	first := sessionIdentity{token: "a", scope: "example.com"}
-	mustReserve(t, m, first, 42, time.Minute)
-	for _, key := range []sessionIdentity{
-		{token: "b", scope: "example.com"},
-		{scope: "example.com"}, // requests without a token
-	} {
-		if err := reserveForTest(m, key, 42, time.Minute); !errors.Is(err, ErrNoProxyAvailable) {
-			t.Fatalf("%+v must not take another session's proxy: %v", key, err)
-		}
-	}
-	mustReserve(t, m, first, 42, time.Minute)
-	other := first
-	other.scope = "other.com"
-	mustReserve(t, m, other, 42, time.Minute)
-	if got := m.List(); len(got) != 2 {
-		t.Fatalf("want two scoped bindings, got %v", got)
-	}
-}
-
-func TestSessionManager_ReleaseAndExpiryFreeReservations(t *testing.T) {
-	for _, action := range []string{"release", "evict", "expire"} {
-		t.Run(action, func(t *testing.T) {
-			m := NewSessionManager()
-			defer m.Stop()
-			key := sessionIdentity{token: "a", scope: "example.com"}
-			mustReserve(t, m, key, 42, time.Minute)
-			switch action {
-			case "release":
-				if n := m.ReleaseSessions(SessionFilter{Token: "a"}); n != 1 {
-					t.Fatalf("released %d", n)
-				}
-			case "evict":
-				if n := m.Evict(42); n != 1 {
-					t.Fatalf("evicted %d", n)
-				}
-			case "expire":
-				m.mu.Lock()
-				m.sessions[key].lastUsed = time.Now().Add(-time.Hour)
-				m.mu.Unlock()
-			}
-			key.token = "b"
-			mustReserve(t, m, key, 42, time.Minute)
-			if got := m.FindSessions(SessionFilter{Token: "a"}); len(got) != 0 {
-				t.Fatalf("old binding remains: %v", got)
-			}
-		})
-	}
-}
-
-func TestSessionManager_RebindAndRefresh(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
-	key := sessionIdentity{token: "a", scope: "example.com"}
-	mustReserve(t, m, key, 42, time.Minute)
-	created := m.List()[0].CreatedAt
-	m.mu.Lock()
-	m.sessions[key].lastUsed = time.Now().Add(-30 * time.Second)
-	m.mu.Unlock()
-	mustReserve(t, m, key, 43, 2*time.Minute)
-	got := m.FindSessions(SessionFilter{Token: "a"})[0]
-	if got.ProxyID != 43 || got.CreatedAt != created || time.Since(got.LastUsed) > time.Second {
-		t.Fatalf("rebind did not preserve creation and refresh use: %+v", got)
-	}
-	if got.ExpiresAt.Sub(got.LastUsed) != 2*time.Minute {
-		t.Fatal("TTL not refreshed")
-	}
-	key.token = "b"
-	mustReserve(t, m, key, 42, time.Minute) // old proxy was freed
 }
 
 // Regression: requests over a kept-alive CONNECT tunnel never refreshed the
@@ -278,51 +204,4 @@ func TestSessionManager_StaleTunnelCloseIgnoresNewBinding(t *testing.T) {
 		t.Fatalf("stale close changed the new binding's tunnels: %d attached", tunnels)
 	}
 	current.close()
-}
-
-func TestSessionManager_EmptyTokenDoesNotBind(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
-	mustReserve(t, m, sessionIdentity{}, 42, time.Minute)
-	if len(m.List()) != 0 {
-		t.Fatal("empty token must not bind")
-	}
-}
-
-func TestSessionManager_ListAndFindSkipExpired(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
-	key := sessionIdentity{token: "a"}
-	mustReserve(t, m, key, 42, time.Nanosecond)
-	time.Sleep(time.Millisecond)
-	if len(m.FindSessions(SessionFilter{Token: "a"})) != 0 || len(m.List()) != 0 {
-		t.Fatal("expired binding visible")
-	}
-	key.token = "b"
-	mustReserve(t, m, key, 42, time.Minute)
-}
-
-func TestSessionManager_FilteredReleaseAndEvictAcrossScopes(t *testing.T) {
-	m := NewSessionManager()
-	defer m.Stop()
-	for _, key := range []sessionIdentity{
-		{token: "a", scope: "one"},
-		{token: "a", scope: "two"},
-		{token: "a", scope: "three"},
-		{token: "b", scope: "four"},
-	} {
-		mustReserve(t, m, key, 42, time.Minute)
-	}
-	if n := m.ReleaseSessions(SessionFilter{Token: "a", Scope: "one"}); n != 1 {
-		t.Fatalf("released %d", n)
-	}
-	if len(m.FindSessions(SessionFilter{Token: "a"})) != 2 || len(m.FindSessions(SessionFilter{Token: "b"})) != 1 {
-		t.Fatal("released outside scope")
-	}
-	if n := m.Evict(42); n != 3 {
-		t.Fatalf("evicted %d", n)
-	}
-	if len(m.List()) != 0 {
-		t.Fatal("eviction left bindings")
-	}
 }

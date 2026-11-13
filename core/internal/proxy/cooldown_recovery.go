@@ -5,10 +5,6 @@ import (
 	"time"
 )
 
-type cooldownRecoveryRepository interface {
-	StartCooldownRecovery(context.Context, int, string, bool, time.Time, time.Time) error
-}
-
 // beginScopeRecovery marks the first post-cooldown request locally. Only that
 // request needs a database write; a refresh restores the persisted deadline.
 func (m *SessionManager) beginScopeRecovery(proxyID int, scope string, start, after time.Time) bool {
@@ -46,7 +42,7 @@ func (m *DomainCooldownManager) beginDomainRecovery(proxyID int, host string, st
 func (r *Rotator) startCooldownRecovery(ctx context.Context, proxyID int) {
 	rt := routeFrom(ctx)
 	key := rt.sessionKey()
-	if r.recoveryRepo == nil || key.token == "" {
+	if r.proxyRepo == nil || key.token == "" {
 		return
 	}
 	start := time.Now()
@@ -60,7 +56,7 @@ func (r *Rotator) startCooldownRecovery(ctx context.Context, proxyID int) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		record := func(target string, domain bool) {
-			if err := r.recoveryRepo.StartCooldownRecovery(ctx, proxyID, target, domain, start, after); err != nil {
+			if err := r.proxyRepo.StartCooldownRecovery(ctx, proxyID, target, domain, start, after); err != nil {
 				r.logger.Error("failed to start proxy backoff recovery", "proxy_id", proxyID, "target", target, "error", err)
 			}
 		}
