@@ -606,7 +606,7 @@ All standard OpenTelemetry variables are honored (`OTEL_EXPORTER_OTLP_PROTOCOL` 
 
 ## 🔐 API Authentication
 
-Every `/api/v1` endpoint and the dashboard WebSocket accept `ROTA_PASSWORD` as a Basic-auth password (any username), as `Authorization: Bearer <password>`, or as `?token=<password>`. A missing or wrong password returns `401`.
+Every `/api/v1` endpoint accepts `ROTA_PASSWORD` as a Basic-auth password (any username) or as `Authorization: Bearer <password>`. A missing or wrong password returns `401`.
 
 ```bash
 curl -H "Authorization: Bearer $ROTA_PASSWORD" http://localhost:8001/api/v1/proxies

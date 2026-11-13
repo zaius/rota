@@ -57,8 +57,7 @@ func MetricsMiddleware() func(next http.Handler) http.Handler {
 }
 
 // PasswordMiddleware admits requests that present the shared password as a
-// Basic-auth password (any username), as a Bearer token, or as ?token= for
-// WebSocket clients, which cannot set headers.
+// Basic-auth password (any username) or as a Bearer token.
 func PasswordMiddleware(password string) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +78,7 @@ func presentedPassword(r *http.Request) string {
 	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 		return token
 	}
-	return r.URL.Query().Get("token")
+	return ""
 }
 
 // OptionsMiddleware handles all OPTIONS requests with 200 OK
