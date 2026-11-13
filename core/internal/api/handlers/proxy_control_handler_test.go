@@ -56,7 +56,7 @@ func (f *fakeProxyServer) ListDomainCooldowns() []models.ProxyDomainCooldown   {
 func (f *fakeProxyServer) OpenTunnels() int64                                  { return 0 }
 
 func newTestControlHandler(ps ProxyServer) *ProxyControlHandler {
-	h := NewProxyControlHandler(nil, nil, logger.New("error"))
+	h := NewProxyControlHandler(nil, logger.New("error"))
 	h.SetProxyServer(ps)
 	return h
 }

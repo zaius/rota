@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/alpkeskin/rota/core/internal/database"
@@ -11,21 +10,14 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// ErrProxyAuthentication identifies rejected credentials, distinct from a
-// database failure that prevented authentication from being checked.
-var ErrProxyAuthentication = errors.New("invalid proxy-user credentials")
-
 // UserRepository handles proxy_users database operations
 type UserRepository struct {
-	db        *database.DB
-	authCache *userAuthCache
+	db *database.DB
 }
 
 // NewUserRepository creates a new UserRepository
 func NewUserRepository(db *database.DB) *UserRepository {
-	r := &UserRepository{db: db}
-	r.authCache = newUserAuthCache(r.GetByUsername)
-	return r
+	return &UserRepository{db: db}
 }
 
 // List returns all proxy users (passwords excluded)
@@ -134,7 +126,6 @@ func (r *UserRepository) Create(ctx context.Context, req models.CreateProxyUserR
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
 	}
-	r.authCache.invalidate(u.Username)
 	if u.FallbackPoolIDs == nil {
 		u.FallbackPoolIDs = []int{}
 	}
@@ -192,7 +183,6 @@ func (r *UserRepository) Update(ctx context.Context, id int, req models.UpdatePr
 	if err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
-	r.authCache.invalidate(u.Username)
 	if u.FallbackPoolIDs == nil {
 		u.FallbackPoolIDs = []int{}
 	}
@@ -201,19 +191,6 @@ func (r *UserRepository) Update(ctx context.Context, id int, req models.UpdatePr
 
 // Delete removes a user
 func (r *UserRepository) Delete(ctx context.Context, id int) error {
-	var username string
-	err := r.db.Pool.QueryRow(ctx, `DELETE FROM proxy_users WHERE id = $1 RETURNING username`, id).Scan(&username)
-	if err == pgx.ErrNoRows {
-		return nil
-	}
-	if err == nil {
-		r.authCache.invalidate(username)
-	}
+	_, err := r.db.Pool.Exec(ctx, `DELETE FROM proxy_users WHERE id = $1`, id)
 	return err
-}
-
-// Authenticate checks username/password through the shared 60-second cache.
-// Create, Update and Delete invalidate local entries immediately.
-func (r *UserRepository) Authenticate(ctx context.Context, username, password string) (*models.ProxyUser, error) {
-	return r.authCache.authenticate(ctx, username, password)
 }

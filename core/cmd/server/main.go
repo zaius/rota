@@ -18,7 +18,7 @@
 //	@securityDefinitions.apikey	BearerAuth
 //	@in							header
 //	@name						Authorization
-//	@description				Type "Bearer" followed by a space and JWT token.
+//	@description				Type "Bearer" followed by a space and the ROTA_PASSWORD value.
 package main
 
 import (
@@ -33,7 +33,6 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/api"
-	"github.com/alpkeskin/rota/core/internal/authlimit"
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/events"
@@ -117,7 +116,6 @@ func run() error {
 	dashboardRepo := repository.NewDashboardRepository(db, eventStore)
 	sourceRepo := repository.NewSourceRepository(db)
 	formatHistoryRepo := repository.NewFormatHistoryRepository(db)
-	adminRepo := repository.NewAdminRepository(db)
 
 	// Seed any missing default settings from the single Go-defined source of
 	// truth (migrations no longer seed settings). No-op for keys already set.
@@ -160,7 +158,6 @@ func run() error {
 	}
 
 	// Create servers
-	authLimiter := authlimit.New(cfg.AuthIPMaxAttempts, time.Duration(cfg.AuthIPWindowMinutes)*time.Minute, time.Duration(cfg.AuthIPBlockMinutes)*time.Minute)
 	proxyServer, err := proxy.New(cfg.ProxyPort, cfg.Password, log, eventStore, proxyRepo, settingsRepo, inspector)
 	if err != nil {
 		return fmt.Errorf("failed to create proxy server: %w", err)
@@ -174,11 +171,9 @@ func run() error {
 		FormatHistoryRepo: formatHistoryRepo,
 		PoolRepo:          poolRepo,
 		UserRepo:          userRepo,
-		AdminRepo:         adminRepo,
 		SourceSvc:         sourceSvc,
 		PoolSvc:           poolSvc,
 		Metrics:           metricsHTTPHandler(metricsProvider),
-		AuthLimiter:       authLimiter,
 	})
 
 	// Set proxy server reference in API server for reload functionality

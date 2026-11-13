@@ -29,7 +29,6 @@ func TestHandlers_DatabaseFailureIsInternalError(t *testing.T) {
 	users := NewUserHandler(repository.NewUserRepository(db), nil, log)
 	users.SetOnUserChanged(func(string) { t.Error("failed update must not notify user changes") })
 	sources := NewSourceHandler(repository.NewSourceRepository(db), nil, nil, log)
-	auth := NewAuthHandler(nil, repository.NewAdminRepository(db), log, "test", "", "")
 
 	tests := []struct {
 		name    string
@@ -47,7 +46,6 @@ func TestHandlers_DatabaseFailureIsInternalError(t *testing.T) {
 		{"get user", "GET", "/users/{id}", "/users/1", "", users.Get, "failed to get user"},
 		{"update user", "PUT", "/users/{id}", "/users/1", `{}`, users.Update, "failed to update user"},
 		{"update source", "PUT", "/sources/{id}", "/sources/1", `{}`, sources.Update, "failed to update source"},
-		{"admin login", "POST", "/auth/login", "/auth/login", `{"username":"admin","password":"secret"}`, auth.Login, "Internal server error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

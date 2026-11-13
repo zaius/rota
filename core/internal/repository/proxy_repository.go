@@ -696,6 +696,40 @@ func (r *ProxyRepository) ListSelectable(ctx context.Context) ([]*models.Proxy, 
 	return scanProxies(rows)
 }
 
+// WorkingProxies returns proxies with their credentials, fastest first; proxies
+// with no latency measured yet come last. country and tags filter when set.
+// Unless all is true, it lists only active proxies outside a cooldown. limit
+// <= 0 means no limit.
+func (r *ProxyRepository) WorkingProxies(ctx context.Context, country string, tags []string, limit int, all bool) ([]models.Proxy, error) {
+	query := `
+		SELECT id, address, protocol, username, password, status
+		FROM proxies
+		WHERE ($1::text = '' OR upper(country_code) = $1)
+		  AND tags @> $2::text[]
+		  AND ($3 OR (status = 'active' AND (cooldown_until IS NULL OR cooldown_until < NOW())))
+		ORDER BY avg_response_time = 0, avg_response_time, address
+		LIMIT NULLIF($4, 0)
+	`
+	if tags == nil {
+		tags = []string{}
+	}
+	rows, err := r.db.Pool.Query(ctx, query, country, tags, all, max(limit, 0))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list working proxies: %w", err)
+	}
+	defer rows.Close()
+
+	proxies := []models.Proxy{}
+	for rows.Next() {
+		var p models.Proxy
+		if err := rows.Scan(&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan working proxy: %w", err)
+		}
+		proxies = append(proxies, p)
+	}
+	return proxies, rows.Err()
+}
+
 // ListUngeotaggedAddresses returns up to limit addresses of proxies that have no
 // geo data yet, for geo enrichment.
 func (r *ProxyRepository) ListUngeotaggedAddresses(ctx context.Context, limit int) ([]string, error) {

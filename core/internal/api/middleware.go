@@ -1,20 +1,15 @@
 package api
 
 import (
-	"context"
-	"errors"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/authlimit"
 	"github.com/alpkeskin/rota/core/internal/metrics"
-	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // LoggerMiddleware logs HTTP requests
@@ -61,127 +56,30 @@ func MetricsMiddleware() func(next http.Handler) http.Handler {
 	}
 }
 
-// JWTMiddleware validates Bearer tokens on every request in the protected group.
-// Accepts token from:
-//   - Authorization: Bearer <token> header (standard API calls)
-//   - ?token=<token> query param (WebSocket connections)
-//
-// Returns 401 if missing, invalid, or expired.
-func JWTMiddleware(secret string) func(next http.Handler) http.Handler {
-	key := []byte(secret)
+// PasswordMiddleware admits requests that present the shared password as a
+// Basic-auth password (any username), as a Bearer token, or as ?token= for
+// WebSocket clients, which cannot set headers.
+func PasswordMiddleware(password string) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tokenStr := extractToken(r)
-			if tokenStr == "" {
+			if subtle.ConstantTimeCompare([]byte(presentedPassword(r)), []byte(password)) != 1 {
 				w.Header().Set("Content-Type", "application/json")
 				http.Error(w, `{"error":"authorization required"}`, http.StatusUnauthorized)
 				return
 			}
-
-			token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
-				if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, jwt.ErrSignatureInvalid
-				}
-				return key, nil
-			})
-			if err != nil || !token.Valid {
-				w.Header().Set("Content-Type", "application/json")
-				http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
-				return
-			}
-
 			next.ServeHTTP(w, r)
 		})
 	}
 }
 
-type proxyUserAuthenticator interface {
-	Authenticate(context.Context, string, string) (*models.ProxyUser, error)
-}
-
-// JWTOrProxyUserMiddleware authorizes a request either with an admin JWT
-// (exactly like JWTMiddleware) or with HTTP Basic credentials of an enabled
-// proxy user. It guards the client-control endpoints (invalidate, session
-// release), so a scraper holding only its proxy credentials can report a
-// burned proxy without an admin token.
-//
-// Proxy-user requests get the authenticated *models.ProxyUser attached to the
-// context under models.ProxyUserContextKey; handlers use it to scope what the
-// caller may touch to its own pools. Admin requests carry no proxy user.
-//
-// A present-but-invalid credential of either kind is rejected outright rather
-// than falling through to the other scheme. Rejected credentials return 401;
-// authentication infrastructure errors return 500 and are not counted as bad logins.
-//
-// Only rejected credentials count toward the per-IP failed-auth block. A
-// request that presents none gets the 401 without consuming budget, since
-// Basic clients commonly send credentials only after a challenge.
-func JWTOrProxyUserMiddleware(secret string, userRepo proxyUserAuthenticator, log *logger.Logger, limiter *authlimit.Limiter) func(next http.Handler) http.Handler {
-	key := []byte(secret)
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 1. Admin JWT (Bearer header or ?token= query param)
-			if tokenStr := extractToken(r); tokenStr != "" {
-				token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
-					if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-						return nil, jwt.ErrSignatureInvalid
-					}
-					return key, nil
-				})
-				if err != nil || !token.Valid {
-					if !limiter.Allow(w, r) {
-						return
-					}
-					limiter.Failed(r)
-					w.Header().Set("Content-Type", "application/json")
-					http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
-					return
-				}
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// 2. Proxy-user Basic credentials
-			if !limiter.Allow(w, r) {
-				return
-			}
-			if username, password, ok := r.BasicAuth(); ok {
-				user, err := userRepo.Authenticate(r.Context(), username, password)
-				if err != nil && !errors.Is(err, repository.ErrProxyAuthentication) {
-					log.Error("proxy-user API auth unavailable", "error", err)
-					w.Header().Set("Content-Type", "application/json")
-					http.Error(w, `{"error":"authentication unavailable"}`, http.StatusInternalServerError)
-					return
-				}
-				if err != nil || user == nil {
-					limiter.Failed(r)
-					log.Warn("proxy-user API auth failed", "username", username)
-					w.Header().Set("Content-Type", "application/json")
-					http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
-					return
-				}
-				ctx := context.WithValue(r.Context(), models.ProxyUserContextKey, user)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			http.Error(w, `{"error":"authorization required"}`, http.StatusUnauthorized)
-		})
+func presentedPassword(r *http.Request) string {
+	if _, password, ok := r.BasicAuth(); ok {
+		return password
 	}
-}
-
-// extractToken pulls the JWT from the Authorization header or ?token query param.
-func extractToken(r *http.Request) string {
-	// 1. Authorization: Bearer <token>
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
+	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		return token
 	}
-	// 2. ?token=<token>  (used by WebSocket clients)
-	if t := r.URL.Query().Get("token"); t != "" {
-		return t
-	}
-	return ""
+	return r.URL.Query().Get("token")
 }
 
 // OptionsMiddleware handles all OPTIONS requests with 200 OK
