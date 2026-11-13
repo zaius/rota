@@ -187,98 +187,27 @@ var migrations = []Migration{
 	},
 	{
 		Version:     13,
-		Description: "Create proxy pools and pool_proxies tables",
-		Up: `
-			CREATE TABLE IF NOT EXISTS proxy_pools (
-				id               SERIAL PRIMARY KEY,
-				name             VARCHAR(255) NOT NULL,
-				description      TEXT,
-				country_code     VARCHAR(3),
-				region_name      VARCHAR(100),
-				city_name        VARCHAR(100),
-				rotation_method  VARCHAR(30) NOT NULL DEFAULT 'roundrobin',
-				stick_count      INTEGER NOT NULL DEFAULT 10,
-				health_check_url TEXT NOT NULL DEFAULT 'https://api.ipify.org',
-				health_check_cron VARCHAR(100) NOT NULL DEFAULT '*/30 * * * *',
-				health_check_enabled BOOLEAN NOT NULL DEFAULT true,
-				auto_sync        BOOLEAN NOT NULL DEFAULT true,
-				enabled          BOOLEAN NOT NULL DEFAULT true,
-				created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
-				updated_at       TIMESTAMP NOT NULL DEFAULT NOW()
-			);
-
-			CREATE TABLE IF NOT EXISTS pool_proxies (
-				pool_id   INTEGER NOT NULL REFERENCES proxy_pools(id) ON DELETE CASCADE,
-				proxy_id  INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,
-				added_at  TIMESTAMP NOT NULL DEFAULT NOW(),
-				PRIMARY KEY (pool_id, proxy_id)
-			);
-
-			CREATE INDEX IF NOT EXISTS idx_pool_proxies_pool_id  ON pool_proxies(pool_id);
-			CREATE INDEX IF NOT EXISTS idx_pool_proxies_proxy_id ON pool_proxies(proxy_id);
-		`,
-		Down: `
-			DROP TABLE IF EXISTS pool_proxies;
-			DROP TABLE IF EXISTS proxy_pools;
-		`,
+		Description: "Reserved (proxy pools removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     16,
-		Description: "Create admin_credentials table for dashboard authentication",
-		Up: `
-			CREATE TABLE IF NOT EXISTS admin_credentials (
-				id            SERIAL PRIMARY KEY,
-				username      VARCHAR(255) NOT NULL UNIQUE,
-				password_hash TEXT NOT NULL,
-				created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
-				updated_at    TIMESTAMP NOT NULL DEFAULT NOW()
-			);
-		`,
-		Down: `DROP TABLE IF EXISTS admin_credentials;`,
+		Description: "Reserved (dashboard logins removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     15,
-		Description: "Add pool_geo_filters table for multi-location pool membership",
-		Up: `
-			CREATE TABLE IF NOT EXISTS pool_geo_filters (
-				id           SERIAL PRIMARY KEY,
-				pool_id      INTEGER NOT NULL REFERENCES proxy_pools(id) ON DELETE CASCADE,
-				country_code VARCHAR(3),
-				city_name    VARCHAR(100),
-				UNIQUE (pool_id, country_code, city_name)
-			);
-			CREATE INDEX IF NOT EXISTS idx_pool_geo_filters_pool_id ON pool_geo_filters(pool_id);
-
-			-- Migrate existing single country/city filters into the new table
-			INSERT INTO pool_geo_filters (pool_id, country_code, city_name)
-			SELECT id, country_code, city_name
-			FROM proxy_pools
-			WHERE country_code IS NOT NULL
-			ON CONFLICT DO NOTHING;
-		`,
-		Down: `DROP TABLE IF EXISTS pool_geo_filters;`,
+		Description: "Reserved (proxy pools removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     14,
-		Description: "Create proxy_users table for per-user pool authentication",
-		Up: `
-			CREATE TABLE IF NOT EXISTS proxy_users (
-				id               SERIAL PRIMARY KEY,
-				username         VARCHAR(255) NOT NULL UNIQUE,
-				password_hash    TEXT NOT NULL,
-				enabled          BOOLEAN NOT NULL DEFAULT true,
-				main_pool_id     INTEGER REFERENCES proxy_pools(id) ON DELETE SET NULL,
-				fallback_pool_ids INTEGER[] NOT NULL DEFAULT '{}',
-				max_retries      INTEGER NOT NULL DEFAULT 5,
-				created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
-				updated_at       TIMESTAMP NOT NULL DEFAULT NOW()
-			);
-			CREATE INDEX IF NOT EXISTS idx_proxy_users_username ON proxy_users(username);
-			CREATE INDEX IF NOT EXISTS idx_proxy_users_enabled  ON proxy_users(enabled);
-		`,
-		Down: `
-			DROP TABLE IF EXISTS proxy_users;
-		`,
+		Description: "Reserved (proxy users removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     17,
@@ -294,50 +223,9 @@ var migrations = []Migration{
 	},
 	{
 		Version:     18,
-		Description: "Add sync_mode to proxy_pools, ISP filter table, pool_alerts table",
-		Up: `
-			-- sync_mode: 'auto' | 'manual'
-			ALTER TABLE proxy_pools ADD COLUMN IF NOT EXISTS sync_mode VARCHAR(10) NOT NULL DEFAULT 'auto';
-
-			-- ISP filters for pools
-			CREATE TABLE IF NOT EXISTS pool_isp_filters (
-				id       SERIAL PRIMARY KEY,
-				pool_id  INTEGER NOT NULL REFERENCES proxy_pools(id) ON DELETE CASCADE,
-				isp      TEXT NOT NULL,
-				UNIQUE (pool_id, isp)
-			);
-			CREATE INDEX IF NOT EXISTS idx_pool_isp_filters_pool_id ON pool_isp_filters(pool_id);
-
-			-- Tag filters for pools
-			CREATE TABLE IF NOT EXISTS pool_tag_filters (
-				id      SERIAL PRIMARY KEY,
-				pool_id INTEGER NOT NULL REFERENCES proxy_pools(id) ON DELETE CASCADE,
-				tag     TEXT NOT NULL,
-				UNIQUE (pool_id, tag)
-			);
-			CREATE INDEX IF NOT EXISTS idx_pool_tag_filters_pool_id ON pool_tag_filters(pool_id);
-
-			-- Alert rules per pool: fire webhook when active proxy count drops below threshold
-			CREATE TABLE IF NOT EXISTS pool_alert_rules (
-				id                  SERIAL PRIMARY KEY,
-				pool_id             INTEGER NOT NULL REFERENCES proxy_pools(id) ON DELETE CASCADE,
-				enabled             BOOLEAN NOT NULL DEFAULT true,
-				min_active_proxies  INTEGER NOT NULL DEFAULT 5,
-				webhook_url         TEXT NOT NULL,
-				webhook_method      VARCHAR(10) NOT NULL DEFAULT 'POST',
-				last_fired_at       TIMESTAMP,
-				cooldown_minutes    INTEGER NOT NULL DEFAULT 30,
-				created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
-				updated_at          TIMESTAMP NOT NULL DEFAULT NOW()
-			);
-			CREATE INDEX IF NOT EXISTS idx_pool_alert_rules_pool_id ON pool_alert_rules(pool_id);
-		`,
-		Down: `
-			DROP TABLE IF EXISTS pool_alert_rules;
-			DROP TABLE IF EXISTS pool_tag_filters;
-			DROP TABLE IF EXISTS pool_isp_filters;
-			ALTER TABLE proxy_pools DROP COLUMN IF EXISTS sync_mode;
-		`,
+		Description: "Reserved (proxy pools removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     20,
@@ -353,16 +241,9 @@ var migrations = []Migration{
 	},
 	{
 		Version:     19,
-		Description: "Add proxy cleanup settings and rate limit to proxy_users",
-		Up: `
-			-- proxy_cleanup defaults are seeded by SettingsRepository.SeedDefaults.
-			-- Per-user rate limiting
-			ALTER TABLE proxy_users ADD COLUMN IF NOT EXISTS requests_per_minute INTEGER NOT NULL DEFAULT 0;
-		`,
-		Down: `
-			DELETE FROM settings WHERE key = 'proxy_cleanup';
-			ALTER TABLE proxy_users DROP COLUMN IF EXISTS requests_per_minute;
-		`,
+		Description: "Reserved (proxy users removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     10,
@@ -398,12 +279,8 @@ var migrations = []Migration{
 	},
 	{
 		Version:     22,
-		Description: "Session rotation (pool session TTL) + proxy cooldown (manual invalidation)",
+		Description: "Proxy cooldown (manual invalidation)",
 		Up: `
-			-- session rotation: how long an idle session keeps its proxy binding
-			ALTER TABLE proxy_pools
-			  ADD COLUMN IF NOT EXISTS session_ttl_minutes INTEGER NOT NULL DEFAULT 10;
-
 			-- manual invalidation: proxy is excluded from rotation until cooldown_until
 			ALTER TABLE proxies
 			  ADD COLUMN IF NOT EXISTS cooldown_until  TIMESTAMP,
@@ -415,9 +292,8 @@ var migrations = []Migration{
 		`,
 		Down: `
 			DROP INDEX IF EXISTS idx_proxies_cooldown_until;
-			ALTER TABLE proxies     DROP COLUMN IF EXISTS cooldown_reason;
-			ALTER TABLE proxies     DROP COLUMN IF EXISTS cooldown_until;
-			ALTER TABLE proxy_pools DROP COLUMN IF EXISTS session_ttl_minutes;
+			ALTER TABLE proxies DROP COLUMN IF EXISTS cooldown_reason;
+			ALTER TABLE proxies DROP COLUMN IF EXISTS cooldown_until;
 		`,
 	},
 	{
@@ -521,9 +397,9 @@ var migrations = []Migration{
 	{
 		Version:     27,
 		Description: "Drop the legacy shared proxy credential (settings key 'authentication')",
-		// Proxy auth is per-user (proxy_users) only now. The stored shared
-		// credential is removed rather than left as an unread secret. Down
-		// restores the key disabled — the credential itself is not recoverable.
+		// The stored shared credential is removed rather than left as an unread
+		// secret. Down restores the key disabled — the credential itself is not
+		// recoverable.
 		Up: `
 			DELETE FROM settings WHERE key = 'authentication';
 		`,
@@ -535,35 +411,15 @@ var migrations = []Migration{
 	},
 	{
 		Version:     28,
-		Description: "Add proxy_users.inspect_tls",
-		Up: `
-			-- Per-user opt-in for HTTPS interception. Default false: without it
-			-- a tunnel stays opaque and the client owns its own TLS, which is
-			-- the behaviour every existing user already has.
-			ALTER TABLE proxy_users
-			  ADD COLUMN IF NOT EXISTS inspect_tls BOOLEAN NOT NULL DEFAULT false;
-		`,
-		Down: `
-			ALTER TABLE proxy_users DROP COLUMN IF EXISTS inspect_tls;
-		`,
+		Description: "Reserved (proxy users removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     29,
-		Description: "Add proxy_users.tls_profile",
-		// Which client TLS/HTTP2 fingerprint Rota presents to the target server
-		// once it owns the handshake. Only meaningful with inspect_tls on:
-		// without interception the client makes its own handshake and Rota never
-		// sees it. Default '' means the Go stdlib fingerprint — what every
-		// intercepted user already gets. Names are validated in the API against
-		// models.TLSProfiles, not by a CHECK constraint, so adding a profile does
-		// not need a migration.
-		Up: `
-			ALTER TABLE proxy_users
-			  ADD COLUMN IF NOT EXISTS tls_profile TEXT NOT NULL DEFAULT '';
-		`,
-		Down: `
-			ALTER TABLE proxy_users DROP COLUMN IF EXISTS tls_profile;
-		`,
+		Description: "Reserved (proxy users removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     30,
@@ -615,34 +471,20 @@ var migrations = []Migration{
 	{
 		Version:     33,
 		Description: "Remove request-volume rate limit settings",
-		Up: `
-			DELETE FROM settings WHERE key = 'rate_limit';
-			ALTER TABLE proxy_users DROP COLUMN IF EXISTS requests_per_minute;
-		`,
-		Down: `
-			ALTER TABLE proxy_users ADD COLUMN IF NOT EXISTS requests_per_minute INTEGER NOT NULL DEFAULT 0;
-		`,
+		Up:          `DELETE FROM settings WHERE key = 'rate_limit';`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     34,
-		Description: "Store the JWT signing key so dashboard sessions survive restarts",
-		Up: `
-			CREATE TABLE IF NOT EXISTS system_secrets (
-				key        VARCHAR(64) PRIMARY KEY,
-				value      TEXT NOT NULL,
-				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-			);
-		`,
-		Down: `DROP TABLE IF EXISTS system_secrets;`,
+		Description: "Reserved (dashboard logins removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     35,
-		Description: "Let proxy users opt in to exporting their pools' proxies",
-		Up: `
-			ALTER TABLE proxy_users
-			  ADD COLUMN IF NOT EXISTS allow_proxy_export BOOLEAN NOT NULL DEFAULT FALSE;
-		`,
-		Down: `ALTER TABLE proxy_users DROP COLUMN IF EXISTS allow_proxy_export;`,
+		Description: "Reserved (proxy users removed)",
+		Up:          `SELECT 1;`,
+		Down:        `SELECT 1;`,
 	},
 	{
 		Version:     36,
@@ -660,8 +502,24 @@ var migrations = []Migration{
 	{
 		Version:     37,
 		Description: "Drop pool alert rules",
-		// Alerting on rota_pool_proxies in the metrics backend replaces them.
-		Up:   `DROP TABLE IF EXISTS pool_alert_rules;`,
+		Up:          `DROP TABLE IF EXISTS pool_alert_rules;`,
+		Down:        `SELECT 1;`,
+	},
+	{
+		Version:     38,
+		Description: "Drop proxy users, pools and dashboard logins",
+		// One shared password replaces accounts, and the proxy username's
+		// options replace pools. Down cannot bring the rows back.
+		Up: `
+			DROP TABLE IF EXISTS proxy_users;
+			DROP TABLE IF EXISTS pool_proxies;
+			DROP TABLE IF EXISTS pool_geo_filters;
+			DROP TABLE IF EXISTS pool_isp_filters;
+			DROP TABLE IF EXISTS pool_tag_filters;
+			DROP TABLE IF EXISTS proxy_pools;
+			DROP TABLE IF EXISTS admin_credentials;
+			DROP TABLE IF EXISTS system_secrets;
+		`,
 		Down: `SELECT 1;`,
 	},
 }
