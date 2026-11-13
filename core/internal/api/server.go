@@ -56,7 +56,6 @@ type Server struct {
 	dashboardHandler     *handlers.DashboardHandler
 	proxyHandler         *handlers.ProxyHandler
 	settingsHandler      *handlers.SettingsHandler
-	websocketHandler     *handlers.WebSocketHandler
 	sourceHandler        *handlers.SourceHandler
 	formatHistoryHandler *handlers.FormatHistoryHandler
 	proxyControlHandler  *handlers.ProxyControlHandler
@@ -70,7 +69,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	dashboardHandler := handlers.NewDashboardHandler(deps.DashboardRepo, deps.ProxyRepo, log)
 	proxyHandler := handlers.NewProxyHandler(deps.ProxyRepo, deps.HealthChecker, log)
 	settingsHandler := handlers.NewSettingsHandler(deps.SettingsRepo, log, nil) // onUpdate set below
-	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, log, cfg.CORSAllowedOrigins)
 	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.FormatHistoryRepo, deps.SourceSvc, log)
 	formatHistoryHandler := handlers.NewFormatHistoryHandler(deps.FormatHistoryRepo, log)
 	proxyControlHandler := handlers.NewProxyControlHandler(deps.ProxyRepo, log)
@@ -88,7 +86,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		dashboardHandler:     dashboardHandler,
 		proxyHandler:         proxyHandler,
 		settingsHandler:      settingsHandler,
-		websocketHandler:     websocketHandler,
 		sourceHandler:        sourceHandler,
 		formatHistoryHandler: formatHistoryHandler,
 		proxyControlHandler:  proxyControlHandler,
@@ -229,8 +226,6 @@ func (s *Server) setupRoutes() {
 		r.Post("/format-history", s.formatHistoryHandler.Record)
 		r.Delete("/format-history/{id}", s.formatHistoryHandler.Delete)
 	})
-
-	s.router.With(auth).Get("/ws/dashboard", s.websocketHandler.DashboardWebSocket)
 
 	// Serve the built dashboard (SPA) from the same origin as the API when a web
 	// directory is configured — one binary, one port, no separate Node runtime.

@@ -17,7 +17,6 @@ export default defineConfig({
     // build-time API URL is needed. Override the target with VITE_DEV_API_TARGET.
     proxy: {
       "/api": { target: process.env.VITE_DEV_API_TARGET || "http://localhost:8001", changeOrigin: true },
-      "/ws": { target: process.env.VITE_DEV_API_TARGET || "http://localhost:8001", ws: true, changeOrigin: true },
     },
   },
   preview: {

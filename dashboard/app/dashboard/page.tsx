@@ -1,4 +1,4 @@
-import * as React from "react"
+import { useQuery } from "@tanstack/react-query"
 import { Link } from "react-router-dom"
 import { Radio, RadioTower } from "lucide-react"
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts"
@@ -12,7 +12,7 @@ import { DomainStats } from "@/components/domain-stats"
 import { useUrlState } from "@/hooks/use-url-state"
 import { api } from "@/lib/api"
 import { bytes, count, ms, percent, signedPercent } from "@/lib/format"
-import type { ChartRange, DashboardStats, TrafficPoint } from "@/lib/types"
+import type { ChartRange, TrafficPoint } from "@/lib/types"
 
 const RANGES: { value: ChartRange; hint: string }[] = [
   { value: "1h", hint: "Minute buckets over the last hour." },
@@ -97,39 +97,20 @@ export default function OverviewPage() {
   const [url] = useUrlState(URL_DEFAULTS)
   const range = RANGES.find((r) => r.value === url.range) ?? RANGES[2]
 
-  const [stats, setStats] = React.useState<DashboardStats | null>(null)
-  const [traffic, setTraffic] = React.useState<TrafficRow[]>([])
-  const [live, setLive] = React.useState(false)
-  const [loading, setLoading] = React.useState(true)
-
-  React.useEffect(() => {
-    let cancelled = false
-    api
-      .getDashboardStats()
-      .then((s) => !cancelled && setStats(s))
-      .catch((error) => console.error("Failed to fetch dashboard stats:", error))
-      .finally(() => !cancelled && setLoading(false))
-
-    const ws = api.createDashboardWebSocket(setStats, setLive)
-    return () => {
-      cancelled = true
-      ws.close()
-    }
-  }, [])
-
+  const statsQuery = useQuery({
+    queryKey: ["dashboard-stats"],
+    queryFn: () => api.getDashboardStats(),
+    refetchInterval: 5000,
+  })
+  const stats = statsQuery.data
   // The shared range drives every chart; one request feeds all three.
-  React.useEffect(() => {
-    let cancelled = false
-    api
-      .getTrafficChart(range.value)
-      .then((res) => !cancelled && setTraffic(toRows(res.data)))
-      .catch((error) => console.error("Failed to fetch traffic chart:", error))
-    return () => {
-      cancelled = true
-    }
-  }, [range.value])
+  const trafficQuery = useQuery({
+    queryKey: ["traffic-chart", range.value],
+    queryFn: () => api.getTrafficChart(range.value).then((res) => toRows(res.data)),
+  })
+  const traffic = trafficQuery.data ?? []
 
-  if (loading && !stats) return <LoadingLine />
+  if (statsQuery.isLoading) return <LoadingLine />
 
   const rate = stats?.avg_success_rate ?? 0
   // Thresholds only mean something once there is traffic to measure.
@@ -213,7 +194,7 @@ export default function OverviewPage() {
         title="Overview"
         description="What the proxy fleet is doing right now. Headline numbers update live; charts and domains follow the selected range."
       >
-        {live ? (
+        {!statsQuery.isError ? (
           <StatusLabel icon={RadioTower} tone="good">Live</StatusLabel>
         ) : (
           <StatusLabel icon={Radio} tone="muted">Reconnecting</StatusLabel>
