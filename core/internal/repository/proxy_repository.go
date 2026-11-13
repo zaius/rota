@@ -730,6 +730,16 @@ func (r *ProxyRepository) WorkingProxies(ctx context.Context, country string, ta
 	return proxies, rows.Err()
 }
 
+// ListTags returns the distinct proxy tags, for tag suggestions.
+func (r *ProxyRepository) ListTags(ctx context.Context) ([]string, error) {
+	rows, err := r.db.Pool.Query(ctx,
+		`SELECT DISTINCT unnest(tags) AS tag FROM proxies ORDER BY tag LIMIT 100`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tags: %w", err)
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
 // ListUngeotaggedAddresses returns up to limit addresses of proxies that have no
 // geo data yet, for geo enrichment.
 func (r *ProxyRepository) ListUngeotaggedAddresses(ctx context.Context, limit int) ([]string, error) {

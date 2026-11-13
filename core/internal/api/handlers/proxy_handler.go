@@ -635,7 +635,7 @@ func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 func (h *ProxyHandler) BulkTestStatus(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "job_id")
 	job, ok := services.GetJobStore().Get(jobID)
-	if !ok || job.Kind != services.JobKindBulkTest {
+	if !ok {
 		writeError(w, http.StatusNotFound, "Job not found")
 		return
 	}
@@ -653,12 +653,29 @@ func (h *ProxyHandler) BulkTestStatus(w http.ResponseWriter, r *http.Request) {
 //	@Success		200	{object}	map[string]interface{}	"Latest job (or null)"
 //	@Router			/proxies/bulk-test [get]
 func (h *ProxyHandler) BulkTestLatest(w http.ResponseWriter, r *http.Request) {
-	job, ok := services.GetJobStore().LatestByKind(services.JobKindBulkTest)
+	job, ok := services.GetJobStore().Latest()
 	if !ok {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"job": nil})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"job": job})
+}
+
+// Tags lists the distinct proxy tags.
+//
+//	@Summary		List proxy tags
+//	@Tags			proxies
+//	@Produce		json
+//	@Success		200	{object}	map[string]interface{}
+//	@Router			/proxies/tags [get]
+func (h *ProxyHandler) Tags(w http.ResponseWriter, r *http.Request) {
+	tags, err := h.proxyRepo.ListTags(r.Context())
+	if err != nil {
+		h.logger.Error("failed to list tags", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list tags")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"tags": tags})
 }
 
 // Export handles proxy export

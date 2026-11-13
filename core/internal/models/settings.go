@@ -20,11 +20,13 @@ type RotationSettings struct {
 
 // HealthCheckSettings represents health check configuration
 type HealthCheckSettings struct {
-	Timeout int      `json:"timeout"`
-	Workers int      `json:"workers"`
-	URL     string   `json:"url"`
-	Status  int      `json:"status"`
-	Headers []string `json:"headers"`
+	// IntervalMinutes is how often every proxy is checked.
+	IntervalMinutes int      `json:"interval_minutes"`
+	Timeout         int      `json:"timeout"`
+	Workers         int      `json:"workers"`
+	URL             string   `json:"url"`
+	Status          int      `json:"status"`
+	Headers         []string `json:"headers"`
 	// StrictTLS verifies the check target's certificate, so a proxy that
 	// intercepts TLS with an expired or forged certificate fails its check.
 	StrictTLS bool `json:"strict_tls"`

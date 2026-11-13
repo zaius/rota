@@ -94,7 +94,7 @@ type GeoIPConfig struct {
 	// coordinates (GEOIP_CITY_DB).
 	CityDB string
 	// ASNDB is an optional GeoLite2 ASN .mmdb; its AS organization fills the
-	// ISP that pool ISP filters match (GEOIP_ASN_DB).
+	// proxy's ISP (GEOIP_ASN_DB).
 	ASNDB string
 	// LicenseKey enables downloading the databases from MaxMind when they are
 	// missing or older than UpdateHours (MAXMIND_LICENSE_KEY). AccountID

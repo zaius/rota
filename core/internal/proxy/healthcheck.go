@@ -98,7 +98,7 @@ func (h *HealthChecker) CheckProxy(ctx context.Context, proxy *models.Proxy) (*m
 
 // checkProxy tests a single proxy. If timeoutSecs > 0 it overrides the
 // configured health-check timeout for this check only (used by interactive
-// bulk tests that want a snappier per-proxy timeout than the background cron).
+// bulk tests that want a snappier per-proxy timeout than scheduled checks).
 func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, timeoutSecs int) (*models.ProxyTestResult, error) {
 	startTime := time.Now()
 

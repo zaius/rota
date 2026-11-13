@@ -111,7 +111,6 @@ func run() error {
 	// Create repositories once — this is the single place they are constructed.
 	proxyRepo := repository.NewProxyRepository(db)
 	settingsRepo := repository.NewSettingsRepository(db)
-	poolRepo := repository.NewPoolRepository(db)
 	dashboardRepo := repository.NewDashboardRepository(db, eventStore)
 	sourceRepo := repository.NewSourceRepository(db)
 	formatHistoryRepo := repository.NewFormatHistoryRepository(db)
@@ -125,16 +124,17 @@ func run() error {
 	// Build background services once and hand their lifecycle to a single
 	// manager, so they start and stop with the process instead of leaking on a
 	// never-cancelled context.Background().
+	healthChecker := proxy.NewHealthChecker(proxyRepo, settingsRepo, proxy.NewUsageTracker(eventStore, proxyRepo), log)
 	geoSvc := services.NewGeoIPService(log, services.NewLocalGeoDB(cfg.GeoIP, log))
-	sourceSvc := services.NewSourceService(sourceRepo, proxyRepo, poolRepo, geoSvc, log)
-	poolSvc := services.NewPoolService(poolRepo, proxyRepo, settingsRepo, log)
+	sourceSvc := services.NewSourceService(sourceRepo, proxyRepo, geoSvc, log)
+	healthCheckSvc := services.NewHealthCheckScheduler(healthChecker, settingsRepo, log)
 	cleanupSvc := services.NewProxyCleanupService(proxyRepo, settingsRepo, eventStore, log)
 	historyCleanupSvc := services.NewHistoryCleanupService(eventStore, log)
 	statsRefresher := services.NewStatsRefresher(eventStore, proxyRepo, time.Minute, log)
 
-	backgroundSvcs := []services.Service{geoSvc, sourceSvc, poolSvc, cleanupSvc, historyCleanupSvc, statsRefresher}
+	backgroundSvcs := []services.Service{geoSvc, sourceSvc, healthCheckSvc, cleanupSvc, historyCleanupSvc, statsRefresher}
 	if metricsProvider != nil {
-		backgroundSvcs = append(backgroundSvcs, metrics.NewFleetPoller(db, poolRepo, 30*time.Second, log))
+		backgroundSvcs = append(backgroundSvcs, metrics.NewFleetPoller(db, 30*time.Second, log))
 	}
 	svcManager := services.NewManager(log, backgroundSvcs...)
 
@@ -163,14 +163,12 @@ func run() error {
 	}
 	apiServer := api.New(cfg, log, db, api.Deps{
 		ProxyRepo:         proxyRepo,
-		EventStore:        eventStore,
 		SettingsRepo:      settingsRepo,
 		DashboardRepo:     dashboardRepo,
 		SourceRepo:        sourceRepo,
 		FormatHistoryRepo: formatHistoryRepo,
-		PoolRepo:          poolRepo,
 		SourceSvc:         sourceSvc,
-		PoolSvc:           poolSvc,
+		HealthChecker:     healthChecker,
 		Metrics:           metricsHTTPHandler(metricsProvider),
 	})
 

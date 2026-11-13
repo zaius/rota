@@ -169,7 +169,7 @@ func (t *UsageTracker) RecordTunnel(ctx context.Context, record TunnelRecord) er
 	return nil
 }
 
-// RecordHealthCheck records a health check result. Checks are user-initiated
+// RecordHealthCheck records a health check result. Checks are deliberate
 // probes, so the result applies to the proxy's status immediately rather than
 // waiting out the consecutive-failure threshold that request failures use.
 func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, success bool, responseTime int, errorMsg string) error {

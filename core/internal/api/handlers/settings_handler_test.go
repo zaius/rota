@@ -35,7 +35,7 @@ func TestSettingsUpdate_KeepsOmittedSectionsAndFields(t *testing.T) {
 	store := &fakeSettingsStore{current: models.Settings{
 		Rotation: models.RotationSettings{FollowRedirect: true, Timeout: 90, SessionTTLMinutes: 10},
 		HealthCheck: models.HealthCheckSettings{
-			Timeout: 60, Workers: 20, URL: "https://api.ipify.org", Status: 200,
+			IntervalMinutes: 30, Timeout: 60, Workers: 20, URL: "https://api.ipify.org", Status: 200,
 			Headers: []string{"User-Agent: rota"},
 		},
 		ProxyCleanup: models.ProxyCleanupSettings{Enabled: true, MaxFailedDays: 7, CleanupIntervalHours: 24},

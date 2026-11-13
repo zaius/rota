@@ -72,7 +72,7 @@ func startInspectedTunnelReadingAhead(t *testing.T, origin *httptest.Server, rea
 
 	clientConn, proxyClientSide := tcpPipe(t)
 
-	// Stands in for the tunnel the pool chain would have opened through an
+	// Stands in for the tunnel the rotator would have opened through an
 	// upstream proxy: a raw TCP connection to the target, TLS not yet started.
 	upstreamConn, err := net.Dial("tcp", origin.Listener.Addr().String())
 	if err != nil {

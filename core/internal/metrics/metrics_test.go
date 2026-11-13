@@ -47,7 +47,7 @@ func TestProviderEndToEnd(t *testing.T) {
 	RecordHealthCheck(context.Background(), false, 950)
 	RecordSourceFetch(context.Background(), true, 12)
 	RecordEventsWritten(context.Background(), "request", 5, true)
-	RecordAPIRequest(context.Background(), "/api/v1/pools", http.MethodGet, 200, 3*time.Millisecond)
+	RecordAPIRequest(context.Background(), "/api/v1/proxies", http.MethodGet, 200, 3*time.Millisecond)
 	RegisterProxyObservables(
 		func() int64 { return 3 },
 		func() int64 { return 2 },

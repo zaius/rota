@@ -164,6 +164,10 @@ func (h *SettingsHandler) validateSettings(s *models.Settings) error {
 		return fmt.Errorf("rotation.session_ttl_minutes must be between 1 and 1440")
 	}
 
+	if s.HealthCheck.IntervalMinutes < 1 || s.HealthCheck.IntervalMinutes > 10080 {
+		return fmt.Errorf("healthcheck.interval_minutes must be between 1 and 10080")
+	}
+
 	// Validate healthcheck timeout
 	if s.HealthCheck.Timeout < 1 || s.HealthCheck.Timeout > 300 {
 		return fmt.Errorf("healthcheck.timeout must be between 1 and 300")

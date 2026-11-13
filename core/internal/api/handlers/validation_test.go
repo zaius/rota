@@ -26,25 +26,6 @@ func TestValidateStruct_Proxy(t *testing.T) {
 	}
 }
 
-func TestValidateStruct_Pool(t *testing.T) {
-	cases := []struct {
-		name    string
-		req     models.CreatePoolRequest
-		wantErr string
-	}{
-		{"valid", models.CreatePoolRequest{Name: "p", RotationMethod: "roundrobin", StickCount: 1}, ""},
-		{"missing name", models.CreatePoolRequest{RotationMethod: "random"}, "name is required"},
-		{"bad method", models.CreatePoolRequest{Name: "p", RotationMethod: "nope"}, "rotation_method must be one of"},
-		// rotation_method and stick_count are defaulted by the handler.
-		{"empty method/stick allowed", models.CreatePoolRequest{Name: "p"}, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assertValidation(t, &tc.req, tc.wantErr)
-		})
-	}
-}
-
 func TestValidateStruct_Source(t *testing.T) {
 	cases := []struct {
 		name    string

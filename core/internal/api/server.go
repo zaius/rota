@@ -9,7 +9,6 @@ import (
 	"github.com/alpkeskin/rota/core/internal/api/handlers"
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/proxy"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/services"
@@ -24,15 +23,13 @@ import (
 // constructs no repositories or background services.
 type Deps struct {
 	ProxyRepo         *repository.ProxyRepository
-	EventStore        events.Store
 	SettingsRepo      *repository.SettingsRepository
 	DashboardRepo     *repository.DashboardRepository
 	SourceRepo        *repository.SourceRepository
 	FormatHistoryRepo *repository.FormatHistoryRepository
-	PoolRepo          *repository.PoolRepository
 
-	SourceSvc *services.SourceService
-	PoolSvc   *services.PoolService
+	SourceSvc     *services.SourceService
+	HealthChecker *proxy.HealthChecker
 
 	// Metrics, when non-nil, is served at GET /metrics (Prometheus exposition
 	// format). It is nil when metrics are disabled.
@@ -62,7 +59,6 @@ type Server struct {
 	websocketHandler     *handlers.WebSocketHandler
 	sourceHandler        *handlers.SourceHandler
 	formatHistoryHandler *handlers.FormatHistoryHandler
-	poolHandler          *handlers.PoolHandler
 	proxyControlHandler  *handlers.ProxyControlHandler
 }
 
@@ -70,19 +66,13 @@ type Server struct {
 // only API-layer objects (handlers, middleware, HTTP server); repositories and
 // background services are owned by the composition root and passed in via deps.
 func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Server {
-	// Usage tracker + health checker back only the on-demand proxy-test endpoint.
-	tracker := proxy.NewUsageTracker(deps.EventStore, deps.ProxyRepo)
-	healthChecker := proxy.NewHealthChecker(deps.ProxyRepo, deps.SettingsRepo, tracker, log)
-
-	// Initialize handlers
 	healthHandler := handlers.NewHealthHandler(db, deps.ProxyRepo, log)
 	dashboardHandler := handlers.NewDashboardHandler(deps.DashboardRepo, deps.ProxyRepo, log)
-	proxyHandler := handlers.NewProxyHandler(deps.ProxyRepo, healthChecker, log)
+	proxyHandler := handlers.NewProxyHandler(deps.ProxyRepo, deps.HealthChecker, log)
 	settingsHandler := handlers.NewSettingsHandler(deps.SettingsRepo, log, nil) // onUpdate set below
 	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, log, cfg.CORSAllowedOrigins)
 	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.FormatHistoryRepo, deps.SourceSvc, log)
 	formatHistoryHandler := handlers.NewFormatHistoryHandler(deps.FormatHistoryRepo, log)
-	poolHandler := handlers.NewPoolHandler(deps.PoolRepo, deps.PoolSvc, log)
 	proxyControlHandler := handlers.NewProxyControlHandler(deps.ProxyRepo, log)
 
 	s := &Server{
@@ -101,7 +91,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		websocketHandler:     websocketHandler,
 		sourceHandler:        sourceHandler,
 		formatHistoryHandler: formatHistoryHandler,
-		poolHandler:          poolHandler,
 		proxyControlHandler:  proxyControlHandler,
 	}
 
@@ -123,7 +112,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		Addr:         fmt.Sprintf(":%d", s.port),
 		Handler:      s.router,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 10 * time.Minute, // health checks on large pools can take several minutes
+		WriteTimeout: 10 * time.Minute, // a proxy test can take as long as its check timeout
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -210,6 +199,7 @@ func (s *Server) setupRoutes() {
 		r.Get("/proxies/bulk-test/{job_id}", s.proxyHandler.BulkTestStatus)
 		r.Delete("/proxies", s.proxyHandler.DeleteAll)
 		r.Get("/proxies/export", s.proxyHandler.Export)
+		r.Get("/proxies/tags", s.proxyHandler.Tags)
 		r.Put("/proxies/{id}", s.proxyHandler.Update)
 		r.Delete("/proxies/{id}", s.proxyHandler.Delete)
 		r.Post("/proxies/{id}/test", s.proxyHandler.Test)
@@ -238,26 +228,6 @@ func (s *Server) setupRoutes() {
 		r.Get("/format-history", s.formatHistoryHandler.List)
 		r.Post("/format-history", s.formatHistoryHandler.Record)
 		r.Delete("/format-history/{id}", s.formatHistoryHandler.Delete)
-
-		// Proxy Pools
-		r.Get("/pools", s.poolHandler.List)
-		r.Post("/pools", s.poolHandler.Create)
-		r.Get("/pools/geo-summary", s.poolHandler.GeoSummary)
-		r.Get("/pools/geo-countries", s.poolHandler.GeoByCountry)
-		r.Get("/pools/geo-cities/{country_code}", s.poolHandler.GeoCitiesByCountry)
-		r.Get("/pools/isp-list", s.poolHandler.GetISPList)
-		r.Get("/pools/tag-list", s.poolHandler.GetTagList)
-		r.Get("/pools/{id}", s.poolHandler.Get)
-		r.Put("/pools/{id}", s.poolHandler.Update)
-		r.Delete("/pools/{id}", s.poolHandler.Delete)
-		r.Get("/pools/{id}/proxies", s.poolHandler.GetProxies)
-		r.Post("/pools/{id}/proxies", s.poolHandler.AddProxies)
-		r.Delete("/pools/{id}/proxies", s.poolHandler.RemoveProxies)
-		r.Post("/pools/{id}/sync", s.poolHandler.Sync)
-		r.Get("/pools/{id}/export", s.poolHandler.Export)
-		r.Post("/pools/{id}/health-check", s.poolHandler.HealthCheck)
-		r.Get("/pools/{id}/health-check/jobs", s.poolHandler.HealthCheckJobs)
-		r.Get("/pools/{id}/health-check/{job_id}", s.poolHandler.HealthCheckStatus)
 	})
 
 	s.router.With(auth).Get("/ws/dashboard", s.websocketHandler.DashboardWebSocket)

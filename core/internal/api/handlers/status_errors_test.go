@@ -25,7 +25,6 @@ func TestHandlers_DatabaseFailureIsInternalError(t *testing.T) {
 	pool.Close()
 	db := &database.DB{Pool: pool}
 	log := logger.New("error")
-	pools := NewPoolHandler(repository.NewPoolRepository(db), nil, log)
 	sources := NewSourceHandler(repository.NewSourceRepository(db), nil, nil, log)
 
 	tests := []struct {
@@ -37,10 +36,6 @@ func TestHandlers_DatabaseFailureIsInternalError(t *testing.T) {
 		handler http.HandlerFunc
 		message string
 	}{
-		{"get pool", "GET", "/pools/{id}", "/pools/1", "", pools.Get, "failed to get pool"},
-		{"update pool", "PUT", "/pools/{id}", "/pools/1", `{}`, pools.Update, "failed to update pool"},
-		{"health check", "POST", "/pools/{id}/health-check", "/pools/1/health-check", `{}`, pools.HealthCheck, "failed to get pool"},
-		{"export pool", "GET", "/pools/{id}/export", "/pools/1/export", "", pools.Export, "failed to get pool"},
 		{"update source", "PUT", "/sources/{id}", "/sources/1", `{}`, sources.Update, "failed to update source"},
 	}
 	for _, tt := range tests {
