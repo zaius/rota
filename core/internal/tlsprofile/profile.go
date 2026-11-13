@@ -68,7 +68,8 @@ var Passthrough = &Profile{
 	Label: "Go (no impersonation)",
 }
 
-// registry is the closed set of selectable profiles.
+// registry is the closed set of selectable profiles. Names never contain "-",
+// which separates options in the proxy username.
 //
 // The mobile entries are the point of the package; the desktop ones are here
 // because a scraper that wants to look like a browser rather than a phone
@@ -98,7 +99,7 @@ func buildRegistry() map[string]*Profile {
 			// Safe to take from the library: iOS and macOS Safari emitted
 			// identical ClientHellos through 18.x, so the platform label
 			// cannot be wrong.
-			Name:        "ios-18",
+			Name:        "ios18",
 			Label:       "Safari on iOS 18.5 (iPhone)",
 			UserAgent:   ios18UA,
 			headerOrder: safariIOSHeaderOrder,
@@ -121,7 +122,7 @@ func buildRegistry() map[string]*Profile {
 			// The stack behind most native Android apps rather than a browser
 			// — reach for it when the traffic should look like an app, not
 			// like someone browsing.
-			Name:        "android-okhttp",
+			Name:        "okhttp",
 			Label:       "OkHttp 4 on Android 13 (native app)",
 			UserAgent:   "okhttp/4.10.0",
 			headerOrder: okhttpHeaderOrder,

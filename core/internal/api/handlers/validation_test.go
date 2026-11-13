@@ -56,7 +56,7 @@ func TestValidateStruct_User(t *testing.T) {
 		{"short password", models.CreateProxyUserRequest{Username: "u", Password: "x"}, "password must be at least 6"},
 		// max_retries is defaulted; zero must be allowed.
 		{"zero max_retries allowed", models.CreateProxyUserRequest{Username: "u", Password: "secret1"}, ""},
-		{"named tls_profile", models.CreateProxyUserRequest{Username: "u", Password: "secret1", TLSProfile: "ios-18"}, ""},
+		{"named tls_profile", models.CreateProxyUserRequest{Username: "u", Password: "secret1", TLSProfile: "ios18"}, ""},
 		{"bad tls_profile", models.CreateProxyUserRequest{Username: "u", Password: "secret1", TLSProfile: "safari"}, "tls_profile must be one of"},
 		// "" is the stored default and means the Go fingerprint.
 		{"empty tls_profile allowed", models.CreateProxyUserRequest{Username: "u", Password: "secret1", TLSProfile: ""}, ""},

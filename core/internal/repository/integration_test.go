@@ -449,13 +449,13 @@ func TestIntegration_UserUpdate_PartialFields(t *testing.T) {
 	if created.TLSProfile != "" {
 		t.Errorf("create: tls_profile got %q want \"\"", created.TLSProfile)
 	}
-	u = update(`{"tls_profile":"ios-18"}`)
-	if u.TLSProfile != "ios-18" {
-		t.Errorf("set: tls_profile got %q want %q", u.TLSProfile, "ios-18")
+	u = update(`{"tls_profile":"ios18"}`)
+	if u.TLSProfile != "ios18" {
+		t.Errorf("set: tls_profile got %q want %q", u.TLSProfile, "ios18")
 	}
 	u = update(`{"enabled":true}`)
-	if u.TLSProfile != "ios-18" {
-		t.Errorf("keep: tls_profile got %q want %q", u.TLSProfile, "ios-18")
+	if u.TLSProfile != "ios18" {
+		t.Errorf("keep: tls_profile got %q want %q", u.TLSProfile, "ios18")
 	}
 }
 
