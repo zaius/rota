@@ -268,7 +268,6 @@ func writeOrderedRequest(w io.Writer, req *http.Request, profile *tlsprofile.Pro
 // fingerprint that differ per client stack as much as the ClientHello does.
 type h2Session struct {
 	conn    net.Conn
-	client  *fhttp.Client
 	cc      h2ClientConn
 	profile *tlsprofile.Profile
 }
