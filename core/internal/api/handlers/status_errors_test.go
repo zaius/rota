@@ -26,8 +26,6 @@ func TestHandlers_DatabaseFailureIsInternalError(t *testing.T) {
 	db := &database.DB{Pool: pool}
 	log := logger.New("error")
 	pools := NewPoolHandler(repository.NewPoolRepository(db), nil, log)
-	users := NewUserHandler(repository.NewUserRepository(db), nil, log)
-	users.SetOnUserChanged(func(string) { t.Error("failed update must not notify user changes") })
 	sources := NewSourceHandler(repository.NewSourceRepository(db), nil, nil, log)
 
 	tests := []struct {
@@ -43,8 +41,6 @@ func TestHandlers_DatabaseFailureIsInternalError(t *testing.T) {
 		{"update pool", "PUT", "/pools/{id}", "/pools/1", `{}`, pools.Update, "failed to update pool"},
 		{"health check", "POST", "/pools/{id}/health-check", "/pools/1/health-check", `{}`, pools.HealthCheck, "failed to get pool"},
 		{"export pool", "GET", "/pools/{id}/export", "/pools/1/export", "", pools.Export, "failed to get pool"},
-		{"get user", "GET", "/users/{id}", "/users/1", "", users.Get, "failed to get user"},
-		{"update user", "PUT", "/users/{id}", "/users/1", `{}`, users.Update, "failed to update user"},
 		{"update source", "PUT", "/sources/{id}", "/sources/1", `{}`, sources.Update, "failed to update source"},
 	}
 	for _, tt := range tests {

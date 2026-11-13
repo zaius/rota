@@ -112,7 +112,6 @@ func run() error {
 	proxyRepo := repository.NewProxyRepository(db)
 	settingsRepo := repository.NewSettingsRepository(db)
 	poolRepo := repository.NewPoolRepository(db)
-	userRepo := repository.NewUserRepository(db)
 	dashboardRepo := repository.NewDashboardRepository(db, eventStore)
 	sourceRepo := repository.NewSourceRepository(db)
 	formatHistoryRepo := repository.NewFormatHistoryRepository(db)
@@ -170,7 +169,6 @@ func run() error {
 		SourceRepo:        sourceRepo,
 		FormatHistoryRepo: formatHistoryRepo,
 		PoolRepo:          poolRepo,
-		UserRepo:          userRepo,
 		SourceSvc:         sourceSvc,
 		PoolSvc:           poolSvc,
 		Metrics:           metricsHTTPHandler(metricsProvider),

@@ -20,6 +20,8 @@ package tlsprofile
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -60,9 +62,8 @@ type Profile struct {
 	client *profiles.ClientProfile
 }
 
-// Passthrough is the default: Go's own TLS stack, HTTP/1.1 only, no
-// impersonation. It is what every intercepted connection used before profiles
-// existed, and remains what an unconfigured user gets.
+// Passthrough is Go's own TLS stack, HTTP/1.1 only, no impersonation, which a
+// client requests as "go" to inspect a tunnel without changing its handshake.
 var Passthrough = &Profile{
 	Name:  "go",
 	Label: "Go (no impersonation)",
@@ -189,51 +190,18 @@ var (
 	okhttpHeaderOrder = []string{"host", "user-agent", "connection", "accept-encoding"}
 )
 
-// Lookup resolves a profile name. The empty string means "unset", which
-// resolves to the pass-through profile so an unconfigured user keeps today's
-// behaviour.
+// Lookup resolves a profile name.
 //
 // An unrecognized name is an error rather than a silent fall back to
 // pass-through: a caller that asked to look like an iPhone and quietly got Go
 // instead is worse off than one whose connection was refused, because the
 // mistake only shows up as unexplained blocking.
 func Lookup(name string) (*Profile, error) {
-	key := strings.ToLower(strings.TrimSpace(name))
-	if key == "" {
-		return Passthrough, nil
-	}
-	p, ok := registry[key]
+	p, ok := registry[strings.ToLower(name)]
 	if !ok {
-		return nil, fmt.Errorf("unknown TLS profile %q (known: %s)", name, strings.Join(Names(), ", "))
+		return nil, fmt.Errorf("unknown TLS profile %q (known: %s)", name, strings.Join(slices.Sorted(maps.Keys(registry)), ", "))
 	}
 	return p, nil
-}
-
-// Valid reports whether name is a selectable profile, treating the empty
-// string as valid.
-func Valid(name string) bool {
-	_, err := Lookup(name)
-	return err == nil
-}
-
-// Names returns every selectable profile name, sorted.
-func Names() []string {
-	out := make([]string, 0, len(registry))
-	for name := range registry {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// All returns every profile, sorted by name, for the API and dashboard.
-func All() []*Profile {
-	out := make([]*Profile, 0, len(registry))
-	for _, p := range registry {
-		out = append(out, p)
-	}
-	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
-	return out
 }
 
 // Impersonates reports whether this profile changes anything. False for

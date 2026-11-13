@@ -7,54 +7,49 @@ import (
 
 // Decoding a partial update document must distinguish omitted fields from
 // explicitly-null and explicitly-set ones — that difference is what keeps a
-// {"enabled":true} toggle from wiping the user's pool assignment.
-func TestUpdateProxyUserRequest_PartialDecode(t *testing.T) {
+// partial update from wiping fields it did not mention.
+func TestUpdateProxyRequest_PartialDecode(t *testing.T) {
 	cases := []struct {
 		name string
 		doc  string
-		want UpdateProxyUserRequest
+		want UpdateProxyRequest
 	}{
 		{
 			name: "omitted fields stay absent",
-			doc:  `{"enabled":true}`,
-			want: UpdateProxyUserRequest{
-				MainPoolID:      Optional[int]{},
-				FallbackPoolIDs: Optional[[]int]{},
-			},
+			doc:  `{}`,
+			want: UpdateProxyRequest{},
 		},
 		{
 			name: "explicit null is present",
-			doc:  `{"main_pool_id":null,"fallback_pool_ids":null}`,
-			want: UpdateProxyUserRequest{
-				MainPoolID:      Optional[int]{Present: true, Null: true},
-				FallbackPoolIDs: Optional[[]int]{Present: true, Null: true},
+			doc:  `{"username":null,"tags":null}`,
+			want: UpdateProxyRequest{
+				Username: Optional[string]{Present: true, Null: true},
+				Tags:     Optional[[]string]{Present: true, Null: true},
 			},
 		},
 		{
 			name: "explicit values decode",
-			doc:  `{"main_pool_id":3,"fallback_pool_ids":[4,5]}`,
-			want: UpdateProxyUserRequest{
-				MainPoolID:      Optional[int]{Present: true, Value: 3},
-				FallbackPoolIDs: Optional[[]int]{Present: true, Value: []int{4, 5}},
+			doc:  `{"username":"bob","tags":["a","b"]}`,
+			want: UpdateProxyRequest{
+				Username: Optional[string]{Present: true, Value: "bob"},
+				Tags:     Optional[[]string]{Present: true, Value: []string{"a", "b"}},
 			},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var got UpdateProxyUserRequest
+			var got UpdateProxyRequest
 			if err := json.Unmarshal([]byte(tc.doc), &got); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			if got.MainPoolID.Present != tc.want.MainPoolID.Present ||
-				got.MainPoolID.Null != tc.want.MainPoolID.Null ||
-				got.MainPoolID.Value != tc.want.MainPoolID.Value {
-				t.Errorf("MainPoolID: got %+v, want %+v", got.MainPoolID, tc.want.MainPoolID)
+			if got.Username != tc.want.Username {
+				t.Errorf("Username: got %+v, want %+v", got.Username, tc.want.Username)
 			}
-			if got.FallbackPoolIDs.Present != tc.want.FallbackPoolIDs.Present ||
-				got.FallbackPoolIDs.Null != tc.want.FallbackPoolIDs.Null ||
-				len(got.FallbackPoolIDs.Value) != len(tc.want.FallbackPoolIDs.Value) {
-				t.Errorf("FallbackPoolIDs: got %+v, want %+v", got.FallbackPoolIDs, tc.want.FallbackPoolIDs)
+			if got.Tags.Present != tc.want.Tags.Present ||
+				got.Tags.Null != tc.want.Tags.Null ||
+				len(got.Tags.Value) != len(tc.want.Tags.Value) {
+				t.Errorf("Tags: got %+v, want %+v", got.Tags, tc.want.Tags)
 			}
 		})
 	}

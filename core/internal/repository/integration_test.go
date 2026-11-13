@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"reflect"
 	"strconv"
@@ -374,89 +373,6 @@ func mustPool(t *testing.T, db *database.DB, name string) int {
 		t.Fatalf("insert pool %s: %v", name, err)
 	}
 	return id
-}
-
-// PUT /proxy-users must be a partial update: fields absent from the JSON
-// document keep their current values, explicit null clears. A bare
-// {"enabled":...} toggle (as the dashboard sends) must not wipe pool
-// assignments — it used to.
-func TestIntegration_UserUpdate_PartialFields(t *testing.T) {
-	db := testDB(t)
-	cleanTables(t, db)
-	repo := NewUserRepository(db)
-	ctx := context.Background()
-
-	p1 := mustPool(t, db, "main-pool")
-	p2 := mustPool(t, db, "fallback-pool")
-
-	created, err := repo.Create(ctx, models.CreateProxyUserRequest{
-		Username:        "alice",
-		Password:        "alicepw123",
-		Enabled:         true,
-		MainPoolID:      &p1,
-		FallbackPoolIDs: []int{p2},
-	})
-	if err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	// update decodes a wire document and applies it, mirroring the handler.
-	update := func(doc string) *models.ProxyUser {
-		t.Helper()
-		var req models.UpdateProxyUserRequest
-		if err := json.Unmarshal([]byte(doc), &req); err != nil {
-			t.Fatalf("unmarshal %s: %v", doc, err)
-		}
-		u, err := repo.Update(ctx, created.ID, req)
-		if err != nil || u == nil {
-			t.Fatalf("update %s: %v", doc, err)
-		}
-		return u
-	}
-
-	// A bare toggle keeps every other field.
-	u := update(`{"enabled":false}`)
-	if u.Enabled {
-		t.Error("toggle: enabled should be false")
-	}
-	if u.MainPoolID == nil || *u.MainPoolID != p1 {
-		t.Errorf("toggle: main_pool_id wiped, got %v want %d", u.MainPoolID, p1)
-	}
-	if len(u.FallbackPoolIDs) != 1 || u.FallbackPoolIDs[0] != p2 {
-		t.Errorf("toggle: fallback_pool_ids wiped, got %v want [%d]", u.FallbackPoolIDs, p2)
-	}
-
-	// Explicit null clears the main pool; omitted fallbacks stay.
-	u = update(`{"main_pool_id":null}`)
-	if u.MainPoolID != nil {
-		t.Errorf("null: main_pool_id should be cleared, got %v", *u.MainPoolID)
-	}
-	if len(u.FallbackPoolIDs) != 1 {
-		t.Errorf("null: fallback_pool_ids should be kept, got %v", u.FallbackPoolIDs)
-	}
-
-	// Explicit values apply; explicit empty list clears.
-	u = update(`{"main_pool_id":` + strconv.Itoa(p2) + `,"fallback_pool_ids":[]}`)
-	if u.MainPoolID == nil || *u.MainPoolID != p2 {
-		t.Errorf("set: main_pool_id got %v want %d", u.MainPoolID, p2)
-	}
-	if len(u.FallbackPoolIDs) != 0 {
-		t.Errorf("set: fallback_pool_ids should be empty, got %v", u.FallbackPoolIDs)
-	}
-
-	// tls_profile round-trips and follows the same omitted-keeps rule. It
-	// starts at the column default because Create was given no profile.
-	if created.TLSProfile != "" {
-		t.Errorf("create: tls_profile got %q want \"\"", created.TLSProfile)
-	}
-	u = update(`{"tls_profile":"ios18"}`)
-	if u.TLSProfile != "ios18" {
-		t.Errorf("set: tls_profile got %q want %q", u.TLSProfile, "ios18")
-	}
-	u = update(`{"enabled":true}`)
-	if u.TLSProfile != "ios18" {
-		t.Errorf("keep: tls_profile got %q want %q", u.TLSProfile, "ios18")
-	}
 }
 
 // ApplyRequestStats denormalizes event-derived aggregates onto proxies:

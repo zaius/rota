@@ -15,7 +15,7 @@ import (
 )
 
 // FleetPoller periodically snapshots fleet-wide aggregates from the primary
-// database — proxies by status, per-pool counts, proxy users — and exposes
+// database — proxies by status, per-pool counts — and exposes
 // them as observable gauges. Polling on its own clock keeps scrapes and OTLP
 // exports free of database round-trips: a slow or down database makes the
 // gauges stale, never the /metrics endpoint slow.
@@ -37,8 +37,6 @@ type poolCounts struct {
 type fleetSnapshot struct {
 	proxiesByStatus map[string]int64
 	pools           []poolCounts
-	usersEnabled    int64
-	usersDisabled   int64
 }
 
 // NewFleetPoller creates the poller and registers its observable gauges.
@@ -54,8 +52,6 @@ func NewFleetPoller(db *database.DB, poolRepo *repository.PoolRepository, interv
 		metric.WithDescription("Proxies in the fleet, by status"))
 	poolProxiesGauge, _ := meter.Int64ObservableGauge("rota.pool.proxies",
 		metric.WithDescription("Proxies per pool, by status (other = neither active nor failed)"))
-	usersGauge, _ := meter.Int64ObservableGauge("rota.proxy_users",
-		metric.WithDescription("Configured proxy users, by enabled state"))
 
 	_, _ = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		snap := p.snapshot.Load()
@@ -76,12 +72,8 @@ func NewFleetPoller(db *database.DB, poolRepo *repository.PoolRepository, interv
 				))
 			}
 		}
-		o.ObserveInt64(usersGauge, snap.usersEnabled,
-			metric.WithAttributes(attribute.Bool("enabled", true)))
-		o.ObserveInt64(usersGauge, snap.usersDisabled,
-			metric.WithAttributes(attribute.Bool("enabled", false)))
 		return nil
-	}, proxiesGauge, poolProxiesGauge, usersGauge)
+	}, proxiesGauge, poolProxiesGauge)
 
 	return p
 }
@@ -145,17 +137,6 @@ func (p *FleetPoller) refresh(ctx context.Context) {
 			failed: int64(pool.FailedProxies),
 			other:  int64(pool.TotalProxies - pool.ActiveProxies - pool.FailedProxies),
 		})
-	}
-
-	err = p.db.Pool.QueryRow(ctx, `
-		SELECT
-			COUNT(*) FILTER (WHERE enabled),
-			COUNT(*) FILTER (WHERE NOT enabled)
-		FROM proxy_users
-	`).Scan(&snap.usersEnabled, &snap.usersDisabled)
-	if err != nil {
-		p.logger.Warn("metrics fleet poll: proxy user counts failed", "error", err)
-		return
 	}
 
 	// Publish only complete snapshots; a partial poll keeps the previous one.

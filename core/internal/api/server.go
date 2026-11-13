@@ -30,7 +30,6 @@ type Deps struct {
 	SourceRepo        *repository.SourceRepository
 	FormatHistoryRepo *repository.FormatHistoryRepository
 	PoolRepo          *repository.PoolRepository
-	UserRepo          *repository.UserRepository
 
 	SourceSvc *services.SourceService
 	PoolSvc   *services.PoolService
@@ -64,7 +63,6 @@ type Server struct {
 	sourceHandler        *handlers.SourceHandler
 	formatHistoryHandler *handlers.FormatHistoryHandler
 	poolHandler          *handlers.PoolHandler
-	userHandler          *handlers.UserHandler
 	proxyControlHandler  *handlers.ProxyControlHandler
 }
 
@@ -85,7 +83,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.FormatHistoryRepo, deps.SourceSvc, log)
 	formatHistoryHandler := handlers.NewFormatHistoryHandler(deps.FormatHistoryRepo, log)
 	poolHandler := handlers.NewPoolHandler(deps.PoolRepo, deps.PoolSvc, log)
-	userHandler := handlers.NewUserHandler(deps.UserRepo, deps.PoolRepo, log)
 	proxyControlHandler := handlers.NewProxyControlHandler(deps.ProxyRepo, log)
 
 	s := &Server{
@@ -105,7 +102,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		sourceHandler:        sourceHandler,
 		formatHistoryHandler: formatHistoryHandler,
 		poolHandler:          poolHandler,
-		userHandler:          userHandler,
 		proxyControlHandler:  proxyControlHandler,
 	}
 
@@ -242,13 +238,6 @@ func (s *Server) setupRoutes() {
 		r.Get("/format-history", s.formatHistoryHandler.List)
 		r.Post("/format-history", s.formatHistoryHandler.Record)
 		r.Delete("/format-history/{id}", s.formatHistoryHandler.Delete)
-
-		// Proxy Users (per-user pool authentication)
-		r.Get("/proxy-users", s.userHandler.List)
-		r.Post("/proxy-users", s.userHandler.Create)
-		r.Get("/proxy-users/{id}", s.userHandler.Get)
-		r.Put("/proxy-users/{id}", s.userHandler.Update)
-		r.Delete("/proxy-users/{id}", s.userHandler.Delete)
 
 		// Proxy Pools
 		r.Get("/pools", s.poolHandler.List)
