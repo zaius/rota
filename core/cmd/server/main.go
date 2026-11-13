@@ -142,8 +142,7 @@ func run() error {
 	svcManager := services.NewManager(log, backgroundSvcs...)
 
 	// Optional HTTPS interception. Without a configured CA the inspector is
-	// nil and requests for inspection fail. The per-user inspect_tls flag
-	// requires a server-side CA; other CONNECT tunnels stay opaque.
+	// nil and requests for inspection fail; other CONNECT tunnels stay opaque.
 	var inspector *proxy.TLSInspector
 	if cfg.TLSInspect.Enabled() {
 		ca, err := proxy.LoadCertAuthority(cfg.TLSInspect.CACertFile, cfg.TLSInspect.CAKeyFile)
@@ -151,7 +150,7 @@ func run() error {
 			return fmt.Errorf("failed to load TLS interception CA: %w", err)
 		}
 		inspector = proxy.NewTLSInspector(ca, cfg.TLSInspect.BypassDomains, log)
-		log.Info("HTTPS interception available for opted-in proxy users",
+		log.Info("HTTPS interception available for requests that name a profile",
 			"ca_subject", ca.Subject(),
 			"ca_expires", ca.NotAfter().Format(time.RFC3339),
 			"bypass_domains", len(cfg.TLSInspect.BypassDomains),
@@ -162,7 +161,7 @@ func run() error {
 
 	// Create servers
 	authLimiter := authlimit.New(cfg.AuthIPMaxAttempts, time.Duration(cfg.AuthIPWindowMinutes)*time.Minute, time.Duration(cfg.AuthIPBlockMinutes)*time.Minute)
-	proxyServer, err := proxy.New(cfg.ProxyPort, log, db, eventStore, proxyRepo, poolRepo, userRepo, settingsRepo, inspector, authLimiter)
+	proxyServer, err := proxy.New(cfg.ProxyPort, cfg.Password, log, eventStore, proxyRepo, settingsRepo, inspector)
 	if err != nil {
 		return fmt.Errorf("failed to create proxy server: %w", err)
 	}

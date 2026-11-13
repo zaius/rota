@@ -18,6 +18,9 @@ type Config struct {
 	AdminUser string
 	AdminPass string
 
+	// Password guards the proxy port (ROTA_PASSWORD, required).
+	Password string
+
 	// Parquet configures the file-based store for request and tunnel history.
 	Parquet ParquetConfig
 
@@ -84,9 +87,9 @@ type DatabaseConfig struct {
 
 // TLSInspectConfig holds the server-side half of HTTPS interception.
 //
-// Interception requires this AND the per-user inspect_tls flag: a CA here only
-// makes interception possible, never automatic. With no CA configured, requests
-// for inspection fail; other CONNECT tunnels stay opaque.
+// Interception requires this AND a profile option in the proxy username: a CA
+// here only makes interception possible, never automatic. With no CA
+// configured, requests for inspection fail; other CONNECT tunnels stay opaque.
 type TLSInspectConfig struct {
 	// CACertFile / CAKeyFile are PEM paths for the CA that signs the
 	// certificates presented to intercepted clients. Both or neither.
@@ -203,6 +206,7 @@ func Load() (*Config, error) {
 		},
 		AdminUser: getEnv("ROTA_ADMIN_USER", "admin"),
 		AdminPass: getEnv("ROTA_ADMIN_PASSWORD", "admin"),
+		Password:  getEnv("ROTA_PASSWORD", ""),
 		JWTSecret: getEnv("JWT_SECRET", ""),
 		Parquet: ParquetConfig{
 			Dir:        getEnv("EVENT_STORE_DIR", defaultEventDir),
@@ -256,6 +260,9 @@ func Load() (*Config, error) {
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
+	if c.Password == "" {
+		return fmt.Errorf("ROTA_PASSWORD is required")
+	}
 	if c.ProxyPort < 1 || c.ProxyPort > 65535 {
 		return fmt.Errorf("invalid proxy port: %d", c.ProxyPort)
 	}

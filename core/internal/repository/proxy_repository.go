@@ -682,6 +682,20 @@ func (r *ProxyRepository) ListAll(ctx context.Context) ([]*models.Proxy, error) 
 	return scanProxies(rows)
 }
 
+// ListSelectable returns the proxies rotation may pick (including credentials):
+// active or idle and outside a global cooldown, ordered by ID.
+func (r *ProxyRepository) ListSelectable(ctx context.Context) ([]*models.Proxy, error) {
+	rows, err := r.db.Pool.Query(ctx, fmt.Sprintf(`
+		SELECT %s FROM proxies
+		WHERE status IN ('active', 'idle')
+		  AND (cooldown_until IS NULL OR cooldown_until < NOW())
+		ORDER BY id`, proxyFullColumns))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list selectable proxies: %w", err)
+	}
+	return scanProxies(rows)
+}
+
 // ListUngeotaggedAddresses returns up to limit addresses of proxies that have no
 // geo data yet, for geo enrichment.
 func (r *ProxyRepository) ListUngeotaggedAddresses(ctx context.Context, limit int) ([]string, error) {

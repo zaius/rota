@@ -25,19 +25,19 @@ import (
 // path produces.
 //
 // This is a man-in-the-middle by construction and is off unless two separate
-// things are true: a CA keypair is configured on the server, and the proxy user
-// has inspect_tls set. Clients that want to own their own TLS simply stay
-// opted out and get the untouched tunnel they get today.
+// things are true: a CA keypair is configured on the server, and the client
+// names a profile in its proxy username. Clients that want to own their own
+// TLS simply leave the profile out and get an untouched tunnel.
 //
 // Two consequences are worth stating plainly:
 //
 //   - The client must trust the configured CA, or every intercepted request
 //     fails its certificate check. Hosts that pin certificates will fail
 //     regardless of trust. The bypass list blocks inspection of those hosts;
-//     clients need an opted-out user without a profile override to reach them.
+//     clients reach them without a profile.
 //   - The target sees Rota's handshake, not the client's. Which handshake that
-//     is depends on the user's TLS profile: by default Go's, or the
-//     fingerprint of a real device. See package tlsprofile.
+//     is depends on the requested profile: Go's for "go", or the fingerprint
+//     of a real device. See package tlsprofile.
 type TLSInspector struct {
 	ca     *CertAuthority
 	bypass []string
@@ -55,7 +55,7 @@ type TLSInspector struct {
 // mean implementing an h2 server. Restricting the client leg to http/1.1 keeps
 // the message loop a simple read-forward-read.
 //
-// This says nothing about the upstream leg, which offers whatever the user's
+// This says nothing about the upstream leg, which offers whatever the
 // profile advertises and commonly settles on h2. The client is Rota's own
 // user, so its fingerprint is nobody's concern; the target's view is, and that
 // is the leg the profile governs.

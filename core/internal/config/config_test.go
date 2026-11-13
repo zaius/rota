@@ -6,6 +6,11 @@ import (
 	"testing"
 )
 
+func TestMain(m *testing.M) {
+	os.Setenv("ROTA_PASSWORD", "test")
+	os.Exit(m.Run())
+}
+
 func TestFailedAuthSettingsRequirePositiveValues(t *testing.T) {
 	for _, key := range []string{"AUTH_IP_MAX_ATTEMPTS", "AUTH_IP_WINDOW_MINUTES", "AUTH_IP_BLOCK_MINUTES"} {
 		t.Run(key, func(t *testing.T) {

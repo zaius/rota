@@ -28,20 +28,6 @@ func TestStatusClass(t *testing.T) {
 	}
 }
 
-func TestPoolLabel(t *testing.T) {
-	SetPoolNames(map[int]string{7: "eu-residential"})
-
-	if got := PoolLabel(0); got != "default" {
-		t.Errorf("PoolLabel(0) = %q, want %q", got, "default")
-	}
-	if got := PoolLabel(7); got != "eu-residential" {
-		t.Errorf("PoolLabel(7) = %q, want %q", got, "eu-residential")
-	}
-	if got := PoolLabel(42); got != "pool-42" {
-		t.Errorf("PoolLabel(42) = %q, want %q", got, "pool-42")
-	}
-}
-
 // Setup installs the SDK on the process-global meter provider, and the OTel
 // global binds instruments to the first real provider it sees — so everything
 // that depends on a live pipeline runs in this one test, in order.
@@ -54,11 +40,10 @@ func TestProviderEndToEnd(t *testing.T) {
 	}
 	defer provider.Shutdown(context.Background())
 
-	SetPoolNames(map[int]string{1: "test-pool"})
-	RecordProxyRequest(context.Background(), 1, "alice", true, 200, 42)
-	RecordProxyTunnel(context.Background(), 1, "alice", true, 10, 20, 1500)
+	RecordProxyRequest(context.Background(), "scraper", true, 200, 42)
+	RecordProxyTunnel(context.Background(), "scraper", true, 10, 20, 1500)
 	RecordAuthRejection(context.Background(), "bad_credentials")
-	RecordAuthRejection(context.Background(), "rate_limited")
+	RecordAuthRejection(context.Background(), "invalid_options")
 	RecordHealthCheck(context.Background(), false, 950)
 	RecordSourceFetch(context.Background(), true, 12)
 	RecordEventsWritten(context.Background(), "request", 5, true)
@@ -81,8 +66,7 @@ func TestProviderEndToEnd(t *testing.T) {
 	// can't drift from what the exporter actually emits.
 	for _, want := range []string{
 		"rota_proxy_requests_total",
-		`pool="test-pool"`,
-		`user="alice"`,
+		`client="scraper"`,
 		`status_class="2xx"`,
 		"rota_proxy_request_duration_seconds",
 		"rota_proxy_tunnels_total",
@@ -92,7 +76,7 @@ func TestProviderEndToEnd(t *testing.T) {
 		"rota_proxy_sessions_active 2",
 		"rota_proxy_domain_cooldowns_active 1",
 		"rota_proxy_auth_rejections_total",
-		`reason="rate_limited"`,
+		`reason="invalid_options"`,
 		"rota_healthcheck_checks_total",
 		"rota_healthcheck_duration_seconds",
 		"rota_source_fetches_total",

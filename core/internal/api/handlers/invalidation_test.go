@@ -37,11 +37,11 @@ func (r *backoffResultRepo) BackoffDomainCooldown(_ context.Context, id int, dom
 func TestInvalidateSession_ExposesPersistedBackoffAndExclusion(t *testing.T) {
 	for _, body := range []string{`{"token":"job42","minutes":360}`, `{"token":"job42","minutes":360,"domain":"example.com"}`} {
 		for _, count := range []int{2, 4} {
-			ps := &fakeProxyServer{sessions: []proxy.SessionInfo{{Token: "job42", Username: "alice", PoolID: 1, Scope: "shopping", ProxyID: 42}}}
+			ps := &fakeProxyServer{sessions: []proxy.SessionInfo{{Token: "job42", Scope: "shopping", ProxyID: 42}}}
 			h := newTestControlHandler(ps)
 			h.proxyRepo = &backoffResultRepo{count: count}
 			w := httptest.NewRecorder()
-			h.InvalidateSession(w, asProxyUser(httptest.NewRequest("POST", "/", strings.NewReader(body)), 1))
+			h.InvalidateSession(w, httptest.NewRequest("POST", "/", strings.NewReader(body)))
 			var response struct {
 				Proxies []struct {
 					FailureCount int        `json:"failure_count"`
@@ -174,17 +174,15 @@ func TestInvalidateSession_DefaultScopeAndOverrides(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ps := &fakeProxyServer{sessions: []proxy.SessionInfo{
-				{Token: "job42", Username: "alice", PoolID: 1, Scope: "shopping", ProxyID: 42},
-				{Token: "job42", Username: "alice", PoolID: 2, Scope: "shopping", ProxyID: 42},
-				{Token: "job42", Username: "alice", PoolID: 1, Scope: "foo.com", ProxyID: 42},
-				{Token: "job42", Username: "bob", PoolID: 1, Scope: "foreign", ProxyID: 99},
-				{Token: "job42", Username: "alice", PoolID: 99, Scope: "foreign-pool", ProxyID: 100},
+				{Token: "job42", Scope: "shopping", ProxyID: 42},
+				{Token: "job42", Scope: "foo.com", ProxyID: 42},
+				{Token: "job7", Scope: "shopping", ProxyID: 99},
 			}}
 			repo := &cooldownRepo{}
 			h := newTestControlHandler(ps)
 			h.proxyRepo = repo
 			w := httptest.NewRecorder()
-			h.InvalidateSession(w, asProxyUser(httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(tt.body)), 1, 2))
+			h.InvalidateSession(w, httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(tt.body)))
 			if w.Code != http.StatusOK {
 				t.Fatalf("invalidation failed: %d %s", w.Code, w.Body.String())
 			}

@@ -155,14 +155,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		}
 	})
 
-	// The repository invalidates shared credentials on user changes. Drop the
-	// proxy server's cached pool chain too so it rebuilds the user's routing.
-	userHandler.SetOnUserChanged(func(username string) {
-		if s.proxyServer != nil {
-			s.proxyServer.InvalidateUser(username)
-		}
-	})
-
 	s.setupMiddleware()
 	s.setupRoutes()
 

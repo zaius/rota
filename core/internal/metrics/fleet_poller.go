@@ -19,9 +19,6 @@ import (
 // them as observable gauges. Polling on its own clock keeps scrapes and OTLP
 // exports free of database round-trips: a slow or down database makes the
 // gauges stale, never the /metrics endpoint slow.
-//
-// It also maintains the pool ID → name mapping the hot-path labels resolve
-// through (see SetPoolNames).
 type FleetPoller struct {
 	db       *database.DB
 	poolRepo *repository.PoolRepository
@@ -92,8 +89,8 @@ func NewFleetPoller(db *database.DB, poolRepo *repository.PoolRepository, interv
 // Name identifies the service for the lifecycle manager.
 func (p *FleetPoller) Name() string { return "metrics-fleet-poller" }
 
-// Run refreshes once at startup (so gauges and pool-name labels are warm right
-// after boot), then on every interval tick until ctx is cancelled.
+// Run refreshes once at startup (so gauges are warm right after boot), then on
+// every interval tick until ctx is cancelled.
 func (p *FleetPoller) Run(ctx context.Context) {
 	p.refresh(ctx)
 
@@ -141,9 +138,7 @@ func (p *FleetPoller) refresh(ctx context.Context) {
 		p.logger.Warn("metrics fleet poll: pool counts failed", "error", err)
 		return
 	}
-	names := make(map[int]string, len(pools))
 	for _, pool := range pools {
-		names[pool.ID] = pool.Name
 		snap.pools = append(snap.pools, poolCounts{
 			name:   pool.Name,
 			active: int64(pool.ActiveProxies),
@@ -165,5 +160,4 @@ func (p *FleetPoller) refresh(ctx context.Context) {
 
 	// Publish only complete snapshots; a partial poll keeps the previous one.
 	p.snapshot.Store(snap)
-	SetPoolNames(names)
 }

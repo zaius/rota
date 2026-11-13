@@ -15,10 +15,9 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
-func httpRetryTestChain(t *testing.T, address string) (*PoolChain, *connectRequestStore) {
+func httpRetryTestRotator(t *testing.T, address string) (*Rotator, *connectRequestStore) {
 	t.Helper()
 	var proxies []*models.Proxy
 	for id := 1; id <= 5; id++ {
@@ -26,35 +25,33 @@ func httpRetryTestChain(t *testing.T, address string) (*PoolChain, *connectReque
 		proxies = append(proxies, p)
 		t.Cleanup(func() { InvalidateTransport(p) })
 	}
-	primary := newMethodSelector("roundrobin", proxies[:2]...)
-	fallback := newMethodSelector("roundrobin", proxies[2:]...)
-	primary.poolID, fallback.poolID = 10, 20
 	store := &connectRequestStore{records: make(chan events.RequestEvent, 10)}
-	return &PoolChain{
-		selectors:  []*PoolSelector{primary, fallback},
-		maxRetry:   5,
-		username:   "alice",
-		logger:     logger.New("error"),
-		tracker:    NewUsageTracker(store, nil), // Client aborts must never access the health DB.
-		failCounts: map[int]int{1: 2, 2: 2, 3: 2, 4: 2, 5: 2},
-	}, store
+	r := newTestRotator(t, proxies...)
+	r.tracker = NewUsageTracker(store, nil) // Client aborts must never access the health DB.
+	r.failCounts = map[int]int{1: 2, 2: 2, 3: 2, 4: 2, 5: 2}
+	return r, store
 }
 
-func assertHTTPAbort(t *testing.T, chain *PoolChain, store *connectRequestStore, err, cause error) {
+// withClient marks ctx as coming from the "alice" client.
+func withClient(ctx context.Context) context.Context {
+	return withRoute(ctx, route{Options: Options{Client: "alice"}})
+}
+
+func assertHTTPAbort(t *testing.T, r *Rotator, store *connectRequestStore, err, cause error) {
 	t.Helper()
 	if !errors.Is(err, cause) || forwardingReason(err) != "client_request_aborted" {
 		t.Fatalf("incorrect abort classification: %v", err)
 	}
 	event := store.next(t)
-	if event.ProxyID != 1 || event.PoolID != 10 || event.Username != "alice" || event.Method != "GET" || event.Success || !event.TargetFailure || !strings.Contains(event.Error, "client request aborted") {
+	if event.ProxyID != 1 || event.PoolID != 0 || event.Username != "alice" || event.Method != "GET" || event.Success || !event.TargetFailure || !strings.Contains(event.Error, "client request aborted") {
 		t.Fatalf("incorrect client-abort record: %+v", event)
 	}
 	for id := 1; id <= 5; id++ {
-		if chain.failCounts[id] != 2 {
-			t.Fatalf("client abort changed proxy %d's failure streak: %d", id, chain.failCounts[id])
+		if r.failCounts[id] != 2 {
+			t.Fatalf("client abort changed proxy %d's failure streak: %d", id, r.failCounts[id])
 		}
 	}
-	if proxyCount(chain.selectors[0]) != 2 || proxyCount(chain.selectors[1]) != 3 || chain.selectors[0].rrIdx != 1 || chain.selectors[1].rrIdx != 0 {
+	if proxyCount(r) != 5 || r.uses != 1 {
 		t.Fatal("client abort retried or evicted a proxy")
 	}
 }
@@ -88,46 +85,42 @@ func TestSendWithRetry_ClientAbortStopsAfterCurrentAttempt(t *testing.T) {
 				<-r.Context().Done()
 			}))
 			defer upstream.Close()
-			chain, store := httpRetryTestChain(t, upstream.Listener.Addr().String())
+			r, store := httpRetryTestRotator(t, upstream.Listener.Addr().String())
 			req := httptest.NewRequest(http.MethodGet, "http://clients2.google.com/background", nil).WithContext(ctx)
-			forwardCtx := ctx
+			forwardCtx := withClient(ctx)
 			if mode == "request context" {
-				forwardCtx = context.Background()
+				forwardCtx = withClient(context.Background())
 			}
-			resp, proxyID, err := chain.SendWithRetry(req, forwardCtx, nil, chain.logger)
+			resp, proxyID, err := r.SendWithRetry(req, forwardCtx)
 			if resp != nil || proxyID != 0 || attempts.Load() != 1 {
 				t.Fatalf("abort result: response=%v proxy=%d attempts=%d", resp, proxyID, attempts.Load())
 			}
-			assertHTTPAbort(t, chain, store, err, ctx.Err())
+			assertHTTPAbort(t, r, store, err, ctx.Err())
 		})
 	}
 }
 
 func TestSendWithRetry_WrappedCancellationStopsRetry(t *testing.T) {
-	chain, store := httpRetryTestChain(t, "127.0.0.1:9000")
+	r, store := httpRetryTestRotator(t, "127.0.0.1:9000")
 	var attempts atomic.Int32
-	transportCache.Store(transportCacheKey(chain.selectors[0].proxies[0]), &http.Transport{
+	transportCache.Store(transportCacheKey(r.proxies[0]), &http.Transport{
 		DialContext: func(context.Context, string, string) (net.Conn, error) {
 			attempts.Add(1)
 			return nil, fmt.Errorf("transport canceled: %w", context.Canceled)
 		},
 	})
 	req := httptest.NewRequest(http.MethodGet, "http://example.gvt1.com/background", nil)
-	_, _, err := chain.SendWithRetry(req, req.Context(), nil, chain.logger)
+	_, _, err := r.SendWithRetry(req, withClient(req.Context()))
 	if attempts.Load() != 1 || req.Context().Err() != nil {
 		t.Fatalf("attempts=%d context=%v", attempts.Load(), req.Context().Err())
 	}
-	assertHTTPAbort(t, chain, store, err, context.Canceled)
+	assertHTTPAbort(t, r, store, err, context.Canceled)
 }
 
 func TestSendWithRetry_AlreadyCanceledDoesNotSelectProxy(t *testing.T) {
 	for _, canceledContext := range []string{"request", "forwarding"} {
 		t.Run(canceledContext, func(t *testing.T) {
-			chain, store := httpRetryTestChain(t, "127.0.0.1:9000")
-			sessions := NewSessionManager()
-			defer sessions.Stop()
-			chain.selectors[0].method = "session"
-			chain.selectors[0].sessionMgr = sessions
+			r, store := httpRetryTestRotator(t, "127.0.0.1:9000")
 			ctx, cancel := context.WithCancel(ctxWithToken("test"))
 			cancel()
 			req := httptest.NewRequest(http.MethodGet, "http://clients2.google.com/background", nil)
@@ -136,11 +129,11 @@ func TestSendWithRetry_AlreadyCanceledDoesNotSelectProxy(t *testing.T) {
 				req = req.WithContext(ctx)
 				forwardCtx = ctxWithToken("test")
 			}
-			_, _, err := chain.SendWithRetry(req, forwardCtx, nil, chain.logger)
+			_, _, err := r.SendWithRetry(req, forwardCtx)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("expected cancellation, got %v", err)
 			}
-			if len(sessions.List()) != 0 || chain.selectors[0].rrIdx != 0 || len(store.records) != 0 || chain.failCounts[1] != 2 {
+			if len(r.sessions.List()) != 0 || r.uses != 0 || len(store.records) != 0 || r.failCounts[1] != 2 {
 				t.Fatal("already canceled request consumed a proxy attempt or reservation")
 			}
 		})
@@ -157,10 +150,11 @@ func TestSendWithRetry_UpstreamTimeoutStillRetriesAndChargesProxy(t *testing.T) 
 		fmt.Fprint(w, "healthy proxy")
 	}))
 	defer upstream.Close()
-	chain, store := httpRetryTestChain(t, upstream.Listener.Addr().String())
+	r, store := httpRetryTestRotator(t, upstream.Listener.Addr().String())
 	store.err = errors.New("test: skip health DB")
+	r.SetSettings(&models.RotationSettings{Timeout: 1})
 	req := httptest.NewRequest(http.MethodGet, "http://clients2.google.com/background", nil)
-	resp, proxyID, err := chain.SendWithRetry(req, req.Context(), &models.RotationSettings{Timeout: 1}, chain.logger)
+	resp, proxyID, err := r.SendWithRetry(req, req.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +163,7 @@ func TestSendWithRetry_UpstreamTimeoutStillRetriesAndChargesProxy(t *testing.T) 
 	if err != nil || string(body) != "healthy proxy" || proxyID != 2 || attempts.Load() != 2 || req.Context().Err() != nil {
 		t.Fatalf("upstream timeout did not retry successfully: proxy=%d body=%q err=%v", proxyID, body, err)
 	}
-	if proxyCount(chain.selectors[0]) != 1 || chain.failCounts[2] != 0 {
+	if proxyCount(r) != 4 || r.failCounts[2] != 0 {
 		t.Fatal("upstream timeout did not evict failed proxy or reset successful proxy's streak")
 	}
 	records := map[int]events.RequestEvent{}

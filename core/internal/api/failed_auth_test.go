@@ -62,11 +62,7 @@ func TestReleaseHasNoRequestLimit(t *testing.T) {
 			s.setupRoutes()
 			token := adminToken(t)
 			for i := range 1500 {
-				body, want := `{"token":"job42"}`, 200
-				if auth == "basic" && i < 20 {
-					body, want = `{"token":"job42","pool_id":99}`, 403
-				}
-				r := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/release", strings.NewReader(body))
+				r := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/release", strings.NewReader(`{"token":"job42"}`))
 				if auth == "basic" {
 					r.SetBasicAuth("alice", "secret")
 				} else {
@@ -74,16 +70,12 @@ func TestReleaseHasNoRequestLimit(t *testing.T) {
 				}
 				w := httptest.NewRecorder()
 				s.router.ServeHTTP(w, r)
-				if w.Code != want {
-					t.Fatalf("request %d returned %d, want %d: %s", i, w.Code, want, w.Body.String())
+				if w.Code != 200 {
+					t.Fatalf("request %d returned %d: %s", i, w.Code, w.Body.String())
 				}
 			}
-			want := 1500
-			if auth == "basic" {
-				want -= 20
-			}
-			if ps.count != want {
-				t.Fatalf("released %d sessions, want %d", ps.count, want)
+			if ps.count != 1500 {
+				t.Fatalf("released %d sessions, want 1500", ps.count)
 			}
 		})
 	}

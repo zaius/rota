@@ -18,12 +18,11 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/internal/tlsprofile"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
-// Exercise auth suffixes, CONNECT diagnostics, and the certificate the client
-// actually receives through an upstream proxy.
+// Exercise the profile option, CONNECT diagnostics, and the certificate the
+// client actually receives through an upstream proxy.
 func TestProxyRouter_TLSInspectionDiagnostics(t *testing.T) {
 	ca := testCertAuthority(t)
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,25 +61,17 @@ func TestProxyRouter_TLSInspectionDiagnostics(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		inspector     string
-		inspectTLS    bool
 		profile       string
-		override      string
 		reason        string
 		wantInspected bool
 	}{
 		{name: "default opaque tunnel"},
 		{name: "CA alone does not opt in", inspector: "configured"},
-		{name: "inspection without CA", inspectTLS: true, reason: "tls_inspection_ca_not_configured"},
-		{name: "inspector without CA", inspector: "empty", inspectTLS: true, reason: "tls_inspection_ca_not_configured"},
-		{name: "stored profile without CA", inspectTLS: true, profile: "chrome", reason: "tls_inspection_ca_not_configured"},
-		{name: "override without CA", inspectTLS: true, profile: "chrome", override: "ios", reason: "tls_inspection_ca_not_configured"},
-		{name: "override without opt-in", inspector: "configured", override: "ios", reason: "tls_inspection_disabled"},
-		{name: "stored profile without opt-in stays dormant", inspector: "configured", profile: "chrome"},
-		{name: "explicit Go without opt-in", inspector: "configured", profile: "chrome", override: "go", reason: "tls_inspection_disabled"},
-		{name: "bypassed target", inspector: "bypass", inspectTLS: true, override: "ios", reason: "tls_inspection_bypassed"},
-		{name: "inspect with Go", inspector: "configured", inspectTLS: true, wantInspected: true},
-		{name: "inspect with stored profile", inspector: "configured", inspectTLS: true, profile: "chrome", wantInspected: true},
-		{name: "inspect with override", inspector: "configured", inspectTLS: true, profile: "chrome", override: "ios", wantInspected: true},
+		{name: "profile without CA", profile: "ios", reason: "tls_inspection_ca_not_configured"},
+		{name: "inspector without CA", inspector: "empty", profile: "chrome", reason: "tls_inspection_ca_not_configured"},
+		{name: "bypassed target", inspector: "bypass", profile: "ios", reason: "tls_inspection_bypassed"},
+		{name: "inspect with Go", inspector: "configured", profile: "go", wantInspected: true},
+		{name: "inspect with profile", inspector: "configured", profile: "ios", wantInspected: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			attemptsBefore := upstreamRequests.Load()
@@ -99,20 +90,11 @@ func TestProxyRouter_TLSInspectionDiagnostics(t *testing.T) {
 				inspector.upstreamRoots = x509.NewCertPool()
 				inspector.upstreamRoots.AddCert(origin.Certificate())
 			}
-			profile, err := tlsprofile.Lookup(tc.profile)
-			if err != nil {
-				t.Fatal(err)
-			}
-			chain := &PoolChain{
-				username: "alice", inspectTLS: tc.inspectTLS, tlsProfile: profile,
-				selectors: []*PoolSelector{newMethodSelector("roundrobin",
-					&models.Proxy{ID: 42, Protocol: "http", Address: upstream.Listener.Addr().String()},
-					&models.Proxy{ID: 43, Protocol: "http", Address: upstream.Listener.Addr().String()},
-				)},
-			}
-			auth := newTestUserAuthMw()
-			cacheTestUser(auth, chain)
-			router := &proxyRouter{userAuthMw: auth, upstream: NewUpstreamProxyHandler(nil, inspector, log)}
+			r := newTestRotator(t,
+				&models.Proxy{ID: 42, Protocol: "http", Address: upstream.Listener.Addr().String()},
+				&models.Proxy{ID: 43, Protocol: "http", Address: upstream.Listener.Addr().String()},
+			)
+			router := &proxyRouter{upstream: NewUpstreamProxyHandler(r, inspector, log), password: "secret"}
 			done := make(chan struct{})
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				defer close(done)
@@ -127,8 +109,8 @@ func TestProxyRouter_TLSInspectionDiagnostics(t *testing.T) {
 			conn.SetDeadline(time.Now().Add(10 * time.Second))
 			req := httptest.NewRequest(http.MethodConnect, host, nil)
 			username := "alice"
-			if tc.override != "" {
-				username += "-profile-" + tc.override
+			if tc.profile != "" {
+				username += "-profile-" + tc.profile
 			}
 			basicProxyAuth(req, username, "secret")
 			if err := req.Write(conn); err != nil {
@@ -155,34 +137,28 @@ func TestProxyRouter_TLSInspectionDiagnostics(t *testing.T) {
 				case <-time.After(10 * time.Second):
 					t.Fatal("CONNECT handler did not finish")
 				}
-				if upstreamRequests.Load() != attemptsBefore || chain.selectors[0].rrIdx != 0 {
+				if upstreamRequests.Load() != attemptsBefore || r.uses != 0 {
 					t.Fatal("inspection failure selected or contacted an upstream proxy")
 				}
 				var entry struct {
-					Level, Msg, Source, Username, Host, Profile, Reason, Action string
-					InspectTLS                                                  bool `json:"inspect_tls"`
+					Level, Msg, Source, Client, Host, Profile, Reason, Action string
 				}
 				decoder := json.NewDecoder(&logs)
 				if err := decoder.Decode(&entry); err != nil {
 					t.Fatalf("missing error log: %v", err)
 				}
-				wantProfile := profile.Name
-				if tc.override != "" {
-					wantProfile = tc.override
-				}
-				if entry.Level != "ERROR" || entry.Source != "proxy" || entry.Username != "alice" || entry.Host != host || entry.Profile != wantProfile || entry.Reason != tc.reason || entry.InspectTLS != tc.inspectTLS || !strings.Contains(entry.Msg, "CONNECT rejected") {
+				if entry.Level != "ERROR" || entry.Source != "proxy" || entry.Client != "alice" || entry.Host != host || entry.Profile != tc.profile || entry.Reason != tc.reason || !strings.Contains(entry.Msg, "CONNECT rejected") {
 					t.Fatalf("incorrect error log: %+v", entry)
 				}
 				for _, hint := range map[string][]string{
 					"tls_inspection_ca_not_configured": {"TLS_INSPECT_CA_CERT", "TLS_INSPECT_CA_KEY", "mount", "restart"},
-					"tls_inspection_disabled":          {"Enable inspect_tls", "-profile-"},
 					"tls_inspection_bypassed":          {"TLS_INSPECT_BYPASS_DOMAINS", "127.0.0.1"},
 				}[tc.reason] {
 					if !strings.Contains(entry.Action, hint) || !strings.Contains(string(body), hint) {
 						t.Errorf("error log or body omits %q: %+v, %s", hint, entry, body)
 					}
 				}
-				if !strings.Contains(string(body), "profile "+wantProfile) {
+				if !strings.Contains(string(body), "profile "+tc.profile) {
 					t.Errorf("error body omits effective profile: %s", body)
 				}
 				if err := decoder.Decode(&entry); err != io.EOF {

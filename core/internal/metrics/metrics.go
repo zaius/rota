@@ -6,16 +6,15 @@
 // and stays a no-op forever when metrics are disabled. Callers therefore never
 // need to check whether metrics are on.
 //
-// Label discipline: pool and proxy-user names are admin-defined and bounded, so
-// they are labels. Proxy IDs, client IPs and target domains are unbounded and
-// must never become labels — per-proxy and per-domain analytics stay in the
-// event store, which is built for that cardinality.
+// Label discipline: client labels come from a handful of trusted clients'
+// proxy usernames, so they are labels. Proxy IDs, client IPs and target domains
+// are unbounded and must never become labels — per-proxy and per-domain
+// analytics stay in the event store, which is built for that cardinality.
 package metrics
 
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -60,13 +59,13 @@ var (
 // by every test run.
 func init() {
 	proxyRequests, _ = meter.Int64Counter("rota.proxy.requests",
-		metric.WithDescription("Upstream proxy attempts (each retry counts separately), by pool, user and outcome"))
+		metric.WithDescription("Upstream proxy attempts (each retry counts separately), by client and outcome"))
 	proxyRequestDuration, _ = meter.Float64Histogram("rota.proxy.request.duration",
 		metric.WithDescription("Duration of upstream proxy attempts"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(requestBuckets...))
 	proxyTunnels, _ = meter.Int64Counter("rota.proxy.tunnels",
-		metric.WithDescription("Completed CONNECT tunnels, by pool, user and outcome"))
+		metric.WithDescription("Completed CONNECT tunnels, by client and outcome"))
 	proxyTunnelDuration, _ = meter.Float64Histogram("rota.proxy.tunnel.duration",
 		metric.WithDescription("Lifetime of completed CONNECT tunnels"),
 		metric.WithUnit("s"),
@@ -96,35 +95,11 @@ func init() {
 		metric.WithExplicitBucketBoundaries(apiBuckets...))
 }
 
-// poolNames maps pool ID to pool name for hot-path label resolution. It is
-// maintained by the FleetPoller; until the first refresh completes, labels fall
-// back to "pool-<id>".
-var poolNames atomic.Pointer[map[int]string]
-
-// SetPoolNames publishes the pool ID → name mapping used for metric labels.
-func SetPoolNames(names map[int]string) {
-	poolNames.Store(&names)
-}
-
-// PoolLabel resolves a pool ID to its metric label. Pool 0 is the default pool
-// (a proxy user's requests before any named pool matched).
-func PoolLabel(poolID int) string {
-	if poolID == 0 {
+func clientLabel(client string) string {
+	if client == "" {
 		return "default"
 	}
-	if m := poolNames.Load(); m != nil {
-		if name, ok := (*m)[poolID]; ok {
-			return name
-		}
-	}
-	return fmt.Sprintf("pool-%d", poolID)
-}
-
-func userLabel(username string) string {
-	if username == "" {
-		return "default"
-	}
-	return username
+	return client
 }
 
 func outcomeLabel(success bool) string {
@@ -146,43 +121,29 @@ func statusClass(statusCode int) string {
 // RecordProxyRequest records one upstream proxy attempt: a forwarded HTTP
 // request, a CONNECT establishment, or a request observed inside an inspected
 // tunnel. Each retry is its own attempt, mirroring how the event store counts.
-func RecordProxyRequest(ctx context.Context, poolID int, username string, success bool, statusCode, elapsedMs int) {
+func RecordProxyRequest(ctx context.Context, client string, success bool, statusCode, elapsedMs int) {
 	attrs := metric.WithAttributes(
-		attribute.String("pool", PoolLabel(poolID)),
-		attribute.String("user", userLabel(username)),
+		attribute.String("client", clientLabel(client)),
 		attribute.String("outcome", outcomeLabel(success)),
 		attribute.String("status_class", statusClass(statusCode)),
 	)
 	proxyRequests.Add(ctx, 1, attrs)
 	proxyRequestDuration.Record(ctx, float64(elapsedMs)/1000,
-		metric.WithAttributes(
-			attribute.String("pool", PoolLabel(poolID)),
-			attribute.String("outcome", outcomeLabel(success)),
-		))
+		metric.WithAttributes(attribute.String("outcome", outcomeLabel(success))))
 }
 
 // RecordProxyTunnel records one completed CONNECT tunnel. clean is false when
 // the tunnel tore down with an error.
-func RecordProxyTunnel(ctx context.Context, poolID int, username string, clean bool, bytesUp, bytesDown int64, durationMs int) {
-	pool := PoolLabel(poolID)
-	user := userLabel(username)
+func RecordProxyTunnel(ctx context.Context, client string, clean bool, bytesUp, bytesDown int64, durationMs int) {
+	label := attribute.String("client", clientLabel(client))
 	outcome := "clean"
 	if !clean {
 		outcome = "error"
 	}
-	proxyTunnels.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("pool", pool),
-		attribute.String("user", user),
-		attribute.String("outcome", outcome),
-	))
-	proxyTunnelDuration.Record(ctx, float64(durationMs)/1000,
-		metric.WithAttributes(attribute.String("pool", pool)))
+	proxyTunnels.Add(ctx, 1, metric.WithAttributes(label, attribute.String("outcome", outcome)))
+	proxyTunnelDuration.Record(ctx, float64(durationMs)/1000)
 	ioAttrs := func(direction string) metric.MeasurementOption {
-		return metric.WithAttributes(
-			attribute.String("pool", pool),
-			attribute.String("user", user),
-			attribute.String("direction", direction),
-		)
+		return metric.WithAttributes(label, attribute.String("direction", direction))
 	}
 	if bytesUp > 0 {
 		proxyTunnelBytes.Add(ctx, bytesUp, ioAttrs("up"))
@@ -193,7 +154,7 @@ func RecordProxyTunnel(ctx context.Context, poolID int, username string, clean b
 }
 
 // RecordAuthRejection records a proxy request rejected with 407. reason is one
-// of "missing_credentials", "bad_credentials", "bad_profile", "rate_limited".
+// of "missing_credentials", "bad_credentials", "invalid_options".
 func RecordAuthRejection(ctx context.Context, reason string) {
 	authRejections.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
@@ -59,7 +60,7 @@ func TestValidateConnectTarget(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var lookups []string
-			chain := &PoolChain{targetResolver: targetResolverFunc(func(ctx context.Context, network, host string) ([]net.IP, error) {
+			r := &Rotator{targetResolver: targetResolverFunc(func(ctx context.Context, network, host string) ([]net.IP, error) {
 				lookups = append(lookups, network)
 				if host != "target.example" {
 					t.Fatalf("lookup %q, want target.example", host)
@@ -76,7 +77,7 @@ func TestValidateConnectTarget(t *testing.T) {
 				t.Fatalf("unexpected lookup network %q", network)
 				return nil, nil
 			})}
-			err := chain.validateConnectTarget(context.Background(), tc.authority)
+			err := r.validateConnectTarget(context.Background(), tc.authority)
 			if fmt.Sprint(lookups) != fmt.Sprint(tc.lookups) {
 				t.Fatalf("lookups = %v, want %v", lookups, tc.lookups)
 			}
@@ -104,8 +105,8 @@ func TestConnectTargetLookupHonorsContext(t *testing.T) {
 			if canceled {
 				cancel()
 			}
-			chain, selector := chainWithProxy(7)
-			chain.targetResolver = targetResolverFunc(func(lookupCtx context.Context, _, _ string) ([]net.IP, error) {
+			r := newTestRotator(t, ids(7)...)
+			r.targetResolver = targetResolverFunc(func(lookupCtx context.Context, _, _ string) ([]net.IP, error) {
 				deadline, _ := ctx.Deadline()
 				lookupDeadline, _ := lookupCtx.Deadline()
 				if !deadline.Equal(lookupDeadline) {
@@ -114,11 +115,11 @@ func TestConnectTargetLookupHonorsContext(t *testing.T) {
 				<-lookupCtx.Done()
 				return nil, lookupCtx.Err()
 			})
-			_, _, err := chain.ConnectWithRetry("target.example:443", ctx, nil, logger.New("error"))
+			_, _, err := r.ConnectWithRetry("target.example:443", ctx)
 			if !errors.Is(err, ctx.Err()) || isTargetConnectFailure(err) {
 				t.Fatalf("context error = %v", err)
 			}
-			if proxyCount(selector) != 1 || len(chain.failCounts) != 0 {
+			if proxyCount(r) != 1 || len(r.failCounts) != 0 || r.uses != 0 {
 				t.Fatal("canceled request attempted or charged a proxy")
 			}
 		})
@@ -139,17 +140,16 @@ func TestConnectTargetLookupFailureFallsThroughToUpstream(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer upstream.Close()
-			chain, selector := chainWithProxy(7)
-			selector.proxies[0].Address = upstream.Listener.Addr().String()
-			chain.targetResolver = targetResolverFunc(func(context.Context, string, string) ([]net.IP, error) {
+			r := newTestRotator(t, &models.Proxy{ID: 7, Protocol: "http", Address: upstream.Listener.Addr().String()})
+			r.targetResolver = targetResolverFunc(func(context.Context, string, string) ([]net.IP, error) {
 				return nil, lookupErr
 			})
-			conn, binding, err := chain.ConnectWithRetry("target.example:443", context.Background(), nil, logger.New("error"))
+			conn, binding, err := r.ConnectWithRetry("target.example:443", context.Background())
 			if err != nil {
 				t.Fatalf("local DNS error prevented upstream CONNECT: %v", err)
 			}
 			defer conn.Close()
-			if binding.ProxyID != 7 || len(chain.failCounts) != 0 {
+			if binding.ProxyID != 7 || len(r.failCounts) != 0 {
 				t.Fatalf("unexpected binding or proxy strike: %+v", binding)
 			}
 		})
@@ -167,34 +167,28 @@ func TestConnectTargetFailureDoesNotSelectProxy(t *testing.T) {
 		{authority: "[2001:db8::1]:443", reason: "target_no_ipv4"},
 		{authority: "target.example:0", reason: "target_invalid"},
 	} {
-		for _, method := range []string{"roundrobin", "session"} {
-			t.Run(tc.authority+"/"+tc.reason+"/"+method, func(t *testing.T) {
-				sm := NewSessionManager()
-				defer sm.Stop()
-				selector := newSessionSelector(sm, 1, 2)
-				selector.method = method
-				chain := &PoolChain{
-					selectors: []*PoolSelector{selector},
-					tracker:   &UsageTracker{}, // Any attempt to record or update health is a bug.
-					targetResolver: targetResolverFunc(func(_ context.Context, network, _ string) ([]net.IP, error) {
-						if network == "ip6" && tc.aaaa != nil {
-							return tc.aaaa, nil
-						}
-						return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
-					}),
-					failCounts: map[int]int{1: 2, 2: 2},
-				}
+		for _, token := range []string{"", "test"} {
+			t.Run(tc.authority+"/"+tc.reason+"/"+token, func(t *testing.T) {
+				r := newTestRotator(t, ids(1, 2)...)
+				r.tracker = &UsageTracker{} // Any attempt to record or update health is a bug.
+				r.targetResolver = targetResolverFunc(func(_ context.Context, network, _ string) ([]net.IP, error) {
+					if network == "ip6" && tc.aaaa != nil {
+						return tc.aaaa, nil
+					}
+					return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+				})
+				r.failCounts = map[int]int{1: 2, 2: 2}
 				req := httptest.NewRequest(http.MethodConnect, tc.authority, nil)
-				req = req.WithContext(context.WithValue(ctxWithToken("test"), UserChainContextKey, chain))
+				req = req.WithContext(ctxWithToken(token))
 				w := httptest.NewRecorder()
-				NewUpstreamProxyHandler(nil, nil, logger.New("error")).HandleConnectRequest(w, req)
+				NewUpstreamProxyHandler(r, nil, logger.New("error")).HandleConnectRequest(w, req)
 				if w.Code != 592 || w.Header().Get(ProxyErrorHeader) != tc.reason || w.Header().Get(UpstreamStatusHeader) != "" {
 					t.Fatalf("response = %d %v", w.Code, w.Header())
 				}
-				if selector.rrIdx != 0 || len(sm.List()) != 0 {
+				if r.uses != 0 || len(r.sessions.List()) != 0 {
 					t.Fatal("target failure consumed a rotation slot or session reservation")
 				}
-				if proxyCount(selector) != 2 || chain.failCounts[1] != 2 || chain.failCounts[2] != 2 {
+				if proxyCount(r) != 2 || r.failCounts[1] != 2 || r.failCounts[2] != 2 {
 					t.Fatal("target failure changed proxy health")
 				}
 			})

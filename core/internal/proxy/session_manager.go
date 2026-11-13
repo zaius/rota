@@ -9,14 +9,13 @@ import (
 	"github.com/alpkeskin/rota/core/internal/models"
 )
 
-// ErrNoProxyAvailable signals temporary capacity exhaustion, including pools
-// whose proxies are all reserved or on cooldown.
+// ErrNoProxyAvailable signals temporary capacity exhaustion, including when
+// every matching proxy is reserved or on cooldown.
 var ErrNoProxyAvailable = errors.New("no proxy available; wait and retry")
 
 // SessionManager owns process-wide sticky bindings and exclusive reservations.
-// A proxy can have only one session owner per scope, including when that proxy
-// appears in several pools. Bindings survive per-user PoolChain rebuilds, and
-// are released explicitly, on idle expiry, or when the proxy is evicted.
+// A proxy can have only one session owner per scope. Bindings are released
+// explicitly, on idle expiry, or when the proxy is evicted.
 // Traffic through a binding's tunnels counts as use. A binding's tunnels end
 // when it does, and when it moves off or cools the proxy they run through, so
 // an open tunnel never carries a session over a proxy the session gave up.
@@ -29,12 +28,9 @@ type SessionManager struct {
 }
 
 // Scope is an explicit client identifier or the normalized target hostname.
-// Username prevents users reusing a token from sharing a binding accidentally.
 type sessionIdentity struct {
-	poolID   int
-	username string
-	token    string
-	scope    string
+	token string
+	scope string
 }
 
 type reservationKey struct {
@@ -86,8 +82,6 @@ type sessionHold struct {
 
 // SessionInfo is the externally-visible view of a live session binding.
 type SessionInfo struct {
-	PoolID    int       `json:"pool_id"`
-	Username  string    `json:"username"`
 	Token     string    `json:"token"`
 	Scope     string    `json:"scope"`
 	ProxyID   int       `json:"proxy_id"`
@@ -96,32 +90,34 @@ type SessionInfo struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// SessionFilter restricts control operations. Nil PoolIDs means all pools;
-// an empty non-nil list matches none. Empty Username/Scope mean all values.
+// SessionFilter selects a token's bindings, in one scope or, when Scope is
+// empty, in all of them.
 type SessionFilter struct {
-	Token    string
-	Username string
-	Scope    string
-	PoolIDs  []int
+	Token string
+	Scope string
 }
 
 func (f SessionFilter) matches(key sessionIdentity) bool {
-	if key.token != f.Token || (f.Username != "" && key.username != f.Username) || (f.Scope != "" && key.scope != f.Scope) {
-		return false
-	}
-	if f.PoolIDs == nil {
-		return true
-	}
-	for _, id := range f.PoolIDs {
-		if id == key.poolID {
-			return true
-		}
-	}
-	return false
+	return key.token == f.Token && (f.Scope == "" || key.scope == f.Scope)
 }
 
+// ReleaseSessions drops the bindings that match filter.
 func (m *SessionManager) ReleaseSessions(filter SessionFilter) int {
-	return m.releaseMatching(filter.matches)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for key := range m.sessions {
+		if filter.matches(key) {
+			m.deleteLocked(key)
+			n++
+		}
+	}
+	return n
+}
+
+// FindSessions returns the live bindings that match filter.
+func (m *SessionManager) FindSessions(filter SessionFilter) []SessionInfo {
+	return m.listMatching(filter.matches)
 }
 
 func NewSessionManager() *SessionManager {
@@ -135,9 +131,9 @@ func NewSessionManager() *SessionManager {
 	return m
 }
 
-// selectProxy checks ownership, selects, and reserves under one lock shared by
-// all pool selectors. choose must not call back into the manager. An empty
-// token selects an unreserved proxy without creating a sticky binding.
+// selectProxy checks ownership, selects, and reserves under one lock. choose
+// must not call back into the manager. An empty token selects an unreserved
+// proxy without creating a sticky binding.
 func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, choose func(boundID int, available func(int) bool) (*models.Proxy, error)) (*models.Proxy, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -162,9 +158,6 @@ func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, cho
 	}
 	if key.token == "" {
 		return p, nil
-	}
-	if ttl <= 0 {
-		ttl = 10 * time.Minute
 	}
 	e := m.sessions[key]
 	if e == nil {
@@ -274,47 +267,6 @@ func (m *SessionManager) deleteLocked(key sessionIdentity) {
 	}
 }
 
-// Release drops the token's bindings in this pool, across users and scopes.
-func (m *SessionManager) Release(poolID int, token string) bool {
-	return m.releaseMatching(func(key sessionIdentity) bool {
-		return key.poolID == poolID && key.token == token
-	}) > 0
-}
-
-// ReleaseToken drops every binding matching token across all pools and scopes.
-func (m *SessionManager) ReleaseToken(token string) int {
-	return m.releaseMatching(func(key sessionIdentity) bool { return key.token == token })
-}
-
-// ReleaseTokenInPools restricts release to the proxy user's allowed pools.
-func (m *SessionManager) ReleaseTokenInPools(token string, poolIDs []int) int {
-	allowed := make(map[int]bool, len(poolIDs))
-	for _, id := range poolIDs {
-		allowed[id] = true
-	}
-	return m.releaseMatching(func(key sessionIdentity) bool {
-		return key.token == token && allowed[key.poolID]
-	})
-}
-
-func (m *SessionManager) releaseMatching(matches func(sessionIdentity) bool) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	n := 0
-	for key := range m.sessions {
-		if matches(key) {
-			m.deleteLocked(key)
-			n++
-		}
-	}
-	return n
-}
-
-// FindByToken returns live bindings for the token across all pools and scopes.
-func (m *SessionManager) FindByToken(token string) []SessionInfo {
-	return m.listMatching(func(key sessionIdentity) bool { return key.token == token })
-}
-
 // Evict drops every binding pointing at proxyID. Sessions rebind on next use.
 func (m *SessionManager) Evict(proxyID int) int {
 	m.mu.Lock()
@@ -357,7 +309,7 @@ func (m *SessionManager) listMatching(matches func(sessionIdentity) bool) []Sess
 		}
 		lastActive := e.lastActive()
 		out = append(out, SessionInfo{
-			PoolID: key.poolID, Username: key.username, Token: key.token, Scope: key.scope,
+			Token: key.token, Scope: key.scope,
 			ProxyID: e.proxyID, CreatedAt: e.createdAt, LastUsed: lastActive,
 			ExpiresAt: lastActive.Add(e.ttl),
 		})
