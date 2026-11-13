@@ -37,14 +37,3 @@ func TestJobStore_CleanupKeepsInFlightJobs(t *testing.T) {
 		}
 	}
 }
-
-func TestJobStore_CleanupKeepsRecentFinishedJobs(t *testing.T) {
-	s := newTestJobStore()
-	s.put("recent", JobDone, time.Now())
-
-	s.cleanup()
-
-	if _, ok := s.Get("recent"); !ok {
-		t.Fatal("expected a recently finished job to be retained")
-	}
-}

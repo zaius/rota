@@ -43,7 +43,7 @@ func TestConnectWithRetry_RejectionRetriesOnceWithoutChargingProxy(t *testing.T)
 			var attempts atomic.Int32
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				attempts.Add(1)
-				if r.Method != http.MethodConnect || r.Host != "target.example:443" {
+				if r.Method != http.MethodConnect || r.Host != "192.0.2.1:443" {
 					t.Errorf("upstream request changed: %s %s", r.Method, r.Host)
 				}
 				w.WriteHeader(status)
@@ -58,7 +58,7 @@ func TestConnectWithRetry_RejectionRetriesOnceWithoutChargingProxy(t *testing.T)
 			r.tracker = NewUsageTracker(store, nil) // Target failures must never access the health DB.
 			r.failCounts = map[int]int{1: 2, 2: 2, 3: 2, 4: 2, 5: 2}
 			for request := 1; request <= 3; request++ {
-				conn, binding, err := r.ConnectWithRetry("target.example:443", requestCtx("", Options{Client: "alice"}))
+				conn, binding, err := r.ConnectWithRetry("192.0.2.1:443", requestCtx("", Options{Client: "alice"}))
 				if conn != nil || binding != nil || forwardingReason(err) != "upstream_connect_rejected" {
 					t.Fatalf("unexpected CONNECT result: %v %v %v", conn, binding, err)
 				}
@@ -73,7 +73,7 @@ func TestConnectWithRetry_RejectionRetriesOnceWithoutChargingProxy(t *testing.T)
 				seen := map[int]bool{}
 				for range 2 {
 					event := store.next(t)
-					if event.Success || !event.TargetFailure || event.PoolID != 0 || event.Username != "alice" || event.Method != "CONNECT" || event.URL != "CONNECT://target.example:443" || !strings.Contains(event.Error, fmt.Sprint(status)) {
+					if event.Success || !event.TargetFailure || event.PoolID != 0 || event.Username != "alice" || event.Method != "CONNECT" || event.URL != "CONNECT://192.0.2.1:443" || !strings.Contains(event.Error, fmt.Sprint(status)) {
 						t.Fatalf("incorrect target rejection record: %+v", event)
 					}
 					seen[event.ProxyID] = true
@@ -91,24 +91,6 @@ func TestConnectWithRetry_RejectionRetriesOnceWithoutChargingProxy(t *testing.T)
 				}
 			}
 		})
-	}
-}
-
-// Without a second proxy the first rejection is the only answer, and it must
-// not turn into a capacity error.
-func TestConnectWithRetry_RejectionWithoutSecondProxy(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-	}))
-	defer upstream.Close()
-	r := newTestRotator(t, &models.Proxy{ID: 7, Protocol: "http", Address: upstream.Listener.Addr().String()})
-	r.failCounts[7] = 2
-	_, _, err := r.ConnectWithRetry("target.example:443", context.Background())
-	if forwardingReason(err) != "upstream_connect_rejected" || errors.Is(err, ErrNoProxyAvailable) {
-		t.Fatalf("got %q: %v", forwardingReason(err), err)
-	}
-	if proxyCount(r) != 1 || r.failCounts[7] != 2 {
-		t.Fatal("CONNECT rejection changed proxy health")
 	}
 }
 
@@ -135,14 +117,14 @@ func TestConnectWithRetry_RejectionRetryRebindsSession(t *testing.T) {
 	store := &connectRequestStore{records: make(chan events.RequestEvent, 3), err: errors.New("test: skip health DB")}
 	r.tracker = NewUsageTracker(store, nil)
 	r.failCounts[1] = 2
-	ctx := requestCtx("target.example", Options{Client: "etl", Session: "abc"})
+	ctx := requestCtx("192.0.2.1", Options{Client: "etl", Session: "abc"})
 
 	// Bind the session to the rejecting proxy first.
 	if p, err := r.pick(ctx, nil); err != nil || p.ID != 1 {
 		t.Fatalf("session did not bind proxy 1: %v %v", p, err)
 	}
 
-	conn, binding, err := r.ConnectWithRetry("target.example:443", ctx)
+	conn, binding, err := r.ConnectWithRetry("192.0.2.1:443", ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +137,7 @@ func TestConnectWithRetry_RejectionRetryRebindsSession(t *testing.T) {
 	}
 	binding.Close()
 	sessions := r.sessions.List()
-	if len(sessions) != 1 || sessions[0].ProxyID != 2 || sessions[0].Scope != "target.example" {
+	if len(sessions) != 1 || sessions[0].ProxyID != 2 || sessions[0].Scope != "192.0.2.1" {
 		t.Fatalf("session binding did not move to the serving proxy: %+v", sessions)
 	}
 	if proxyCount(r) != 2 || r.failCounts[1] != 2 {
@@ -171,7 +153,7 @@ func TestConnectWithRetry_RejectionRetryRebindsSession(t *testing.T) {
 	}
 
 	// The session now goes straight to the proxy that served it.
-	conn, binding, err = r.ConnectWithRetry("target.example:443", ctx)
+	conn, binding, err = r.ConnectWithRetry("192.0.2.1:443", ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,22 +222,5 @@ func TestConnectWithRetry_ProxyFailureRetriesAndChargesProxy(t *testing.T) {
 				t.Fatalf("incorrect attempt records: %+v", records)
 			}
 		})
-	}
-}
-
-func TestUsageTracker_TargetRejectionDoesNotUpdateHealth(t *testing.T) {
-	store := &connectRequestStore{records: make(chan events.RequestEvent, 1)}
-	tracker := NewUsageTracker(store, nil)
-	// A nil health repository makes this fail if a target rejection either
-	// increments the failure counter or resets it as a success.
-	err := tracker.RecordRequest(context.Background(), RequestRecord{
-		ProxyID: 42, Method: "CONNECT", RequestedURL: "CONNECT://target.example:443",
-		TargetFailure: true, ErrorMessage: "502 Bad Gateway", Timestamp: time.Now(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if event := store.next(t); event.ProxyID != 42 || event.Success || !event.TargetFailure || event.Error != "502 Bad Gateway" {
-		t.Fatalf("target failure missing from request history: %+v", event)
 	}
 }

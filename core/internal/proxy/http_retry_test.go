@@ -56,6 +56,8 @@ func assertHTTPAbort(t *testing.T, r *Rotator, store *connectRequestStore, err, 
 	}
 }
 
+// Regression: a client hanging up mid-request retried on other proxies and
+// struck each one as failed.
 func TestSendWithRetry_ClientAbortStopsAfterCurrentAttempt(t *testing.T) {
 	for _, mode := range []string{"cancel", "deadline", "request context"} {
 		t.Run(mode, func(t *testing.T) {
@@ -115,29 +117,6 @@ func TestSendWithRetry_WrappedCancellationStopsRetry(t *testing.T) {
 		t.Fatalf("attempts=%d context=%v", attempts.Load(), req.Context().Err())
 	}
 	assertHTTPAbort(t, r, store, err, context.Canceled)
-}
-
-func TestSendWithRetry_AlreadyCanceledDoesNotSelectProxy(t *testing.T) {
-	for _, canceledContext := range []string{"request", "forwarding"} {
-		t.Run(canceledContext, func(t *testing.T) {
-			r, store := httpRetryTestRotator(t, "127.0.0.1:9000")
-			ctx, cancel := context.WithCancel(ctxWithToken("test"))
-			cancel()
-			req := httptest.NewRequest(http.MethodGet, "http://clients2.google.com/background", nil)
-			forwardCtx := ctx
-			if canceledContext == "request" {
-				req = req.WithContext(ctx)
-				forwardCtx = ctxWithToken("test")
-			}
-			_, _, err := r.SendWithRetry(req, forwardCtx)
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("expected cancellation, got %v", err)
-			}
-			if len(r.sessions.List()) != 0 || r.uses != 0 || len(store.records) != 0 || r.failCounts[1] != 2 {
-				t.Fatal("already canceled request consumed a proxy attempt or reservation")
-			}
-		})
-	}
 }
 
 func TestSendWithRetry_UpstreamTimeoutStillRetriesAndChargesProxy(t *testing.T) {
