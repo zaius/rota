@@ -17,10 +17,6 @@ import (
 
 const connectTargetLookupTimeout = 5 * time.Second
 
-type targetIPResolver interface {
-	LookupIP(context.Context, string, string) ([]net.IP, error)
-}
-
 // validateConnectTarget checks for an IPv4 address before selection can consume a
 // rotation slot or session reservation. Keep the hostname in the CONNECT request
 // so the upstream still resolves it using its own DNS view.
@@ -44,13 +40,9 @@ func (r *Rotator) validateConnectTarget(ctx context.Context, authority string) e
 		return nil
 	}
 
-	resolver := r.targetResolver
-	if resolver == nil {
-		resolver = net.DefaultResolver
-	}
 	lookupCtx, cancel := context.WithTimeout(ctx, connectTargetLookupTimeout)
 	defer cancel()
-	ips, err := resolver.LookupIP(lookupCtx, "ip4", host)
+	ips, err := net.DefaultResolver.LookupIP(lookupCtx, "ip4", host)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -67,7 +59,7 @@ func (r *Rotator) validateConnectTarget(ctx context.Context, authority string) e
 	// An IPv6-only name fails the A lookup exactly like NXDOMAIN does, so only a
 	// missing AAAA record as well proves the name is dead. Any other AAAA
 	// outcome still leaves the target without IPv4.
-	_, err = resolver.LookupIP(lookupCtx, "ip6", host)
+	_, err = net.DefaultResolver.LookupIP(lookupCtx, "ip6", host)
 	if err := ctx.Err(); err != nil {
 		return err
 	}

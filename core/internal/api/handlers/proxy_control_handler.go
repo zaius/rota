@@ -19,46 +19,15 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// ProxyServer is the subset of the running proxy server the API needs for
-// settings reloads and live session/cooldown control.
-type ProxyServer interface {
-	ReloadSettings(ctx context.Context) error
-	EvictProxy(proxyID int)
-	ListSessions() []proxy.SessionInfo
-	FindSessions(filter proxy.SessionFilter) []proxy.SessionInfo
-	ReleaseSessions(filter proxy.SessionFilter) int
-	SetDomainCooldown(c models.ProxyDomainCooldown)
-	ClearDomainCooldown(proxyID int, domain string) bool
-	ClearProxyDomainCooldowns(proxyID int) int
-	ListDomainCooldowns() []models.ProxyDomainCooldown
-	SetScopeCooldown(c models.ProxyScopeCooldown)
-	ClearScopeCooldowns(proxyID int, scope string) int
-	ListScopeCooldowns() []models.ProxyScopeCooldown
-	OpenTunnels() int64
-}
-
 // ProxyControlHandler serves the live proxy-control endpoints (reload,
 // invalidate/reactivate, session and domain-cooldown management, export).
-// These act on the running proxy server via the ProxyServer interface plus the
-// proxy repo.
+// These act on the running proxy server plus the proxy repo.
 type ProxyControlHandler struct {
-	proxyRepo   proxyControlRepository
+	proxyRepo   *repository.ProxyRepository
 	logger      *logger.Logger
-	proxyServer ProxyServer
+	proxyServer *proxy.Server
 	// Keep database commits and their live updates in the same order.
 	cooldownMu sync.Mutex
-}
-
-type proxyControlRepository interface {
-	WorkingProxies(ctx context.Context, country string, tags []string, limit int, all bool) ([]models.Proxy, error)
-	SetCooldown(context.Context, int, time.Duration, string) (*models.Proxy, error)
-	SetDomainCooldown(context.Context, int, string, time.Time, string) (*models.Proxy, models.ProxyDomainCooldown, error)
-	BackoffScopeCooldown(context.Context, int, string, time.Duration, string) (*models.Proxy, models.ProxyScopeCooldown, error)
-	BackoffDomainCooldown(context.Context, int, string, time.Duration, string) (*models.Proxy, models.ProxyDomainCooldown, error)
-	ClearCooldown(context.Context, int) (*models.Proxy, error)
-	ClearDomainCooldown(context.Context, int, string) (bool, error)
-	ClearAllDomainCooldowns(context.Context, int) (int, error)
-	ClearScopeCooldowns(context.Context, int, string) (int, error)
 }
 
 // NewProxyControlHandler creates a ProxyControlHandler. The proxy server
@@ -134,7 +103,7 @@ func exportLine(p models.Proxy, format string) string {
 }
 
 // SetProxyServer attaches the running proxy server.
-func (h *ProxyControlHandler) SetProxyServer(ps ProxyServer) {
+func (h *ProxyControlHandler) SetProxyServer(ps *proxy.Server) {
 	h.proxyServer = ps
 }
 
