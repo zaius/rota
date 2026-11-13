@@ -12,7 +12,7 @@ import {
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
-export function AccountMenu({ username, compact }: { username: string; compact?: boolean }) {
+export function AccountMenu({ compact }: { compact?: boolean }) {
   const navigate = useNavigate()
   const { theme, setTheme } = useTheme()
 
@@ -30,18 +30,10 @@ export function AccountMenu({ username, compact }: { username: string; compact?:
           compact && "w-auto"
         )}
       >
-        <span className="bg-muted text-muted-foreground flex size-5 shrink-0 items-center justify-center rounded text-[0.625rem] font-semibold uppercase">
-          {username.slice(0, 1) || "?"}
-        </span>
-        {!compact && <span className="truncate">{username || "—"}</span>}
+        {!compact && <span className="truncate">Account</span>}
         <ChevronsUpDown className="text-muted-foreground ml-auto size-3.5 shrink-0" aria-hidden />
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" className="w-56">
-        <div className="px-2 py-1.5">
-          <p className="font-medium">{username}</p>
-          <p className="text-muted-foreground font-mono">@{username}</p>
-        </div>
-        <DropdownMenuSeparator />
         <DropdownMenuLabel>Appearance</DropdownMenuLabel>
         {(["light", "dark", "system"] as const).map((t) => (
           <DropdownMenuItem key={t} onClick={() => setTheme(t)}>

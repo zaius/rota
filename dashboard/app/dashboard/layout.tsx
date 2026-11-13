@@ -5,35 +5,28 @@ import { api } from "@/lib/api"
 
 export default function DashboardLayout() {
   const navigate = useNavigate()
-  const [username, setUsername] = React.useState<string | null>(null)
-  const [isLoading, setIsLoading] = React.useState(true)
+  const [verified, setVerified] = React.useState(false)
 
-  // Check authentication on mount. The presence of a token says nothing about
-  // whether it is still valid, so ask the API: rendering first and bouncing on
+  // Check the stored password on mount. Its presence says nothing about
+  // whether it is still right, so ask the API: rendering first and bouncing on
   // the first 401 flashes protected content to a logged-out viewer.
   React.useEffect(() => {
     let cancelled = false
 
-    const token = localStorage.getItem("auth_token")
-    if (!token) {
+    if (!localStorage.getItem("auth_token")) {
       navigate("/login")
-      setIsLoading(false)
       return
     }
 
     api
-      .getAdminInfo()
-      .then((info) => {
-        if (cancelled) return
-        setUsername(info.username)
+      .checkAuth()
+      .then(() => {
+        if (!cancelled) setVerified(true)
       })
       .catch(() => {
         if (cancelled) return
         api.clearToken()
         navigate("/login")
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false)
       })
 
     return () => {
@@ -41,17 +34,15 @@ export default function DashboardLayout() {
     }
   }, [navigate])
 
-  if (isLoading) {
+  if (!verified) {
     return <p className="text-muted-foreground grid min-h-svh place-items-center">Checking session…</p>
   }
-
-  if (username === null) return null
 
   return (
     <div className="md:grid md:min-h-svh md:grid-cols-[14.5rem_1fr]">
       {/* The column carries the background so it spans pages taller than the viewport. */}
       <div className="bg-sidebar border-border relative md:border-r">
-        <AppNav username={username} />
+        <AppNav />
       </div>
       {/* min-w-0 lets wide tables scroll inside the page instead of stretching it past the viewport. */}
       <main className="flex min-w-0 flex-col">

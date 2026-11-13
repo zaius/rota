@@ -420,9 +420,9 @@ export default function ProxiesPage() {
     try {
       setIsReloading(true)
       await api.reloadProxies()
-      toast.success("Rotation pool reloaded", "Every proxy in the database is available for rotation again")
+      toast.success("Rotation settings reloaded")
     } catch (error) {
-      toast.error("Failed to reload pool", errorMessage(error, "Unknown error"))
+      toast.error("Failed to reload rotation settings", errorMessage(error, "Unknown error"))
     } finally {
       setIsReloading(false)
     }
@@ -497,7 +497,7 @@ export default function ProxiesPage() {
       // Seed an optimistic running state so the progress strip appears at once.
       const startedAt = new Date().toISOString()
       setBulkTestJob({
-        id: job_id, kind: "bulk_test", status: jobStatus, progress: 0, total: jobTotal,
+        id: job_id, status: jobStatus, progress: 0, total: jobTotal,
         active: 0, failed: 0, started_at: startedAt, updated_at: startedAt,
       })
       startBulkTestPolling(job_id)
@@ -618,7 +618,7 @@ export default function ProxiesPage() {
         description="Every proxy in the inventory with its last measured health. Filters and sorting are part of the link."
       >
         <Button variant="outline" onClick={handleReloadProxies} disabled={isReloading}>
-          {isReloading ? "Reloading…" : "Reload rotation pool"}
+          {isReloading ? "Reloading…" : "Reload rotation settings"}
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -904,7 +904,7 @@ export default function ProxiesPage() {
             <div className="space-y-1.5">
               <Label htmlFor="tags">Tags (optional)</Label>
               <TagInput id="tags" value={newProxy.tags} onChange={(tags) => setNewProxy({ ...newProxy, tags })} suggestions={allTags} />
-              <p className="text-muted-foreground text-[0.6875rem] leading-4">Pools can select proxies by tag, including ones without GeoIP data.</p>
+              <p className="text-muted-foreground text-[0.6875rem] leading-4">Clients select proxies by tag with a <code>{"tag-<name>"}</code> option in the proxy username, including ones without GeoIP data.</p>
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
@@ -1146,7 +1146,7 @@ export default function ProxiesPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this proxy?</AlertDialogTitle>
-            <AlertDialogDescription>It leaves every pool it belongs to and its stats are dropped. This cannot be undone.</AlertDialogDescription>
+            <AlertDialogDescription>Its stats are dropped. This cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -1160,7 +1160,7 @@ export default function ProxiesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {count(selectedCount)} proxies?</AlertDialogTitle>
             <AlertDialogDescription>
-              {selectAllMatching ? "Every proxy that matches the current search and filters" : "The selected proxies"} leave their pools and
+              {selectAllMatching ? "Every proxy that matches the current search and filters" : "The selected proxies"} are removed and
               their stats are dropped. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -1176,7 +1176,7 @@ export default function ProxiesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete every proxy?</AlertDialogTitle>
             <AlertDialogDescription>
-              Every proxy in the database is removed, whatever the filters, including pool members. Sources re-import on their next fetch.
+              Every proxy in the database is removed, whatever the filters. Sources re-import on their next fetch.
               This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>

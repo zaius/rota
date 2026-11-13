@@ -12,11 +12,10 @@ function LoginForm() {
   const [searchParams] = useSearchParams();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const sessionExpired = searchParams.get("reason") === "session_expired";
 
-  // Skip the form when a token is already stored, unless the API just
+  // Skip the form when a password is already stored, unless the API just
   // rejected it.
   useEffect(() => {
     if (!sessionExpired && localStorage.getItem("auth_token")) {
@@ -30,10 +29,10 @@ function LoginForm() {
     setError("");
 
     try {
-      await api.login(username, password);
+      await api.login(password);
       navigate("/dashboard");
     } catch (err) {
-      setError(errorMessage(err, "Invalid credentials. Please try again."));
+      setError(errorMessage(err, "Wrong password. Please try again."));
     } finally {
       setIsLoading(false);
     }
@@ -44,23 +43,9 @@ function LoginForm() {
       <div className="flex w-full max-w-[19rem] flex-col items-center text-center">
         <img src="/logo.png" alt="" width={44} height={44} className="size-11 object-contain" />
         <h1 className="mt-5 text-[1.0625rem] leading-tight font-semibold tracking-tight">Sign in to Rota</h1>
-        <p className="text-muted-foreground mt-1">Admin credentials for this instance.</p>
+        <p className="text-muted-foreground mt-1">The ROTA_PASSWORD for this instance.</p>
 
         <form onSubmit={handleSubmit} className="mt-8 w-full space-y-3 text-left">
-          <div className="space-y-1.5">
-            <Label htmlFor="username">Username</Label>
-            <Input
-              id="username"
-              type="text"
-              required
-              autoComplete="username"
-              autoFocus
-              disabled={isLoading}
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="h-9 px-3"
-            />
-          </div>
           <div className="space-y-1.5">
             <Label htmlFor="password">Password</Label>
             <Input
@@ -68,6 +53,7 @@ function LoginForm() {
               type="password"
               required
               autoComplete="current-password"
+              autoFocus
               disabled={isLoading}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -78,7 +64,7 @@ function LoginForm() {
           {sessionExpired && !error && (
             <p className="text-muted-foreground flex items-start gap-1.5 pt-0.5">
               <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-              Your session expired. Sign in again to continue.
+              The stored password no longer works. Sign in again to continue.
             </p>
           )}
           {error && (
