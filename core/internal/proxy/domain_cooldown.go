@@ -9,13 +9,6 @@ import (
 	"github.com/alpkeskin/rota/core/internal/models"
 )
 
-// targetHostKey is the context key that carries the normalized target host of
-// the current proxy request (e.g. "foo.com"), set by the proxy router.
-type targetHostKey struct{}
-
-// TargetHostContextKey is exported for use in the handler / pool selector.
-var TargetHostContextKey = targetHostKey{}
-
 // DomainCooldownManager holds per-domain proxy invalidations for the
 // "invalidate for one target domain only" feature: a proxy on a domain
 // cooldown is skipped for requests to that domain (and its subdomains) but
@@ -68,7 +61,7 @@ func (m *DomainCooldownManager) SetCooldown(c models.ProxyDomainCooldown) {
 // domains are dropped; backoff history remains available for recovery tracking.
 // This keeps the in-memory view eventually consistent with the table
 // (and so with cooldowns set by other instances sharing the same DB), mirroring
-// how the proxy selectors fully refresh their lists from the DB on a tick.
+// how the rotator fully refreshes its list from the DB on a tick.
 func (m *DomainCooldownManager) ReplaceAll(cooldowns []models.ProxyDomainCooldown) {
 	now := time.Now()
 	next := make(map[int]map[string]models.ProxyDomainCooldown)

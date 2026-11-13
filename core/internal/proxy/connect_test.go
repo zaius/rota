@@ -192,15 +192,15 @@ func TestConnectViaSocks5_ConnectionRefused(t *testing.T) {
 	}
 }
 
-// TestConnectViaProxyStandalone_UnsupportedProtocol tests the protocol switch.
-func TestConnectViaProxyStandalone_UnsupportedProtocol(t *testing.T) {
+// TestConnectViaProxy_UnsupportedProtocol tests the protocol switch.
+func TestConnectViaProxy_UnsupportedProtocol(t *testing.T) {
 	proxy := &models.Proxy{
 		Address:  "127.0.0.1:9999",
 		Protocol: "ftp",
 	}
-	settings := &models.RotationSettings{Timeout: 5}
+	timeout := 5 * time.Second
 
-	_, err := connectViaProxyStandalone(proxy, "example.com:443", settings)
+	_, err := connectViaProxy(proxy, "example.com:443", timeout)
 	if err == nil {
 		t.Fatal("expected error for unsupported protocol")
 	}
@@ -209,8 +209,8 @@ func TestConnectViaProxyStandalone_UnsupportedProtocol(t *testing.T) {
 	}
 }
 
-// TestConnectViaProxyStandalone_RoutesHTTP verifies HTTP protocol goes to HTTP handler.
-func TestConnectViaProxyStandalone_RoutesHTTP(t *testing.T) {
+// TestConnectViaProxy_RoutesHTTP verifies HTTP protocol goes to HTTP handler.
+func TestConnectViaProxy_RoutesHTTP(t *testing.T) {
 	// Start mock that accepts CONNECT.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -238,9 +238,9 @@ func TestConnectViaProxyStandalone_RoutesHTTP(t *testing.T) {
 		Address:  ln.Addr().String(),
 		Protocol: "http",
 	}
-	settings := &models.RotationSettings{Timeout: 10}
+	timeout := 10 * time.Second
 
-	conn, err := connectViaProxyStandalone(proxy, "example.com:443", settings)
+	conn, err := connectViaProxy(proxy, "example.com:443", timeout)
 	if err != nil {
 		t.Fatalf("expected success: %v", err)
 	}

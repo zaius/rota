@@ -42,23 +42,11 @@ func echoConnectProxy(t *testing.T, id int) *httptest.Server {
 // Regression: a client holding its CONNECT tunnel open kept reaching the target
 // through the invalidated proxy, while only fresh connections rebound.
 func TestProxyRouter_SessionInvalidateEndsOpenTunnel(t *testing.T) {
-	sm := NewSessionManager()
-	defer sm.Stop()
-	chain := &PoolChain{
-		username: "alice",
-		selectors: []*PoolSelector{{
-			poolID: 1, method: "session", sessionTTL: time.Minute, sessionMgr: sm,
-			proxies: []*models.Proxy{
-				{ID: 42, Protocol: "http", Address: echoConnectProxy(t, 42).Listener.Addr().String()},
-				{ID: 43, Protocol: "http", Address: echoConnectProxy(t, 43).Listener.Addr().String()},
-			},
-		}},
-		logger:         logger.New("error"),
-		targetResolver: ipv4TargetResolver{},
-	}
-	auth := newTestUserAuthMw()
-	cacheTestUser(auth, chain)
-	router := &proxyRouter{userAuthMw: auth, upstream: NewUpstreamProxyHandler(nil, nil, logger.New("error"))}
+	r := newTestRotator(t,
+		&models.Proxy{ID: 42, Protocol: "http", Address: echoConnectProxy(t, 42).Listener.Addr().String()},
+		&models.Proxy{ID: 43, Protocol: "http", Address: echoConnectProxy(t, 43).Listener.Addr().String()},
+	)
+	router := &proxyRouter{upstream: NewUpstreamProxyHandler(r, nil, logger.New("error")), password: "secret"}
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -95,7 +83,7 @@ func TestProxyRouter_SessionInvalidateEndsOpenTunnel(t *testing.T) {
 		t.Fatalf("tunnel did not reach proxy %d: %q %v", first, line, err)
 	}
 
-	sm.SetScopeCooldown(models.ProxyScopeCooldown{ProxyID: first, Scope: "target.example", CooldownUntil: time.Now().Add(time.Hour)})
+	r.sessions.SetScopeCooldown(models.ProxyScopeCooldown{ProxyID: first, Scope: "target.example", CooldownUntil: time.Now().Add(time.Hour)})
 
 	held.SetDeadline(time.Now().Add(5 * time.Second))
 	if line, err := exchange(held, heldReader); err == nil {

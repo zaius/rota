@@ -2,14 +2,14 @@ package proxy
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
-	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/authlimit"
-	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/metrics"
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -18,32 +18,39 @@ import (
 	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
-// proxyRouter is the core HTTP handler that dispatches incoming proxy requests.
-// It replaces the goproxy library with a minimal, zero-dependency implementation
-// that supports both HTTP forwarding and HTTPS CONNECT tunneling.
+// proxyRouter authenticates incoming proxy requests and dispatches them by
+// method.
 type proxyRouter struct {
-	upstream   *UpstreamProxyHandler
-	userAuthMw *UserAuthMiddleware
-	logger     *logger.Logger
+	upstream *UpstreamProxyHandler
+	password string
 }
 
-// ServeHTTP dispatches incoming requests through the middleware chain
-// and routes them to the appropriate handler based on method.
+// ServeHTTP checks the shared password, parses the request options from the
+// username, and forwards the request with both attached to its context.
 func (p *proxyRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// 1. User auth middleware (sets the user's PoolChain in context, or rejects)
-	r, reject := p.userAuthMw.HandleRequest(r)
-	if reject != nil {
-		writeHTTPResponse(w, reject)
+	username, password, ok := parseProxyAuth(r)
+	if !ok || subtle.ConstantTimeCompare([]byte(password), []byte(p.password)) != 1 {
+		reason := "bad_credentials"
+		if !ok {
+			reason = "missing_credentials"
+		}
+		metrics.RecordAuthRejection(r.Context(), reason)
+		writeAuthRequired(w, "proxy_auth_required", "proxy authentication required")
 		return
 	}
-
-	// 2. Attach the normalized target host so selection can honor
-	//    domain-scoped invalidations.
-	if host := normalizeHost(requestTargetHost(r.Method, r.URL.Host, r.Host)); host != "" {
-		r = r.WithContext(context.WithValue(r.Context(), TargetHostContextKey, host))
+	opts, err := ParseOptions(username)
+	if err != nil {
+		metrics.RecordAuthRejection(r.Context(), "invalid_options")
+		writeAuthRequired(w, "invalid_proxy_options", err.Error())
+		return
 	}
+	r.Header.Del("Proxy-Authorization")
 
-	// 3. Dispatch based on method
+	// The normalized target host lets selection honor domain-scoped
+	// invalidations and default the reservation scope.
+	host := normalizeHost(requestTargetHost(r.Method, r.URL.Host, r.Host))
+	r = r.WithContext(withRoute(r.Context(), route{Options: opts, host: host}))
+
 	if r.Method == http.MethodConnect {
 		p.upstream.HandleConnectRequest(w, r)
 	} else {
@@ -51,34 +58,31 @@ func (p *proxyRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeHTTPResponse translates a middleware-returned *http.Response into
-// http.ResponseWriter calls. This bridges the middleware return convention
-// (returning *http.Response for reject) with the stdlib interface.
-func writeHTTPResponse(w http.ResponseWriter, resp *http.Response) {
-	if resp == nil {
-		return
+// parseProxyAuth extracts username and password from the Proxy-Authorization
+// header.
+func parseProxyAuth(req *http.Request) (string, string, bool) {
+	auth, ok := strings.CutPrefix(req.Header.Get("Proxy-Authorization"), "Basic ")
+	if !ok {
+		return "", "", false
 	}
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
+	decoded, err := base64.StdEncoding.DecodeString(auth)
+	if err != nil {
+		return "", "", false
 	}
-	w.WriteHeader(resp.StatusCode)
-	if resp.Body != nil {
-		io.Copy(w, resp.Body) //nolint:errcheck
-		resp.Body.Close()
-	}
+	return strings.Cut(string(decoded), ":")
+}
+
+func writeAuthRequired(w http.ResponseWriter, reason, message string) {
+	w.Header().Set("Proxy-Authenticate", `Basic realm="Rota Proxy"`)
+	writeRotaError(w, http.StatusProxyAuthRequired, reason, message)
 }
 
 // Server represents the proxy server
 type Server struct {
-	router        *proxyRouter
 	server        *http.Server
 	logger        *logger.Logger
-	port          int
-	tracker       *UsageTracker
 	handler       *UpstreamProxyHandler
-	userAuthMw    *UserAuthMiddleware
+	rotator       *Rotator
 	proxyRepo     *repository.ProxyRepository
 	settingsRepo  *repository.SettingsRepository
 	sessionMgr    *SessionManager
@@ -94,15 +98,12 @@ type Server struct {
 // New creates a new proxy server instance
 func New(
 	port int,
+	password string,
 	log *logger.Logger,
-	db *database.DB,
 	eventStore events.Store,
 	proxyRepo *repository.ProxyRepository,
-	poolRepo *repository.PoolRepository,
-	userRepo *repository.UserRepository,
 	settingsRepo *repository.SettingsRepository,
 	inspector *TLSInspector,
-	limiter *authlimit.Limiter,
 ) (*Server, error) {
 	// Load settings
 	ctx := context.Background()
@@ -111,45 +112,18 @@ func New(
 		return nil, fmt.Errorf("failed to load settings: %w", err)
 	}
 
-	// Create usage tracker
-	tracker := NewUsageTracker(eventStore, proxyRepo)
-
-	// Domain-scoped invalidations (process-wide, warmed from DB so they
-	// survive restarts)
-	domainCD := NewDomainCooldownManager()
-	if cooldowns, err := proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
-		log.Warn("failed to load domain cooldowns", "error", err)
-	} else {
-		domainCD.ReplaceAll(cooldowns)
-	}
-
-	// Create upstream proxy handler (forwards through the request's PoolChain).
-	// A nil inspector rejects inspection requests and leaves other tunnels opaque.
-	handler := NewUpstreamProxyHandler(&settings.Rotation, inspector, log)
-
-	// Session manager for "session" rotation (process-wide, survives chain rebuilds)
 	sessionMgr := NewSessionManager()
-	if cooldowns, err := proxyRepo.ListActiveScopeCooldowns(ctx); err != nil {
-		log.Warn("failed to load scope cooldowns", "error", err)
-	} else {
-		sessionMgr.ReplaceScopeCooldowns(cooldowns)
-	}
-
-	// Create user-aware auth middleware (pool-based routing)
-	userAuthMw := NewUserAuthMiddleware(userRepo, poolRepo, db, sessionMgr, domainCD, tracker, log, limiter)
-
-	// Create the proxy router
-	router := &proxyRouter{
-		upstream:   handler,
-		userAuthMw: userAuthMw,
-		logger:     log,
-	}
+	domainCD := NewDomainCooldownManager()
+	tracker := NewUsageTracker(eventStore, proxyRepo)
+	rotator := NewRotator(proxyRepo, sessionMgr, domainCD, tracker, &settings.Rotation, log)
+	// A nil inspector rejects inspection requests and leaves other tunnels opaque.
+	handler := NewUpstreamProxyHandler(rotator, inspector, log)
 
 	// WriteTimeout must be 0 for CONNECT tunnels (they are long-lived).
 	// HTTP path enforces timeouts via context.
 	httpServer := &http.Server{
 		Addr:        fmt.Sprintf(":%d", port),
-		Handler:     router,
+		Handler:     &proxyRouter{upstream: handler, password: password},
 		ReadTimeout: time.Duration(settings.Rotation.Timeout) * time.Second,
 		IdleTimeout: 60 * time.Second,
 	}
@@ -163,35 +137,31 @@ func New(
 	)
 
 	s := &Server{
-		router:       router,
 		server:       httpServer,
 		logger:       log,
-		port:         port,
-		tracker:      tracker,
 		handler:      handler,
-		userAuthMw:   userAuthMw,
+		rotator:      rotator,
 		proxyRepo:    proxyRepo,
 		settingsRepo: settingsRepo,
 		sessionMgr:   sessionMgr,
 		domainCD:     domainCD,
 		stopChan:     make(chan struct{}),
 	}
-
-	// Start background tasks
+	// Load proxies and cooldowns before serving, so restarts keep rotating and
+	// honoring invalidations from the first request.
+	s.refresh()
 	s.startBackgroundTasks()
-
 	return s, nil
 }
 
 // startBackgroundTasks starts periodic background tasks
 func (s *Server) startBackgroundTasks() {
-	// Refresh proxy list every 30 seconds
 	s.refreshTicker = time.NewTicker(30 * time.Second)
 	go func() {
 		for {
 			select {
 			case <-s.refreshTicker.C:
-				safeworker.Call(s.logger, "cooldown_refresh", s.refreshCooldowns)
+				safeworker.Call(s.logger, "proxy_refresh", s.refresh)
 			case <-s.stopChan:
 				return
 			}
@@ -199,39 +169,38 @@ func (s *Server) startBackgroundTasks() {
 	}()
 }
 
-// refreshCooldowns re-syncs domain and scope cooldowns from the database, so
-// the in-memory view tracks expirations and cooldowns set by other instances.
-// UserAuthMiddleware refreshes the proxy lists themselves, per user chain.
-func (s *Server) refreshCooldowns() {
+// refresh re-syncs the proxy list and the domain and scope cooldowns from the
+// database, so the in-memory view tracks new proxies, expirations, and changes
+// made by other instances.
+func (s *Server) refresh() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if s.domainCD != nil {
-		func() {
-			s.domainCooldownMu.Lock()
-			defer s.domainCooldownMu.Unlock()
-			if cooldowns, err := s.proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
-				s.logger.Error("failed to refresh domain cooldowns", "error", err)
-			} else {
-				s.domainCD.ReplaceAll(cooldowns)
-			}
-		}()
+	if err := s.rotator.Refresh(ctx); err != nil {
+		s.logger.Error("failed to refresh proxies", "error", err)
 	}
-	if s.sessionMgr != nil {
-		func() {
-			s.scopeCooldownMu.Lock()
-			defer s.scopeCooldownMu.Unlock()
-			if cooldowns, err := s.proxyRepo.ListActiveScopeCooldowns(ctx); err != nil {
-				s.logger.Error("failed to refresh scope cooldowns", "error", err)
-			} else {
-				s.sessionMgr.ReplaceScopeCooldowns(cooldowns)
-			}
-		}()
-	}
+	func() {
+		s.domainCooldownMu.Lock()
+		defer s.domainCooldownMu.Unlock()
+		if cooldowns, err := s.proxyRepo.ListActiveDomainCooldowns(ctx); err != nil {
+			s.logger.Error("failed to refresh domain cooldowns", "error", err)
+		} else {
+			s.domainCD.ReplaceAll(cooldowns)
+		}
+	}()
+	func() {
+		s.scopeCooldownMu.Lock()
+		defer s.scopeCooldownMu.Unlock()
+		if cooldowns, err := s.proxyRepo.ListActiveScopeCooldowns(ctx); err != nil {
+			s.logger.Error("failed to refresh scope cooldowns", "error", err)
+		} else {
+			s.sessionMgr.ReplaceScopeCooldowns(cooldowns)
+		}
+	}()
 }
 
 // Start starts the proxy server
 func (s *Server) Start() error {
-	s.logger.Info("starting proxy server", "port", s.port)
+	s.logger.Info("starting proxy server", "addr", s.server.Addr)
 
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("proxy server failed: %w", err)
@@ -245,15 +214,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down proxy server")
 
 	close(s.stopChan)
-	if s.refreshTicker != nil {
-		s.refreshTicker.Stop()
-	}
-	if s.sessionMgr != nil {
-		s.sessionMgr.Stop()
-	}
-	if s.domainCD != nil {
-		s.domainCD.Stop()
-	}
+	s.refreshTicker.Stop()
+	s.sessionMgr.Stop()
+	s.domainCD.Stop()
 
 	return s.server.Shutdown(ctx)
 }
@@ -261,57 +224,28 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // OpenTunnels returns the number of CONNECT tunnels currently established.
 // Tunnel history in the event store only covers tunnels that have closed, so
 // this is the only view of traffic that is in flight right now.
-func (s *Server) OpenTunnels() int64 {
-	if s.handler == nil {
-		return 0
-	}
-	return s.handler.OpenTunnels()
-}
+func (s *Server) OpenTunnels() int64 { return s.handler.OpenTunnels() }
 
 // ListSessions returns a snapshot of all live sticky-session bindings.
-func (s *Server) ListSessions() []SessionInfo {
-	if s.sessionMgr == nil {
-		return nil
-	}
-	return s.sessionMgr.List()
+func (s *Server) ListSessions() []SessionInfo { return s.sessionMgr.List() }
+
+// FindSessions returns the live sticky-session bindings matching filter.
+func (s *Server) FindSessions(filter SessionFilter) []SessionInfo {
+	return s.sessionMgr.FindSessions(filter)
 }
 
-// ReleaseSessions drops bindings matching the caller's token, user, pools and scope.
+// ReleaseSessions drops the bindings matching filter.
 func (s *Server) ReleaseSessions(filter SessionFilter) int {
-	if s.sessionMgr == nil {
-		return 0
-	}
 	return s.sessionMgr.ReleaseSessions(filter)
 }
 
-// SessionsForToken returns the live sticky-session bindings for a token across
-// all pools.
-func (s *Server) SessionsForToken(token string) []SessionInfo {
-	if s.sessionMgr == nil {
-		return nil
-	}
-	return s.sessionMgr.FindByToken(token)
-}
-
-// EvictProxy immediately removes a proxy from every active user's in-memory
-// selector and drops any sessions bound to it. The DB cooldown (set by the API
-// handler) keeps it out of rotation on the next refresh; this makes the removal
-// take effect right away without waiting for the 30s refresh cycle.
+// EvictProxy immediately removes a proxy from rotation and drops any sessions
+// bound to it. The DB cooldown (set by the API handler) keeps it out of
+// rotation on the next refresh; this makes the removal take effect right away
+// without waiting for the 30s refresh cycle.
 func (s *Server) EvictProxy(proxyID int) {
-	if s.sessionMgr != nil {
-		s.sessionMgr.Evict(proxyID)
-	}
-	if s.userAuthMw != nil {
-		s.userAuthMw.EvictProxy(proxyID)
-	}
-}
-
-// InvalidateUser drops a proxy user's cached pool chain after a user change.
-// The user repository invalidates shared credentials when it writes the change.
-func (s *Server) InvalidateUser(username string) {
-	if s.userAuthMw != nil {
-		s.userAuthMw.InvalidateUser(username)
-	}
+	s.sessionMgr.Evict(proxyID)
+	s.rotator.Remove(proxyID)
 }
 
 // SetDomainCooldown puts a proxy on a domain-scoped cooldown: it is skipped
@@ -321,13 +255,8 @@ func (s *Server) InvalidateUser(username string) {
 func (s *Server) SetDomainCooldown(c models.ProxyDomainCooldown) {
 	s.domainCooldownMu.Lock()
 	defer s.domainCooldownMu.Unlock()
-	if s.domainCD == nil {
-		return
-	}
 	s.domainCD.SetCooldown(c)
-	if s.sessionMgr != nil {
-		s.sessionMgr.EndDomainTunnels(c.ProxyID, c.Domain)
-	}
+	s.sessionMgr.EndDomainTunnels(c.ProxyID, c.Domain)
 }
 
 // ClearDomainCooldown removes a single (proxy, domain) cooldown.
@@ -335,9 +264,6 @@ func (s *Server) SetDomainCooldown(c models.ProxyDomainCooldown) {
 func (s *Server) ClearDomainCooldown(proxyID int, domain string) bool {
 	s.domainCooldownMu.Lock()
 	defer s.domainCooldownMu.Unlock()
-	if s.domainCD == nil {
-		return false
-	}
 	return s.domainCD.Clear(proxyID, domain)
 }
 
@@ -346,41 +272,25 @@ func (s *Server) ClearDomainCooldown(proxyID int, domain string) bool {
 func (s *Server) ClearProxyDomainCooldowns(proxyID int) int {
 	s.domainCooldownMu.Lock()
 	defer s.domainCooldownMu.Unlock()
-	if s.domainCD == nil {
-		return 0
-	}
 	return s.domainCD.ClearProxy(proxyID)
 }
 
 // ListDomainCooldowns returns a snapshot of all active domain cooldowns.
-func (s *Server) ListDomainCooldowns() []models.ProxyDomainCooldown {
-	if s.domainCD == nil {
-		return nil
-	}
-	return s.domainCD.List()
-}
+func (s *Server) ListDomainCooldowns() []models.ProxyDomainCooldown { return s.domainCD.List() }
 
 func (s *Server) SetScopeCooldown(c models.ProxyScopeCooldown) {
 	s.scopeCooldownMu.Lock()
 	defer s.scopeCooldownMu.Unlock()
-	if s.sessionMgr != nil {
-		s.sessionMgr.SetScopeCooldown(c)
-	}
+	s.sessionMgr.SetScopeCooldown(c)
 }
 
 func (s *Server) ClearScopeCooldowns(proxyID int, scope string) int {
 	s.scopeCooldownMu.Lock()
 	defer s.scopeCooldownMu.Unlock()
-	if s.sessionMgr == nil {
-		return 0
-	}
 	return s.sessionMgr.ClearScopeCooldowns(proxyID, scope)
 }
 
 func (s *Server) ListScopeCooldowns() []models.ProxyScopeCooldown {
-	if s.sessionMgr == nil {
-		return nil
-	}
 	return s.sessionMgr.ListScopeCooldowns()
 }
 
@@ -390,10 +300,7 @@ func (s *Server) ReloadSettings(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
-
-	// Update handler settings (atomic publish; read concurrently on the hot path)
-	s.handler.setSettings(&settings.Rotation)
-
+	s.rotator.SetSettings(&settings.Rotation)
 	s.logger.Info("settings reloaded successfully")
 	return nil
 }

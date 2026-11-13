@@ -24,7 +24,7 @@ type targetIPResolver interface {
 // validateConnectTarget checks for an IPv4 address before selection can consume a
 // rotation slot or session reservation. Keep the hostname in the CONNECT request
 // so the upstream still resolves it using its own DNS view.
-func (c *PoolChain) validateConnectTarget(ctx context.Context, authority string) error {
+func (r *Rotator) validateConnectTarget(ctx context.Context, authority string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -44,7 +44,7 @@ func (c *PoolChain) validateConnectTarget(ctx context.Context, authority string)
 		return nil
 	}
 
-	resolver := c.targetResolver
+	resolver := r.targetResolver
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}

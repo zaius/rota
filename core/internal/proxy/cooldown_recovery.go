@@ -39,34 +39,20 @@ func (m *DomainCooldownManager) beginDomainRecovery(proxyID int, host string, st
 	return domains
 }
 
-// startCooldownRecovery observes use, independently of response codes. The
-// client has one session idle-expiry period to invalidate this attempt before
-// the next invalidation starts a new streak. No post-cooldown use means no reset.
-func (c *PoolChain) startCooldownRecovery(ctx context.Context, proxyID, selIdx int) {
-	if c.recoveryRepo == nil {
+// startCooldownRecovery observes a session's use of a proxy, independently of
+// response codes. The client has one session TTL to invalidate this attempt
+// before the next invalidation starts a new streak. No post-cooldown use means
+// no reset.
+func (r *Rotator) startCooldownRecovery(ctx context.Context, proxyID int) {
+	rt := routeFrom(ctx)
+	key := rt.sessionKey()
+	if r.recoveryRepo == nil || key.token == "" {
 		return
-	}
-	token, _ := ctx.Value(SessionTokenContextKey).(string)
-	sel := c.selectors[selIdx]
-	if token == "" || (sel.method != "session" && c.selectors[0].method != "session") {
-		return
-	}
-	host, _ := ctx.Value(TargetHostContextKey).(string)
-	scope, _ := ctx.Value(SessionScopeContextKey).(string)
-	if scope == "" {
-		scope = normalizeHost(host)
-	}
-	ttl := sel.sessionTTL
-	if ttl <= 0 {
-		ttl = 10 * time.Minute
 	}
 	start := time.Now()
-	after := start.Add(ttl)
-	scopeStarted := sel.sessionMgr != nil && sel.sessionMgr.beginScopeRecovery(proxyID, scope, start, after)
-	var domains []string
-	if sel.domainCD != nil {
-		domains = sel.domainCD.beginDomainRecovery(proxyID, host, start, after)
-	}
+	after := start.Add(r.sessionTTL())
+	scopeStarted := r.sessions.beginScopeRecovery(proxyID, key.scope, start, after)
+	domains := r.domainCD.beginDomainRecovery(proxyID, rt.host, start, after)
 	if !scopeStarted && len(domains) == 0 {
 		return
 	}
@@ -74,12 +60,12 @@ func (c *PoolChain) startCooldownRecovery(ctx context.Context, proxyID, selIdx i
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		record := func(target string, domain bool) {
-			if err := c.recoveryRepo.StartCooldownRecovery(ctx, proxyID, target, domain, start, after); err != nil {
-				c.logger.Error("failed to start proxy backoff recovery", "proxy_id", proxyID, "target", target, "error", err)
+			if err := r.recoveryRepo.StartCooldownRecovery(ctx, proxyID, target, domain, start, after); err != nil {
+				r.logger.Error("failed to start proxy backoff recovery", "proxy_id", proxyID, "target", target, "error", err)
 			}
 		}
 		if scopeStarted {
-			record(scope, false)
+			record(key.scope, false)
 		}
 		for _, domain := range domains {
 			record(domain, true)

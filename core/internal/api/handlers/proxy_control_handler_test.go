@@ -25,12 +25,11 @@ type fakeProxyServer struct {
 
 func (f *fakeProxyServer) ReloadSettings(ctx context.Context) error { return nil }
 func (f *fakeProxyServer) EvictProxy(proxyID int)                   { f.evicted = append(f.evicted, proxyID) }
-func (f *fakeProxyServer) InvalidateUser(username string)           {}
 func (f *fakeProxyServer) ListSessions() []proxy.SessionInfo        { return f.sessions }
-func (f *fakeProxyServer) SessionsForToken(token string) []proxy.SessionInfo {
+func (f *fakeProxyServer) FindSessions(filter proxy.SessionFilter) []proxy.SessionInfo {
 	var out []proxy.SessionInfo
 	for _, s := range f.sessions {
-		if s.Token == token {
+		if s.Token == filter.Token && (filter.Scope == "" || s.Scope == filter.Scope) {
 			out = append(out, s)
 		}
 	}
@@ -57,14 +56,9 @@ func (f *fakeProxyServer) ListDomainCooldowns() []models.ProxyDomainCooldown   {
 func (f *fakeProxyServer) OpenTunnels() int64                                  { return 0 }
 
 func newTestControlHandler(ps ProxyServer) *ProxyControlHandler {
-	h := NewProxyControlHandler(nil, nil, logger.New("error"))
+	h := NewProxyControlHandler(nil, logger.New("error"))
 	h.SetProxyServer(ps)
 	return h
-}
-
-func asProxyUser(r *http.Request, mainPool int, fallbacks ...int) *http.Request {
-	u := &models.ProxyUser{ID: 1, Username: "alice", MainPoolID: &mainPool, FallbackPoolIDs: fallbacks}
-	return r.WithContext(context.WithValue(r.Context(), models.ProxyUserContextKey, u))
 }
 
 func TestInvalidateSession_UnknownTokenNotFound(t *testing.T) {
@@ -91,135 +85,27 @@ func TestInvalidateSession_TokenRequired(t *testing.T) {
 	}
 }
 
-// A proxy user must not see (or invalidate) sessions bound in pools outside its
-// own chain; out-of-scope bindings read as missing.
-func TestInvalidateSession_ProxyUserOutOfScopeIsNotFound(t *testing.T) {
-	ps := &fakeProxyServer{sessions: []proxy.SessionInfo{
-		{PoolID: 99, Token: "job42", ProxyID: 7},
-	}}
-	h := newTestControlHandler(ps)
-
-	req := httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(`{"token":"job42"}`))
-	req = asProxyUser(req, 1, 2)
-	w := httptest.NewRecorder()
-	h.InvalidateSession(w, req)
-
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for a session outside the user's pools, got %d", w.Code)
-	}
-}
-
-func TestReleaseSession_ProxyUserForeignPoolForbidden(t *testing.T) {
-	ps := &fakeProxyServer{}
-	h := newTestControlHandler(ps)
-
-	req := httptest.NewRequest("POST", "/sessions/release", strings.NewReader(`{"token":"job42","pool_id":99}`))
-	req = asProxyUser(req, 1, 2)
-	w := httptest.NewRecorder()
-	h.ReleaseSession(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 releasing in a foreign pool, got %d", w.Code)
-	}
-	if len(ps.released) != 0 {
-		t.Fatal("nothing must be released on a forbidden request")
-	}
-}
-
-func TestReleaseSession_ProxyUserOwnPoolAllowed(t *testing.T) {
-	ps := &fakeProxyServer{}
-	h := newTestControlHandler(ps)
-
-	req := httptest.NewRequest("POST", "/sessions/release", strings.NewReader(`{"token":"job42","pool_id":2}`))
-	req = asProxyUser(req, 1, 2)
-	w := httptest.NewRecorder()
-	h.ReleaseSession(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 releasing in an own pool, got %d", w.Code)
-	}
-	if len(ps.released) != 1 || len(ps.released[0].PoolIDs) != 1 || ps.released[0].PoolIDs[0] != 2 || ps.released[0].Username != "alice" {
-		t.Fatalf("expected release in pool 2, got %v", ps.released)
-	}
-}
-
-// Without a pool_id, a proxy user's release is scoped to its own pools rather
-// than released globally.
-func TestReleaseSession_ProxyUserWithoutPoolScopedToOwnPools(t *testing.T) {
-	ps := &fakeProxyServer{}
-	h := newTestControlHandler(ps)
-
-	req := httptest.NewRequest("POST", "/sessions/release", strings.NewReader(`{"token":"job42"}`))
-	req = asProxyUser(req, 1, 2)
-	w := httptest.NewRecorder()
-	h.ReleaseSession(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	if len(ps.released) != 1 || ps.released[0].Username != "alice" || len(ps.released[0].PoolIDs) != 2 {
-		t.Fatalf("expected a release scoped to the user's two pools, got %v", ps.released)
-	}
-}
-
-// Admin (no proxy user in context) keeps the global release behaviour.
-func TestReleaseSession_AdminReleasesGlobally(t *testing.T) {
-	ps := &fakeProxyServer{}
-	h := newTestControlHandler(ps)
-
-	req := httptest.NewRequest("POST", "/sessions/release", strings.NewReader(`{"token":"job42"}`))
-	w := httptest.NewRecorder()
-	h.ReleaseSession(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	if len(ps.released) != 1 || ps.released[0].Token != "job42" || ps.released[0].Username != "" || ps.released[0].PoolIDs != nil {
-		t.Fatalf("expected a global release of the token, got %v", ps.released)
-	}
-}
-
-func TestReleaseSession_ScopeAndOwner(t *testing.T) {
-	ps := &fakeProxyServer{}
-	h := newTestControlHandler(ps)
-	req := httptest.NewRequest("POST", "/sessions/release", strings.NewReader(`{"token":"job42","scope":"Example.COM.","username":"bob"}`))
-	req = asProxyUser(req, 1, 2)
-	w := httptest.NewRecorder()
-	h.ReleaseSession(w, req)
-	if w.Code != http.StatusOK || len(ps.released) != 1 {
-		t.Fatalf("release failed: %d", w.Code)
-	}
-	f := ps.released[0]
-	if f.Username != "alice" || f.Scope != "example.com" || f.Token != "job42" || len(f.PoolIDs) != 2 {
-		t.Fatalf("incorrect filter: %+v", f)
-	}
-}
-
-func TestInvalidateSession_RestrictsScopeAndOwner(t *testing.T) {
-	for _, body := range []string{
-		`{"token":"job42"}`,
-		`{"token":"job42","username":"bob"}`,
-		`{"token":"job42","scope":"other.com"}`,
+func TestReleaseSession_Filter(t *testing.T) {
+	for body, want := range map[string]proxy.SessionFilter{
+		`{"token":"job42"}`:                        {Token: "job42"},
+		`{"token":"job42","scope":"Example.COM."}`: {Token: "job42", Scope: "example.com"},
 	} {
-		ps := &fakeProxyServer{sessions: []proxy.SessionInfo{
-			{PoolID: 1, Username: "bob", Token: "job42", Scope: "example.com", ProxyID: 42},
-		}}
+		ps := &fakeProxyServer{}
 		h := newTestControlHandler(ps)
-		req := asProxyUser(httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(body)), 1)
 		w := httptest.NewRecorder()
-		h.InvalidateSession(w, req)
-		if w.Code != http.StatusConflict {
-			t.Fatalf("foreign session visible: %d", w.Code)
+		h.ReleaseSession(w, httptest.NewRequest("POST", "/sessions/release", strings.NewReader(body)))
+		if w.Code != http.StatusOK || len(ps.released) != 1 || ps.released[0] != want {
+			t.Fatalf("%s: got %d %+v", body, w.Code, ps.released)
 		}
 	}
 }
 
 func TestInvalidateSession_UnknownScopeNotFound(t *testing.T) {
 	ps := &fakeProxyServer{sessions: []proxy.SessionInfo{
-		{PoolID: 1, Username: "alice", Token: "job42", Scope: "example.com", ProxyID: 42},
+		{Token: "job42", Scope: "example.com", ProxyID: 42},
 	}}
 	h := newTestControlHandler(ps)
-	req := asProxyUser(httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(`{"token":"job42","scope":"other.com"}`)), 1)
+	req := httptest.NewRequest("POST", "/sessions/invalidate", strings.NewReader(`{"token":"job42","scope":"other.com"}`))
 	w := httptest.NewRecorder()
 	h.InvalidateSession(w, req)
 	if w.Code != http.StatusConflict {

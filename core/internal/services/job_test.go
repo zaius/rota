@@ -10,10 +10,10 @@ func newTestJobStore() *JobStore {
 }
 
 func (s *JobStore) put(id string, status JobStatus, startedAt time.Time) {
-	s.jobs[id] = &Job{ID: id, Kind: JobKindPoolHealthCheck, Status: status, StartedAt: startedAt}
+	s.jobs[id] = &Job{ID: id, Status: status, StartedAt: startedAt}
 }
 
-// A long-running health check must survive the TTL sweep, otherwise its status
+// A long-running bulk test must survive the TTL sweep, otherwise its status
 // endpoint starts reporting "not found" while it is still working.
 func TestJobStore_CleanupKeepsInFlightJobs(t *testing.T) {
 	s := newTestJobStore()
@@ -46,27 +46,5 @@ func TestJobStore_CleanupKeepsRecentFinishedJobs(t *testing.T) {
 
 	if _, ok := s.Get("recent"); !ok {
 		t.Fatal("expected a recently finished job to be retained")
-	}
-}
-
-func TestJobStore_ListByPoolIsNewestFirst(t *testing.T) {
-	s := newTestJobStore()
-	now := time.Now()
-	s.jobs["old"] = &Job{ID: "old", Kind: JobKindPoolHealthCheck, PoolID: 1, StartedAt: now.Add(-2 * time.Hour)}
-	s.jobs["new"] = &Job{ID: "new", Kind: JobKindPoolHealthCheck, PoolID: 1, StartedAt: now}
-	s.jobs["mid"] = &Job{ID: "mid", Kind: JobKindPoolHealthCheck, PoolID: 1, StartedAt: now.Add(-time.Hour)}
-	// A job in another pool must not appear.
-	s.jobs["other"] = &Job{ID: "other", Kind: JobKindPoolHealthCheck, PoolID: 2, StartedAt: now}
-
-	got := s.ListByPool(1)
-
-	want := []string{"new", "mid", "old"}
-	if len(got) != len(want) {
-		t.Fatalf("expected %d jobs for pool 1, got %d", len(want), len(got))
-	}
-	for i, id := range want {
-		if got[i].ID != id {
-			t.Fatalf("position %d: expected %q, got %q", i, id, got[i].ID)
-		}
 	}
 }

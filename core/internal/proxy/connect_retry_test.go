@@ -13,7 +13,6 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/pkg/logger"
 )
 
 type connectRequestStore struct {
@@ -54,21 +53,12 @@ func TestConnectWithRetry_RejectionRetriesOnceWithoutChargingProxy(t *testing.T)
 			for id := 1; id <= 5; id++ {
 				proxies = append(proxies, &models.Proxy{ID: id, Protocol: "http", Address: upstream.Listener.Addr().String()})
 			}
-			primary := newMethodSelector("roundrobin", proxies[:2]...)
-			fallback := newMethodSelector("roundrobin", proxies[2:]...)
-			primary.poolID, fallback.poolID = 10, 20
 			store := &connectRequestStore{records: make(chan events.RequestEvent, 20)}
-			chain := &PoolChain{
-				selectors:      []*PoolSelector{primary, fallback},
-				maxRetry:       5,
-				username:       "alice",
-				logger:         logger.New("error"),
-				targetResolver: ipv4TargetResolver{},
-				tracker:        NewUsageTracker(store, nil), // Target failures must never access the health DB.
-				failCounts:     map[int]int{1: 2, 2: 2, 3: 2, 4: 2, 5: 2},
-			}
+			r := newTestRotator(t, proxies...)
+			r.tracker = NewUsageTracker(store, nil) // Target failures must never access the health DB.
+			r.failCounts = map[int]int{1: 2, 2: 2, 3: 2, 4: 2, 5: 2}
 			for request := 1; request <= 3; request++ {
-				conn, binding, err := chain.ConnectWithRetry("target.example:443", context.Background(), nil, chain.logger)
+				conn, binding, err := r.ConnectWithRetry("target.example:443", requestCtx("", Options{Client: "alice"}))
 				if conn != nil || binding != nil || forwardingReason(err) != "upstream_connect_rejected" {
 					t.Fatalf("unexpected CONNECT result: %v %v %v", conn, binding, err)
 				}
@@ -80,25 +70,24 @@ func TestConnectWithRetry_RejectionRetriesOnceWithoutChargingProxy(t *testing.T)
 				if got := attempts.Load(); got != int32(2*request) {
 					t.Fatalf("%d CONNECT requests consumed %d upstream attempts", request, got)
 				}
-				// Both attempts stay in the main pool, on different proxies.
 				seen := map[int]bool{}
 				for range 2 {
 					event := store.next(t)
-					if event.Success || !event.TargetFailure || event.PoolID != 10 || event.Username != "alice" || event.Method != "CONNECT" || event.URL != "CONNECT://target.example:443" || !strings.Contains(event.Error, fmt.Sprint(status)) {
+					if event.Success || !event.TargetFailure || event.PoolID != 0 || event.Username != "alice" || event.Method != "CONNECT" || event.URL != "CONNECT://target.example:443" || !strings.Contains(event.Error, fmt.Sprint(status)) {
 						t.Fatalf("incorrect target rejection record: %+v", event)
 					}
 					seen[event.ProxyID] = true
 				}
-				if !seen[1] || !seen[2] {
+				if len(seen) != 2 {
 					t.Fatalf("retry reused a proxy: %v", seen)
 				}
 			}
-			if proxyCount(primary) != 2 || proxyCount(fallback) != 3 || fallback.rrIdx != 0 {
-				t.Fatal("CONNECT rejection evicted a proxy or consumed a fallback")
+			if proxyCount(r) != 5 {
+				t.Fatal("CONNECT rejection evicted a proxy")
 			}
 			for id := 1; id <= 5; id++ {
-				if chain.failCounts[id] != 2 {
-					t.Fatalf("proxy %d failure streak changed: %d", id, chain.failCounts[id])
+				if r.failCounts[id] != 2 {
+					t.Fatalf("proxy %d failure streak changed: %d", id, r.failCounts[id])
 				}
 			}
 		})
@@ -112,15 +101,13 @@ func TestConnectWithRetry_RejectionWithoutSecondProxy(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 	}))
 	defer upstream.Close()
-	chain, selector := chainWithProxy(7)
-	selector.proxies[0].Address = upstream.Listener.Addr().String()
-	chain.targetResolver = ipv4TargetResolver{}
-	chain.failCounts[7] = 2
-	_, _, err := chain.ConnectWithRetry("target.example:443", context.Background(), nil, logger.New("error"))
+	r := newTestRotator(t, &models.Proxy{ID: 7, Protocol: "http", Address: upstream.Listener.Addr().String()})
+	r.failCounts[7] = 2
+	_, _, err := r.ConnectWithRetry("target.example:443", context.Background())
 	if forwardingReason(err) != "upstream_connect_rejected" || errors.Is(err, ErrNoProxyAvailable) {
 		t.Fatalf("got %q: %v", forwardingReason(err), err)
 	}
-	if proxyCount(selector) != 1 || chain.failCounts[7] != 2 {
+	if proxyCount(r) != 1 || r.failCounts[7] != 2 {
 		t.Fatal("CONNECT rejection changed proxy health")
 	}
 }
@@ -140,37 +127,22 @@ func TestConnectWithRetry_RejectionRetryRebindsSession(t *testing.T) {
 	}))
 	defer accepting.Close()
 
-	sm := NewSessionManager()
-	defer sm.Stop()
-	selector := &PoolSelector{
-		poolID:     10,
-		method:     "session",
-		sessionTTL: time.Minute,
-		sessionMgr: sm,
-		proxies: []*models.Proxy{
-			{ID: 1, Protocol: "http", Address: rejecting.Listener.Addr().String()},
-			{ID: 2, Protocol: "http", Address: accepting.Listener.Addr().String()},
-		},
-	}
+	r := newTestRotator(t,
+		&models.Proxy{ID: 1, Protocol: "http", Address: rejecting.Listener.Addr().String()},
+		&models.Proxy{ID: 2, Protocol: "http", Address: accepting.Listener.Addr().String()},
+	)
 	// Stop after capturing the events so the success skips the health DB.
 	store := &connectRequestStore{records: make(chan events.RequestEvent, 3), err: errors.New("test: skip health DB")}
-	chain := &PoolChain{
-		selectors:      []*PoolSelector{selector},
-		maxRetry:       5,
-		username:       "etl",
-		logger:         logger.New("error"),
-		targetResolver: ipv4TargetResolver{},
-		tracker:        NewUsageTracker(store, nil),
-		failCounts:     map[int]int{1: 2},
-	}
-	ctx := context.WithValue(ctxWithToken("etl-session-abc"), TargetHostContextKey, "target.example")
+	r.tracker = NewUsageTracker(store, nil)
+	r.failCounts[1] = 2
+	ctx := requestCtx("target.example", Options{Client: "etl", Session: "abc"})
 
 	// Bind the session to the rejecting proxy first.
-	if p, _, err := chain.pickProxy(ctx, nil); err != nil || p.ID != 1 {
+	if p, err := r.pick(ctx, nil); err != nil || p.ID != 1 {
 		t.Fatalf("session did not bind proxy 1: %v %v", p, err)
 	}
 
-	conn, binding, err := chain.ConnectWithRetry("target.example:443", ctx, nil, chain.logger)
+	conn, binding, err := r.ConnectWithRetry("target.example:443", ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,11 +154,11 @@ func TestConnectWithRetry_RejectionRetryRebindsSession(t *testing.T) {
 		t.Fatal("tunnel does not hold its session binding")
 	}
 	binding.Close()
-	sessions := sm.List()
+	sessions := r.sessions.List()
 	if len(sessions) != 1 || sessions[0].ProxyID != 2 || sessions[0].Scope != "target.example" {
 		t.Fatalf("session binding did not move to the serving proxy: %+v", sessions)
 	}
-	if proxyCount(selector) != 2 || chain.failCounts[1] != 2 {
+	if proxyCount(r) != 2 || r.failCounts[1] != 2 {
 		t.Fatal("rejection struck the first proxy")
 	}
 	records := map[int]events.RequestEvent{}
@@ -199,7 +171,7 @@ func TestConnectWithRetry_RejectionRetryRebindsSession(t *testing.T) {
 	}
 
 	// The session now goes straight to the proxy that served it.
-	conn, binding, err = chain.ConnectWithRetry("target.example:443", ctx, nil, chain.logger)
+	conn, binding, err = r.ConnectWithRetry("target.example:443", ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,25 +214,21 @@ func TestConnectWithRetry_ProxyFailureRetriesAndChargesProxy(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer good.Close()
-			primary := newMethodSelector("roundrobin", &models.Proxy{ID: 1, Protocol: "http", Address: badAddress})
-			fallback := newMethodSelector("roundrobin", &models.Proxy{ID: 2, Protocol: "http", Address: good.Listener.Addr().String()})
-			fallback.poolID = 20
+			r := newTestRotator(t,
+				&models.Proxy{ID: 1, Protocol: "http", Address: badAddress},
+				&models.Proxy{ID: 2, Protocol: "http", Address: good.Listener.Addr().String()},
+			)
 			// Stop after capturing the events: this test exercises retry accounting,
 			// while database state updates for transport failures are unchanged.
 			store := &connectRequestStore{records: make(chan events.RequestEvent, 2), err: errors.New("test: skip health DB")}
-			chain := &PoolChain{
-				selectors:  []*PoolSelector{primary, fallback},
-				maxRetry:   5,
-				logger:     logger.New("error"),
-				tracker:    NewUsageTracker(store, nil),
-				failCounts: map[int]int{1: 2, 2: 2},
-			}
-			conn, binding, err := chain.ConnectWithRetry("192.0.2.1:443", context.Background(), nil, chain.logger)
+			r.tracker = NewUsageTracker(store, nil)
+			r.failCounts = map[int]int{1: 2, 2: 2}
+			conn, binding, err := r.ConnectWithRetry("192.0.2.1:443", context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			if binding.ProxyID != 2 || binding.PoolID != 20 || proxyCount(primary) != 0 || chain.failCounts[2] != 0 {
+			if binding.ProxyID != 2 || proxyCount(r) != 1 || r.failCounts[2] != 0 {
 				t.Fatalf("transport failure did not evict/retry, or success did not reset streak: %+v", binding)
 			}
 			records := map[int]events.RequestEvent{}

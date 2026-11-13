@@ -2,9 +2,7 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
 	"os"
-	"reflect"
 	"strconv"
 	"testing"
 
@@ -60,7 +58,7 @@ func testDB(t *testing.T) *database.DB {
 func cleanTables(t *testing.T, db *database.DB) {
 	t.Helper()
 	_, err := db.Pool.Exec(context.Background(),
-		`TRUNCATE pool_proxies, pool_geo_filters, pool_isp_filters, pool_tag_filters, proxy_pools, proxies RESTART IDENTITY CASCADE`)
+		`TRUNCATE proxies RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("clean: %v", err)
 	}
@@ -128,125 +126,12 @@ func TestIntegration_Upsert_CreatesThenUpdates(t *testing.T) {
 	}
 }
 
-func TestIntegration_AddProxies_BatchDedupes(t *testing.T) {
-	db := testDB(t)
-	cleanTables(t, db)
-	proxyRepo := NewProxyRepository(db)
-	poolRepo := NewPoolRepository(db)
-	ctx := context.Background()
-
-	pool, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "p1", RotationMethod: "roundrobin", StickCount: 1})
-	if err != nil {
-		t.Fatalf("create pool: %v", err)
-	}
-
-	var ids []int
-	for i := 0; i < 4; i++ {
-		p, err := proxyRepo.Create(ctx, models.CreateProxyRequest{Address: "10.0.0." + strconv.Itoa(i) + ":80", Protocol: "http"})
-		if err != nil {
-			t.Fatalf("create proxy %d: %v", i, err)
-		}
-		ids = append(ids, p.ID)
-	}
-
-	if err := poolRepo.AddProxies(ctx, pool.ID, ids[:3]); err != nil {
-		t.Fatalf("add first batch: %v", err)
-	}
-	// Overlapping batch must not error (ON CONFLICT DO NOTHING) and must dedupe.
-	if err := poolRepo.AddProxies(ctx, pool.ID, ids[1:]); err != nil {
-		t.Fatalf("add overlapping batch: %v", err)
-	}
-
-	var count int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pool_proxies WHERE pool_id=$1`, pool.ID).Scan(&count); err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if count != 4 {
-		t.Fatalf("expected 4 members after dedupe, got %d", count)
-	}
-}
-
-func TestIntegration_SyncPoolByFilters_RebuildsMembership(t *testing.T) {
-	db := testDB(t)
-	cleanTables(t, db)
-	poolRepo := NewPoolRepository(db)
-	ctx := context.Background()
-
-	// Two US proxies, one DE proxy.
-	mustProxy(t, db, "us1:80", "US")
-	mustProxy(t, db, "us2:80", "US")
-	deID := mustProxy(t, db, "de1:80", "DE")
-
-	pool, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "us-pool", RotationMethod: "roundrobin", StickCount: 1, SyncMode: "auto"})
-	if err != nil {
-		t.Fatalf("create pool: %v", err)
-	}
-	if err := poolRepo.SetGeoFilters(ctx, pool.ID, []models.GeoFilter{{CountryCode: "US"}}); err != nil {
-		t.Fatalf("set geo filters: %v", err)
-	}
-
-	total, newIDs, err := poolRepo.SyncPoolByFilters(ctx, *pool)
-	if err != nil {
-		t.Fatalf("sync: %v", err)
-	}
-	if total != 2 || len(newIDs) != 2 {
-		t.Fatalf("expected 2 members (both new), got total=%d new=%d", total, len(newIDs))
-	}
-
-	// The DE proxy must not be a member.
-	var isMember bool
-	if err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pool_proxies WHERE pool_id=$1 AND proxy_id=$2)`, pool.ID, deID).Scan(&isMember); err != nil {
-		t.Fatalf("member check: %v", err)
-	}
-	if isMember {
-		t.Fatal("DE proxy should not be in the US pool")
-	}
-
-	// Re-sync is idempotent: same membership, and nothing reported as newly added.
-	total2, newIDs2, err := poolRepo.SyncPoolByFilters(ctx, *pool)
-	if err != nil {
-		t.Fatalf("re-sync: %v", err)
-	}
-	if total2 != 2 || len(newIDs2) != 0 {
-		t.Fatalf("re-sync should be idempotent, got total=%d new=%d", total2, len(newIDs2))
-	}
-}
-
-func TestIntegration_SetGeoFilters_ReplacesAtomically(t *testing.T) {
-	db := testDB(t)
-	cleanTables(t, db)
-	poolRepo := NewPoolRepository(db)
-	ctx := context.Background()
-
-	pool, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "p", RotationMethod: "roundrobin", StickCount: 1})
-	if err != nil {
-		t.Fatalf("create pool: %v", err)
-	}
-
-	if err := poolRepo.SetGeoFilters(ctx, pool.ID, []models.GeoFilter{{CountryCode: "US"}, {CountryCode: "DE"}}); err != nil {
-		t.Fatalf("set 1: %v", err)
-	}
-	if err := poolRepo.SetGeoFilters(ctx, pool.ID, []models.GeoFilter{{CountryCode: "FR"}}); err != nil {
-		t.Fatalf("set 2: %v", err)
-	}
-
-	got, err := poolRepo.GetGeoFilters(ctx, pool.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if len(got) != 1 || got[0].CountryCode != "FR" {
-		t.Fatalf("expected only FR after replace, got %+v", got)
-	}
-}
-
-// Covers the queries moved out of the handler/service layer into the
-// repository (ListAll, ListUngeotaggedAddresses, UpdateGeo, UpdateStatus, and
-// the pool filter-builder's ListKnownISPs/ListKnownTags).
+// Covers ListAll, ListUngeotaggedAddresses, UpdateGeo, ListTags and
+// RecordCheckResult.
 func TestIntegration_ProxyRepoMethods(t *testing.T) {
 	db := testDB(t)
 	cleanTables(t, db)
 	proxyRepo := NewProxyRepository(db)
-	poolRepo := NewPoolRepository(db)
 	ctx := context.Background()
 
 	// Two ungeotagged proxies (one tagged), one already-geotagged.
@@ -286,16 +171,10 @@ func TestIntegration_ProxyRepoMethods(t *testing.T) {
 		t.Fatalf("after UpdateGeo expected 1 ungeotagged, got %d", len(ungeo2))
 	}
 
-	// ListKnownISPs (pool filter-builder) sees the ISP we just wrote.
-	isps, err := poolRepo.ListKnownISPs(ctx, "cloud")
-	if err != nil || len(isps) != 1 || isps[0] != "Cloudflare" {
-		t.Fatalf("ListKnownISPs: got %v (err %v), want [Cloudflare]", isps, err)
-	}
-
-	// ListKnownTags returns the distinct tags.
-	tags, err := poolRepo.ListKnownTags(ctx)
+	// ListTags returns the distinct tags.
+	tags, err := proxyRepo.ListTags(ctx)
 	if err != nil {
-		t.Fatalf("ListKnownTags: %v", err)
+		t.Fatalf("ListTags: %v", err)
 	}
 	if len(tags) != 2 {
 		t.Fatalf("expected 2 distinct tags, got %d (%v)", len(tags), tags)
@@ -364,101 +243,6 @@ func mustProxy(t *testing.T, db *database.DB, address, country string) int {
 	return id
 }
 
-// mustPool inserts a bare pool row and returns its id.
-func mustPool(t *testing.T, db *database.DB, name string) int {
-	t.Helper()
-	var id int
-	err := db.Pool.QueryRow(context.Background(),
-		`INSERT INTO proxy_pools (name) VALUES ($1) RETURNING id`, name).Scan(&id)
-	if err != nil {
-		t.Fatalf("insert pool %s: %v", name, err)
-	}
-	return id
-}
-
-// PUT /proxy-users must be a partial update: fields absent from the JSON
-// document keep their current values, explicit null clears. A bare
-// {"enabled":...} toggle (as the dashboard sends) must not wipe pool
-// assignments — it used to.
-func TestIntegration_UserUpdate_PartialFields(t *testing.T) {
-	db := testDB(t)
-	cleanTables(t, db)
-	repo := NewUserRepository(db)
-	ctx := context.Background()
-
-	p1 := mustPool(t, db, "main-pool")
-	p2 := mustPool(t, db, "fallback-pool")
-
-	created, err := repo.Create(ctx, models.CreateProxyUserRequest{
-		Username:        "alice",
-		Password:        "alicepw123",
-		Enabled:         true,
-		MainPoolID:      &p1,
-		FallbackPoolIDs: []int{p2},
-	})
-	if err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	// update decodes a wire document and applies it, mirroring the handler.
-	update := func(doc string) *models.ProxyUser {
-		t.Helper()
-		var req models.UpdateProxyUserRequest
-		if err := json.Unmarshal([]byte(doc), &req); err != nil {
-			t.Fatalf("unmarshal %s: %v", doc, err)
-		}
-		u, err := repo.Update(ctx, created.ID, req)
-		if err != nil || u == nil {
-			t.Fatalf("update %s: %v", doc, err)
-		}
-		return u
-	}
-
-	// A bare toggle keeps every other field.
-	u := update(`{"enabled":false}`)
-	if u.Enabled {
-		t.Error("toggle: enabled should be false")
-	}
-	if u.MainPoolID == nil || *u.MainPoolID != p1 {
-		t.Errorf("toggle: main_pool_id wiped, got %v want %d", u.MainPoolID, p1)
-	}
-	if len(u.FallbackPoolIDs) != 1 || u.FallbackPoolIDs[0] != p2 {
-		t.Errorf("toggle: fallback_pool_ids wiped, got %v want [%d]", u.FallbackPoolIDs, p2)
-	}
-
-	// Explicit null clears the main pool; omitted fallbacks stay.
-	u = update(`{"main_pool_id":null}`)
-	if u.MainPoolID != nil {
-		t.Errorf("null: main_pool_id should be cleared, got %v", *u.MainPoolID)
-	}
-	if len(u.FallbackPoolIDs) != 1 {
-		t.Errorf("null: fallback_pool_ids should be kept, got %v", u.FallbackPoolIDs)
-	}
-
-	// Explicit values apply; explicit empty list clears.
-	u = update(`{"main_pool_id":` + strconv.Itoa(p2) + `,"fallback_pool_ids":[]}`)
-	if u.MainPoolID == nil || *u.MainPoolID != p2 {
-		t.Errorf("set: main_pool_id got %v want %d", u.MainPoolID, p2)
-	}
-	if len(u.FallbackPoolIDs) != 0 {
-		t.Errorf("set: fallback_pool_ids should be empty, got %v", u.FallbackPoolIDs)
-	}
-
-	// tls_profile round-trips and follows the same omitted-keeps rule. It
-	// starts at the column default because Create was given no profile.
-	if created.TLSProfile != "" {
-		t.Errorf("create: tls_profile got %q want \"\"", created.TLSProfile)
-	}
-	u = update(`{"tls_profile":"ios-18"}`)
-	if u.TLSProfile != "ios-18" {
-		t.Errorf("set: tls_profile got %q want %q", u.TLSProfile, "ios-18")
-	}
-	u = update(`{"enabled":true}`)
-	if u.TLSProfile != "ios-18" {
-		t.Errorf("keep: tls_profile got %q want %q", u.TLSProfile, "ios-18")
-	}
-}
-
 // ApplyRequestStats denormalizes event-derived aggregates onto proxies:
 // listed proxies get the new numbers, unlisted proxies are zeroed (the
 // columns mean "within the event window"), and a second identical apply
@@ -515,122 +299,5 @@ func TestIntegration_ApplyRequestStats(t *testing.T) {
 	}
 	if written != 0 {
 		t.Errorf("repeat apply: want 0 rows written, got %d", written)
-	}
-}
-
-func TestIntegration_SyncPoolByFilters_AllCountries(t *testing.T) {
-	db := testDB(t)
-	cleanTables(t, db)
-	poolRepo := NewPoolRepository(db)
-	ctx := context.Background()
-
-	usID := mustProxy(t, db, "us1:80", "US")
-	deID := mustProxy(t, db, "de1:80", "DE")
-	// A proxy whose geo lookup hasn't landed yet.
-	var unknownID int
-	if err := db.Pool.QueryRow(ctx,
-		`INSERT INTO proxies (address, protocol, status) VALUES ('x1:80','http','active') RETURNING id`).Scan(&unknownID); err != nil {
-		t.Fatalf("insert ungeotagged proxy: %v", err)
-	}
-
-	pool, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "everything", RotationMethod: "roundrobin", StickCount: 1, SyncMode: "auto"})
-	if err != nil {
-		t.Fatalf("create pool: %v", err)
-	}
-	if err := poolRepo.SetGeoFilters(ctx, pool.ID, []models.GeoFilter{{CountryCode: models.GeoFilterAllCountries}}); err != nil {
-		t.Fatalf("set geo filters: %v", err)
-	}
-
-	total, newIDs, err := poolRepo.SyncPoolByFilters(ctx, *pool)
-	if err != nil {
-		t.Fatalf("sync: %v", err)
-	}
-	if total != 3 || len(newIDs) != 3 {
-		t.Fatalf("wildcard should take every proxy, got total=%d new=%d", total, len(newIDs))
-	}
-
-	// A proxy that shows up later, in a country nobody picked, joins on the
-	// next sync without touching the filters.
-	frID := mustProxy(t, db, "fr1:80", "FR")
-	total, newIDs, err = poolRepo.SyncPoolByFilters(ctx, *pool)
-	if err != nil {
-		t.Fatalf("re-sync: %v", err)
-	}
-	if total != 4 || len(newIDs) != 1 || newIDs[0] != frID {
-		t.Fatalf("expected the FR proxy to be the one new member, got total=%d new=%v", total, newIDs)
-	}
-
-	// Narrowing back to one country drops the rest.
-	if err := poolRepo.SetGeoFilters(ctx, pool.ID, []models.GeoFilter{{CountryCode: "US"}}); err != nil {
-		t.Fatalf("narrow filters: %v", err)
-	}
-	total, _, err = poolRepo.SyncPoolByFilters(ctx, *pool)
-	if err != nil {
-		t.Fatalf("narrowed sync: %v", err)
-	}
-	if total != 1 {
-		t.Fatalf("expected 1 member after narrowing to US, got %d", total)
-	}
-	for _, tc := range []struct {
-		id   int
-		want bool
-	}{{usID, true}, {deID, false}, {unknownID, false}, {frID, false}} {
-		var isMember bool
-		if err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pool_proxies WHERE pool_id=$1 AND proxy_id=$2)`, pool.ID, tc.id).Scan(&isMember); err != nil {
-			t.Fatalf("member check: %v", err)
-		}
-		if isMember != tc.want {
-			t.Errorf("proxy %d membership = %v, want %v", tc.id, isMember, tc.want)
-		}
-	}
-}
-
-func TestIntegration_AttachFilters_LoadsEveryKind(t *testing.T) {
-	db := testDB(t)
-	cleanTables(t, db)
-	poolRepo := NewPoolRepository(db)
-	ctx := context.Background()
-
-	poolA, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "a", RotationMethod: "roundrobin", StickCount: 1})
-	if err != nil {
-		t.Fatalf("create a: %v", err)
-	}
-	poolB, err := poolRepo.Create(ctx, models.CreatePoolRequest{Name: "b", RotationMethod: "roundrobin", StickCount: 1})
-	if err != nil {
-		t.Fatalf("create b: %v", err)
-	}
-	a, b := poolA.ID, poolB.ID
-	if err := poolRepo.SetGeoFilters(ctx, a, []models.GeoFilter{{CountryCode: "US"}, {CountryCode: "DE", CityName: "Berlin"}}); err != nil {
-		t.Fatalf("geo: %v", err)
-	}
-	if err := poolRepo.SetISPFilters(ctx, a, []string{"Comcast"}); err != nil {
-		t.Fatalf("isp: %v", err)
-	}
-	if err := poolRepo.SetTagFilters(ctx, b, []string{"resi"}); err != nil {
-		t.Fatalf("tag: %v", err)
-	}
-
-	pools, err := poolRepo.List(ctx)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	ptrs := make([]*models.ProxyPool, len(pools))
-	for i := range pools {
-		ptrs[i] = &pools[i]
-	}
-	if err := poolRepo.AttachFilters(ctx, ptrs...); err != nil {
-		t.Fatalf("attach: %v", err)
-	}
-	byID := map[int]models.ProxyPool{}
-	for _, p := range pools {
-		byID[p.ID] = p
-	}
-
-	wantGeo := []models.GeoFilter{{CountryCode: "DE", CityName: "Berlin"}, {CountryCode: "US"}}
-	if got := byID[a]; !reflect.DeepEqual(got.GeoFilters, wantGeo) || !reflect.DeepEqual(got.ISPFilters, []string{"Comcast"}) || got.TagFilters != nil {
-		t.Fatalf("pool a filters = geo %#v isp %#v tag %#v", got.GeoFilters, got.ISPFilters, got.TagFilters)
-	}
-	if got := byID[b]; got.GeoFilters != nil || got.ISPFilters != nil || !reflect.DeepEqual(got.TagFilters, []string{"resi"}) {
-		t.Fatalf("pool b filters = geo %#v isp %#v tag %#v", got.GeoFilters, got.ISPFilters, got.TagFilters)
 	}
 }

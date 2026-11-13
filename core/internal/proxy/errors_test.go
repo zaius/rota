@@ -72,14 +72,12 @@ func TestProxyHandler_UpstreamStatuses(t *testing.T) {
 				defer upstream.Close()
 				p := &models.Proxy{ID: 42, Protocol: "http", Address: upstream.Listener.Addr().String()}
 				t.Cleanup(func() { InvalidateTransport(p) })
-				chain := &PoolChain{maxRetry: 1, selectors: []*PoolSelector{newMethodSelector("roundrobin", p)}, targetResolver: ipv4TargetResolver{}}
 				target := "http://example.com/path"
 				if method == http.MethodConnect {
 					target = "example.com:443"
 				}
 				req := httptest.NewRequest(method, target, nil)
-				req = req.WithContext(context.WithValue(req.Context(), UserChainContextKey, chain))
-				h := NewUpstreamProxyHandler(nil, nil, logger.New("error"))
+				h := NewUpstreamProxyHandler(newTestRotator(t, p), nil, logger.New("error"))
 				w := httptest.NewRecorder()
 				if method == http.MethodConnect {
 					h.HandleConnectRequest(w, req)
@@ -117,22 +115,6 @@ func TestWriteGatewayError_InsideInspectedTunnel(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != 592 || resp.Header.Get(ProxyErrorHeader) != forwardingReason(cause) || !resp.Close {
 			t.Fatalf("incorrect tunneled error: %+v", resp)
-		}
-	}
-}
-
-func TestProxyHandler_MissingChainIsInternalError(t *testing.T) {
-	h := NewUpstreamProxyHandler(nil, nil, logger.New("error"))
-	for _, method := range []string{http.MethodGet, http.MethodConnect} {
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest(method, "example.com:443", nil)
-		if method == http.MethodConnect {
-			h.HandleConnectRequest(w, req)
-		} else {
-			h.HandleHTTPRequest(w, req)
-		}
-		if w.Code != 500 || w.Header().Get(ProxyErrorHeader) != "rota_internal_error" {
-			t.Fatalf("got %d %v", w.Code, w.Header())
 		}
 	}
 }

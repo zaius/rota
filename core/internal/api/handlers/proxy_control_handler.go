@@ -7,8 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,9 +24,8 @@ import (
 type ProxyServer interface {
 	ReloadSettings(ctx context.Context) error
 	EvictProxy(proxyID int)
-	InvalidateUser(username string)
 	ListSessions() []proxy.SessionInfo
-	SessionsForToken(token string) []proxy.SessionInfo
+	FindSessions(filter proxy.SessionFilter) []proxy.SessionInfo
 	ReleaseSessions(filter proxy.SessionFilter) int
 	SetDomainCooldown(c models.ProxyDomainCooldown)
 	ClearDomainCooldown(proxyID int, domain string) bool
@@ -38,24 +37,12 @@ type ProxyServer interface {
 	OpenTunnels() int64
 }
 
-// ProxyUserFrom returns the proxy user the request was authenticated as (set
-// by the API's JWT-or-proxy-user middleware under models.ProxyUserContextKey),
-// or nil for admin (JWT) requests. When present, control handlers scope their
-// effects to that user's own pools.
-func ProxyUserFrom(ctx context.Context) *models.ProxyUser {
-	u, _ := ctx.Value(models.ProxyUserContextKey).(*models.ProxyUser)
-	return u
-}
-
 // ProxyControlHandler serves the live proxy-control endpoints (reload,
-// invalidate/reactivate, session and domain-cooldown management). These act on
-// the running proxy server via the ProxyServer interface plus the proxy repo,
-// so they previously lived on the API Server itself; they are extracted here so
-// api.Server holds no HTTP handlers of its own.
+// invalidate/reactivate, session and domain-cooldown management, export).
+// These act on the running proxy server via the ProxyServer interface plus the
+// proxy repo.
 type ProxyControlHandler struct {
 	proxyRepo   proxyControlRepository
-	poolRepo    *repository.PoolRepository
-	exportPools workingProxySource
 	logger      *logger.Logger
 	proxyServer ProxyServer
 	// Keep database commits and their live updates in the same order.
@@ -63,6 +50,7 @@ type ProxyControlHandler struct {
 }
 
 type proxyControlRepository interface {
+	WorkingProxies(ctx context.Context, country string, tags []string, limit int, all bool) ([]models.Proxy, error)
 	SetCooldown(context.Context, int, time.Duration, string) (*models.Proxy, error)
 	SetDomainCooldown(context.Context, int, string, time.Time, string) (*models.Proxy, models.ProxyDomainCooldown, error)
 	BackoffScopeCooldown(context.Context, int, string, time.Duration, string) (*models.Proxy, models.ProxyScopeCooldown, error)
@@ -76,35 +64,19 @@ type proxyControlRepository interface {
 // NewProxyControlHandler creates a ProxyControlHandler. The proxy server
 // reference is attached later via SetProxyServer, since it is constructed after
 // the API server.
-func NewProxyControlHandler(proxyRepo *repository.ProxyRepository, poolRepo *repository.PoolRepository, log *logger.Logger) *ProxyControlHandler {
-	return &ProxyControlHandler{proxyRepo: proxyRepo, poolRepo: poolRepo, exportPools: poolRepo, logger: log}
+func NewProxyControlHandler(proxyRepo *repository.ProxyRepository, log *logger.Logger) *ProxyControlHandler {
+	return &ProxyControlHandler{proxyRepo: proxyRepo, logger: log}
 }
 
-// workingProxySource lists a pool's proxies for export.
-type workingProxySource interface {
-	GetByID(ctx context.Context, id int) (*models.ProxyPool, error)
-	WorkingProxies(ctx context.Context, poolID, limit int, all bool) ([]models.Proxy, error)
-}
-
-// ExportWorkingProxies lists one pool's proxies as plain text, one per line,
-// credentials included, for clients that connect to upstream proxies
-// directly. Proxy users need allow_proxy_export and may only read their own
-// pools, their main pool by default; admins must name a pool.
+// ExportWorkingProxies lists proxies as plain text, one per line, credentials
+// included, for clients that connect to upstream proxies directly.
 //
-// Query: pool (ID), limit, status (active — the default, active and outside a
-// cooldown — or all), format (url — protocol://user:pass@host:port, the
-// default — or colon — host:port:user:pass).
+// Query: country, tag (repeatable; all must match), limit, status (active — the
+// default, active and outside a cooldown — or all), format (url —
+// protocol://user:pass@host:port, the default — or colon —
+// host:port:user:pass).
 func (h *ProxyControlHandler) ExportWorkingProxies(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	var poolID int
-	if v := q.Get("pool"); v != "" {
-		id, err := strconv.Atoi(v)
-		if err != nil || id <= 0 {
-			writeError(w, http.StatusBadRequest, "pool must be a pool ID")
-			return
-		}
-		poolID = id
-	}
 	limit := 0
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -125,42 +97,9 @@ func (h *ProxyControlHandler) ExportWorkingProxies(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if pu := ProxyUserFrom(r.Context()); pu != nil {
-		if !pu.AllowProxyExport {
-			writeError(w, http.StatusForbidden, "proxy export is not enabled for this user")
-			return
-		}
-		if poolID == 0 {
-			if pu.MainPoolID == nil {
-				writeError(w, http.StatusBadRequest, "pool is required: this user has no main pool")
-				return
-			}
-			poolID = *pu.MainPoolID
-		}
-		if !slices.Contains(pu.PoolIDs(), poolID) {
-			writeError(w, http.StatusForbidden, "pool is not in your pools")
-			return
-		}
-	} else {
-		if poolID == 0 {
-			writeError(w, http.StatusBadRequest, "pool is required")
-			return
-		}
-		pool, err := h.exportPools.GetByID(r.Context(), poolID)
-		if err != nil {
-			h.logger.Error("failed to get pool", "pool_id", poolID, "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to get pool")
-			return
-		}
-		if pool == nil {
-			writeError(w, http.StatusNotFound, "pool not found")
-			return
-		}
-	}
-
-	proxies, err := h.exportPools.WorkingProxies(r.Context(), poolID, limit, status == "all")
+	proxies, err := h.proxyRepo.WorkingProxies(r.Context(), strings.ToUpper(q.Get("country")), q["tag"], limit, status == "all")
 	if err != nil {
-		h.logger.Error("failed to list working proxies", "pool_id", poolID, "error", err)
+		h.logger.Error("failed to list working proxies", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list proxies")
 		return
 	}
@@ -363,28 +302,14 @@ func cooldownExpiry(until time.Time, invalid bool) *time.Time {
 	return &until
 }
 
-// proxyInCallerScope reports whether a proxy-user-authenticated caller may act
-// on the given proxy: it must be a member of one of the caller's pools. Admin
-// (JWT) callers are always in scope.
-func (h *ProxyControlHandler) proxyInCallerScope(r *http.Request, proxyID int) (bool, error) {
-	pu := ProxyUserFrom(r.Context())
-	if pu == nil {
-		return true, nil
-	}
-	return h.poolRepo.ProxyInPools(r.Context(), proxyID, pu.PoolIDs())
-}
-
 // InvalidateProxy marks a proxy as temporarily out of rotation (e.g. when the
 // client detects it has been rate-limited). It sets a DB cooldown and evicts the
 // proxy from live rotation immediately, rebinding any sessions that were using it.
 // When a domain is supplied the cooldown is scoped to that domain (and its
 // subdomains) only: the proxy keeps serving every other target.
 //
-// Callers authenticated as a proxy user (Basic auth) may only invalidate
-// proxies that belong to one of their own pools.
-//
 //	@Summary		Invalidate a proxy
-//	@Description	Pull a proxy out of rotation for a cooldown period (rate-limited, etc.). Pass "domain" to only invalidate it for that domain and its subdomains, keeping it available for other targets. Authenticates with an admin JWT or proxy-user Basic credentials (scoped to the user's pools).
+//	@Description	Pull a proxy out of rotation for a cooldown period (rate-limited, etc.). Pass "domain" to only invalidate it for that domain and its subdomains, keeping it available for other targets.
 //	@Tags			proxies
 //	@Param			id		path	int		true	"Proxy ID"
 //	@Param			minutes	body	int		false	"Positive cooldown minutes (default 30)"
@@ -410,17 +335,6 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	allowed, err := h.proxyInCallerScope(r, id)
-	if err != nil {
-		h.logger.Error("failed to check proxy pool membership", "id", id, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to invalidate proxy")
-		return
-	}
-	if !allowed {
-		writeError(w, http.StatusForbidden, "proxy is not in your pools")
-		return
-	}
-
 	payload, status, msg := h.applyInvalidation(r.Context(), id, body)
 	if status != http.StatusOK {
 		writeError(w, status, msg)
@@ -438,12 +352,10 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 // global explicitly cools the proxy across all targets and drops all bindings.
 //
 //	@Summary		Invalidate the proxy bound to a session
-//	@Description	Cool each bound proxy in its reservation scope by default. domain and global override cooldown scope. Filter bindings by pool_id, scope, or username (admin). Proxy users only match their own bindings in assigned pools. minutes sets the base duration (default 30); consecutive invalidations use 1x, 2x, 4x, then exclude until reactivated. Resumed traffic without invalidation for the session idle-expiry duration resets the streak.
+//	@Description	Cool each bound proxy in its reservation scope by default. domain and global override cooldown scope. scope restricts which bindings match. minutes sets the base duration (default 30); consecutive invalidations use 1x, 2x, 4x, then exclude until reactivated. Resumed traffic without invalidation for the session TTL resets the streak.
 //	@Tags			sessions
 //	@Param			token	body	string	true	"Session token"
-//	@Param			pool_id	body	int		false	"Restrict to a single pool"
 //	@Param			scope	body	string	false	"Restrict to a reservation scope"
-//	@Param			username	body	string	false	"Restrict to a session owner (admin)"
 //	@Param			minutes	body	int		false	"Positive cooldown minutes (default 30)"
 //	@Param			reason	body	string	false	"Why the proxy was invalidated"
 //	@Param			domain	body	string	false	"Scope the cooldown to this domain"
@@ -453,10 +365,8 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 //	@Router			/sessions/invalidate [post]
 func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Token    string `json:"token"`
-		PoolID   *int   `json:"pool_id"`
-		Scope    string `json:"scope"`
-		Username string `json:"username"`
+		Token string `json:"token"`
+		Scope string `json:"scope"`
 		invalidateBody
 	}
 	body.Minutes = 30
@@ -473,44 +383,12 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	sessions := h.proxyServer.SessionsForToken(body.Token)
-	reservationScope := proxy.NormalizeSessionScope(body.Scope)
-	if body.Scope != "" && reservationScope == "" {
+	scope := proxy.NormalizeSessionScope(body.Scope)
+	if body.Scope != "" && scope == "" {
 		writeError(w, http.StatusBadRequest, "invalid reservation scope")
 		return
 	}
-	filtered := sessions[:0]
-	for _, s := range sessions {
-		if (reservationScope == "" || s.Scope == reservationScope) && (body.Username == "" || s.Username == body.Username) {
-			filtered = append(filtered, s)
-		}
-	}
-	sessions = filtered
-	if body.PoolID != nil {
-		filtered := sessions[:0]
-		for _, s := range sessions {
-			if s.PoolID == *body.PoolID {
-				filtered = append(filtered, s)
-			}
-		}
-		sessions = filtered
-	}
-	// Proxy-user callers only see their own sessions in their assigned pools. Out-of-scope
-	// bindings are reported as missing, not as forbidden, so the endpoint
-	// does not leak other pools' session tokens.
-	if pu := ProxyUserFrom(r.Context()); pu != nil {
-		scope := make(map[int]bool)
-		for _, id := range pu.PoolIDs() {
-			scope[id] = true
-		}
-		filtered := sessions[:0]
-		for _, s := range sessions {
-			if scope[s.PoolID] && s.Username == pu.Username {
-				filtered = append(filtered, s)
-			}
-		}
-		sessions = filtered
-	}
+	sessions := h.proxyServer.FindSessions(proxy.SessionFilter{Token: body.Token, Scope: scope})
 	if len(sessions) == 0 {
 		writeError(w, http.StatusConflict, "no live session for token")
 		return
@@ -548,7 +426,6 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 			writeError(w, status, msg)
 			return
 		}
-		payload["pool_id"] = s.PoolID
 		invalidated = append(invalidated, payload)
 	}
 
@@ -731,23 +608,18 @@ func (h *ProxyControlHandler) ListSessions(w http.ResponseWriter, r *http.Reques
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": sessions})
 }
 
-// ReleaseSession drops bindings matching a token and optional pool/scope/owner.
-// Proxy-user callers can only release their own sessions in their assigned pools.
+// ReleaseSession drops the bindings of a token, in one scope or all of them.
 //
 //	@Summary		Release a sticky session
 //	@Tags			sessions
 //	@Param			token	body	string	true	"Session token"
-//	@Param			pool_id	body	int		false	"Restrict to a single pool"
 //	@Param			scope	body	string	false	"Restrict to a reservation scope"
-//	@Param			username	body	string	false	"Restrict to a session owner (admin)"
 //	@Success		200	{object}	map[string]interface{}
 //	@Router			/sessions/release [post]
 func (h *ProxyControlHandler) ReleaseSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Token    string `json:"token"`
-		PoolID   *int   `json:"pool_id"`
-		Scope    string `json:"scope"`
-		Username string `json:"username"`
+		Token string `json:"token"`
+		Scope string `json:"scope"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
 		writeError(w, http.StatusBadRequest, "token is required")
@@ -757,31 +629,13 @@ func (h *ProxyControlHandler) ReleaseSession(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusServiceUnavailable, "proxy server not available")
 		return
 	}
-
-	pu := ProxyUserFrom(r.Context())
-	if pu != nil && body.PoolID != nil {
-		inScope := false
-		for _, id := range pu.PoolIDs() {
-			if id == *body.PoolID {
-				inScope = true
-				break
-			}
-		}
-		if !inScope {
-			writeError(w, http.StatusForbidden, "pool is not in your pools")
-			return
-		}
+	scope := proxy.NormalizeSessionScope(body.Scope)
+	if body.Scope != "" && scope == "" {
+		writeError(w, http.StatusBadRequest, "invalid reservation scope")
+		return
 	}
 
-	filter := proxy.SessionFilter{Token: body.Token, Username: body.Username, Scope: proxy.NormalizeSessionScope(body.Scope)}
-	if pu != nil {
-		filter.Username = pu.Username
-		filter.PoolIDs = append([]int{}, pu.PoolIDs()...)
-	}
-	if body.PoolID != nil {
-		filter.PoolIDs = []int{*body.PoolID}
-	}
-	released := h.proxyServer.ReleaseSessions(filter)
+	released := h.proxyServer.ReleaseSessions(proxy.SessionFilter{Token: body.Token, Scope: scope})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

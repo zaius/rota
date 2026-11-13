@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bufio"
-	"context"
 	"io"
 	"net"
 	"net/http"
@@ -11,8 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/internal/tlsprofile"
 	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/google/uuid"
 )
@@ -22,16 +19,10 @@ import (
 // tracked and, if needed, invalidated by ID.
 const ProxyIDHeader = "X-Rota-Proxy-Id"
 
-// UpstreamProxyHandler forwards proxy requests through the PoolChain that
-// UserAuthMiddleware attaches to each request (always the authenticated proxy
-// user's chain — unauthenticated traffic is rejected before it gets here).
-// Request recording lives in the chain, which knows the serving pool, the
-// user, and per-attempt timing.
-//
-// settings is swapped by ReloadSettings concurrently with hot-path request
-// goroutines, so it is held in an atomic pointer and read via getSettings.
+// UpstreamProxyHandler forwards authenticated proxy requests through the
+// rotator, reading each request's options from its context.
 type UpstreamProxyHandler struct {
-	settings  atomic.Pointer[models.RotationSettings]
+	rotator   *Rotator
 	inspector *TLSInspector
 	logger    *logger.Logger
 
@@ -44,48 +35,12 @@ type UpstreamProxyHandler struct {
 
 // NewUpstreamProxyHandler creates a new upstream proxy handler. inspector may
 // be nil, in which case requests for TLS inspection fail before forwarding.
-func NewUpstreamProxyHandler(
-	settings *models.RotationSettings,
-	inspector *TLSInspector,
-	log *logger.Logger,
-) *UpstreamProxyHandler {
-	h := &UpstreamProxyHandler{
-		inspector: inspector,
-		logger:    log,
-	}
-	h.setSettings(settings)
-	return h
+func NewUpstreamProxyHandler(rotator *Rotator, inspector *TLSInspector, log *logger.Logger) *UpstreamProxyHandler {
+	return &UpstreamProxyHandler{rotator: rotator, inspector: inspector, logger: log}
 }
 
 // OpenTunnels returns the number of CONNECT tunnels currently established.
 func (h *UpstreamProxyHandler) OpenTunnels() int64 { return h.openTunnels.Load() }
-
-// tunnelTimeout is the per-operation timeout for an intercepted tunnel's
-// handshakes and upstream round trips, taken from rotation settings.
-func (h *UpstreamProxyHandler) tunnelTimeout() time.Duration {
-	if s := h.getSettings(); s != nil && s.Timeout > 0 {
-		return time.Duration(s.Timeout) * time.Second
-	}
-	return 90 * time.Second
-}
-
-// getSettings returns the current rotation settings snapshot.
-func (h *UpstreamProxyHandler) getSettings() *models.RotationSettings {
-	return h.settings.Load()
-}
-
-// setSettings atomically publishes new rotation settings.
-func (h *UpstreamProxyHandler) setSettings(s *models.RotationSettings) {
-	h.settings.Store(s)
-}
-
-// chainFromContext returns the PoolChain UserAuthMiddleware attached to the
-// request. A chain is always present in normal operation (unauthenticated
-// requests are rejected upstream); a missing chain indicates a routing bug.
-func chainFromContext(ctx context.Context) (*PoolChain, bool) {
-	chain, ok := ctx.Value(UserChainContextKey).(*PoolChain)
-	return chain, ok && chain != nil
-}
 
 // HandleHTTPRequest handles HTTP requests (non-CONNECT) and writes the proxied
 // response directly to w.
@@ -102,15 +57,7 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 
 	h.removeHopByHopHeaders(r)
 
-	reqCtx := r.Context()
-	chain, ok := chainFromContext(reqCtx)
-	if !ok {
-		h.logger.Error("no proxy chain on request", "request_id", requestID)
-		writeRotaError(w, http.StatusInternalServerError, "rota_internal_error", "no proxy chain on request")
-		return
-	}
-
-	resp, proxyID, err := chain.SendWithRetry(r, reqCtx, h.getSettings(), h.logger)
+	resp, proxyID, err := h.rotator.SendWithRetry(r, r.Context())
 	duration := int(time.Since(startTime).Milliseconds())
 	if err != nil {
 		h.logger.Error("proxy request failed",
@@ -144,36 +91,22 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		"host", host,
 	)
 
-	reqCtx := r.Context()
-	chain, ok := chainFromContext(reqCtx)
-	if !ok {
-		h.logger.Error("no proxy chain on CONNECT request", "host", host)
-		writeRotaError(w, http.StatusInternalServerError, "rota_internal_error", "no proxy chain on request")
-		return
+	// A profile requests inspection. Reject an unmet request before DNS, proxy
+	// selection, or session reservation can consume an upstream attempt.
+	opts := routeFrom(r.Context())
+	profile := opts.Profile
+	if profile != nil {
+		if reason, action := h.inspector.skipReason(host); reason != "" {
+			h.logger.Error("CONNECT rejected: requested TLS inspection is unavailable",
+				"source", "proxy", "client", opts.Client, "host", host,
+				"profile", profile.Name, "reason", reason, "action", action)
+			writeRotaError(w, StatusTLSInspectionUnavailable, reason,
+				"TLS inspection required for profile "+profile.Name+" but unavailable: "+action)
+			return
+		}
 	}
 
-	// Reject unmet inspection requirements before DNS, proxy selection, or
-	// session reservation can consume an upstream attempt.
-	profile := tlsProfileFor(reqCtx, chain)
-	skipReason, action := "tls_inspection_disabled", "Enable inspect_tls for this proxy user; a -profile- suffix only selects a fingerprint"
-	if chain.InspectTLS() {
-		skipReason, action = h.inspector.skipReason(host)
-	}
-	profileOverride, _ := reqCtx.Value(TLSProfileContextKey).(*tlsprofile.Profile)
-	// A stored profile stays dormant until the user opts in; an explicit
-	// connection override always requests a replacement TLS stack.
-	inspectionRequested := chain.InspectTLS() || profileOverride != nil
-	if skipReason != "" && inspectionRequested {
-		h.logger.Error("CONNECT rejected: requested TLS inspection is unavailable",
-			"source", "proxy", "username", chain.username, "host", host,
-			"profile", profile.Name, "inspect_tls", chain.InspectTLS(),
-			"reason", skipReason, "action", action)
-		writeRotaError(w, StatusTLSInspectionUnavailable, skipReason,
-			"TLS inspection required for profile "+profile.Name+" but unavailable: "+action)
-		return
-	}
-
-	upstreamConn, binding, err := chain.ConnectWithRetry(host, reqCtx, h.getSettings(), h.logger)
+	upstreamConn, binding, err := h.rotator.ConnectWithRetry(host, r.Context())
 	if err != nil {
 		h.logger.Error("CONNECT upstream failed",
 			"source", "proxy",
@@ -223,12 +156,12 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 		clientStream = &prefixConn{Conn: clientConn, prefix: buffered}
 	}
 
-	if skipReason == "" {
-		counts, requests, err := h.inspector.Serve(clientStream, upstreamConn, host, binding, profile, h.tunnelTimeout())
+	if profile != nil {
+		counts, requests, err := h.inspector.Serve(clientStream, upstreamConn, host, binding, profile, h.rotator.timeout())
 		binding.RecordClose(counts, requests, err)
 		if err != nil {
 			h.logger.Warn("tunnel interception failed",
-				"source", "proxy", "username", chain.username, "host", host,
+				"source", "proxy", "client", opts.Client, "host", host,
 				"profile", profile.Name, "error", err)
 		} else {
 			h.logger.Debug("intercepted tunnel closed",
@@ -242,23 +175,13 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 	// stream is still a raw socket, which is the common case — a read-ahead
 	// wrapper falls back to io.Copy. The payload is opaque, so bytes and
 	// lifetime are the only volume signal available; the CONNECT itself was
-	// already recorded by the chain.
+	// already recorded by the rotator.
 	counts, err := BidirectionalCopy(clientStream, upstreamConn, binding.touch)
 	binding.RecordClose(counts, 0, nil)
 
 	h.logger.Debug("tunnel closed",
 		"source", "proxy", "host", host,
 		"bytes_up", counts.BytesUp, "bytes_down", counts.BytesDown, "error", err)
-}
-
-// tlsProfileFor resolves which fingerprint to present on a tunnel: the
-// per-connection override from the proxy username if the client sent one,
-// otherwise the profile stored against the user.
-func tlsProfileFor(ctx context.Context, chain *PoolChain) *tlsprofile.Profile {
-	if override, ok := ctx.Value(TLSProfileContextKey).(*tlsprofile.Profile); ok && override != nil {
-		return override
-	}
-	return chain.TLSProfile()
 }
 
 // drainBuffered returns any bytes the HTTP server read past the CONNECT

@@ -7,9 +7,8 @@ import (
 )
 
 // SetScopeCooldown keeps other scopes' bindings intact. A cooled binding
-// reselects on its next request, including when it uses a fallback pool. Its
-// tunnels through the cooled proxy end, so a client holding one open sends
-// that request.
+// reselects on its next request. Its tunnels through the cooled proxy end, so
+// a client holding one open sends that request.
 func (m *SessionManager) SetScopeCooldown(c models.ProxyScopeCooldown) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

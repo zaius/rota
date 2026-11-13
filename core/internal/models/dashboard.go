@@ -33,8 +33,8 @@ type TunnelStats struct {
 	MeanConcurrency float64 `json:"mean_concurrency"`
 
 	// RequestsToday counts requests seen inside intercepted tunnels. It is 0
-	// when no proxy user has HTTPS interception enabled, which is the default
-	// — an opaque tunnel has no visible requests to count.
+	// when no client requests a TLS profile, which is the default — an opaque
+	// tunnel has no visible requests to count.
 	RequestsToday int64 `json:"requests_today"`
 }
 

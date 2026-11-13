@@ -2,17 +2,13 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/api/handlers"
-	"github.com/alpkeskin/rota/core/internal/authlimit"
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/internal/events"
 	"github.com/alpkeskin/rota/core/internal/proxy"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/services"
@@ -27,44 +23,35 @@ import (
 // constructs no repositories or background services.
 type Deps struct {
 	ProxyRepo         *repository.ProxyRepository
-	EventStore        events.Store
 	SettingsRepo      *repository.SettingsRepository
 	DashboardRepo     *repository.DashboardRepository
 	SourceRepo        *repository.SourceRepository
 	FormatHistoryRepo *repository.FormatHistoryRepository
-	PoolRepo          *repository.PoolRepository
-	UserRepo          *repository.UserRepository
-	AdminRepo         *repository.AdminRepository
 
-	SourceSvc *services.SourceService
-	PoolSvc   *services.PoolService
+	SourceSvc     *services.SourceService
+	HealthChecker *proxy.HealthChecker
 
 	// Metrics, when non-nil, is served at GET /metrics (Prometheus exposition
 	// format). It is nil when metrics are disabled.
-	Metrics     http.Handler
-	AuthLimiter *authlimit.Limiter
+	Metrics http.Handler
 }
 
 // Server represents the API server
 type Server struct {
-	router            *chi.Mux
-	server            *http.Server
-	logger            *logger.Logger
-	db                *database.DB
-	port              int
-	jwtSecret         string
-	corsOrigins       []string
-	webDir            string
-	trustProxyHeaders bool
-	authLimiter       *authlimit.Limiter
-	userRepo          proxyUserAuthenticator
-	metricsHTTP       http.Handler
+	router      *chi.Mux
+	server      *http.Server
+	logger      *logger.Logger
+	db          *database.DB
+	port        int
+	password    string
+	corsOrigins []string
+	webDir      string
+	metricsHTTP http.Handler
 
 	// Proxy server reference for reloading
 	proxyServer handlers.ProxyServer
 
 	// Handlers
-	authHandler          *handlers.AuthHandler
 	healthHandler        *handlers.HealthHandler
 	dashboardHandler     *handlers.DashboardHandler
 	proxyHandler         *handlers.ProxyHandler
@@ -72,8 +59,6 @@ type Server struct {
 	websocketHandler     *handlers.WebSocketHandler
 	sourceHandler        *handlers.SourceHandler
 	formatHistoryHandler *handlers.FormatHistoryHandler
-	poolHandler          *handlers.PoolHandler
-	userHandler          *handlers.UserHandler
 	proxyControlHandler  *handlers.ProxyControlHandler
 }
 
@@ -81,57 +66,24 @@ type Server struct {
 // only API-layer objects (handlers, middleware, HTTP server); repositories and
 // background services are owned by the composition root and passed in via deps.
 func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Server {
-	// Seed admin credentials from env on first start (no-op if already seeded)
-	if err := deps.AdminRepo.Seed(context.Background(), cfg.AdminUser, cfg.AdminPass); err != nil {
-		log.Warn("failed to seed admin credentials", "error", err)
-	}
-
-	// The JWT signing key lives in the database, so dashboard sessions survive
-	// restarts and every replica shares it. JWT_SECRET overrides it for
-	// operators who manage the key themselves; a per-boot key is the fallback
-	// only when the database cannot provide one.
-	jwtSecret := cfg.JWTSecret
-	if jwtSecret == "" {
-		secret, created, err := repository.NewSecretRepository(db).EnsureJWTSecret(context.Background())
-		if err != nil {
-			secret = generateJWTSecret()
-			log.Warn("failed to load the stored JWT secret; sessions will not survive this restart", "error", err)
-		} else if created {
-			log.Info("generated and stored a new JWT secret")
-		}
-		jwtSecret = secret
-	}
-
-	// Usage tracker + health checker back only the on-demand proxy-test endpoint.
-	tracker := proxy.NewUsageTracker(deps.EventStore, deps.ProxyRepo)
-	healthChecker := proxy.NewHealthChecker(deps.ProxyRepo, deps.SettingsRepo, tracker, log)
-
-	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(deps.SettingsRepo, deps.AdminRepo, log, jwtSecret, cfg.AdminUser, cfg.AdminPass)
 	healthHandler := handlers.NewHealthHandler(db, deps.ProxyRepo, log)
 	dashboardHandler := handlers.NewDashboardHandler(deps.DashboardRepo, deps.ProxyRepo, log)
-	proxyHandler := handlers.NewProxyHandler(deps.ProxyRepo, healthChecker, log)
+	proxyHandler := handlers.NewProxyHandler(deps.ProxyRepo, deps.HealthChecker, log)
 	settingsHandler := handlers.NewSettingsHandler(deps.SettingsRepo, log, nil) // onUpdate set below
 	websocketHandler := handlers.NewWebSocketHandler(deps.DashboardRepo, log, cfg.CORSAllowedOrigins)
 	sourceHandler := handlers.NewSourceHandler(deps.SourceRepo, deps.FormatHistoryRepo, deps.SourceSvc, log)
 	formatHistoryHandler := handlers.NewFormatHistoryHandler(deps.FormatHistoryRepo, log)
-	poolHandler := handlers.NewPoolHandler(deps.PoolRepo, deps.PoolSvc, log)
-	userHandler := handlers.NewUserHandler(deps.UserRepo, deps.PoolRepo, log)
-	proxyControlHandler := handlers.NewProxyControlHandler(deps.ProxyRepo, deps.PoolRepo, log)
+	proxyControlHandler := handlers.NewProxyControlHandler(deps.ProxyRepo, log)
 
 	s := &Server{
 		router:               chi.NewRouter(),
 		logger:               log,
 		db:                   db,
 		port:                 cfg.APIPort,
-		jwtSecret:            jwtSecret,
+		password:             cfg.Password,
 		corsOrigins:          cfg.CORSAllowedOrigins,
 		webDir:               cfg.WebDir,
-		trustProxyHeaders:    cfg.TrustProxyHeaders,
-		authLimiter:          deps.AuthLimiter,
-		userRepo:             deps.UserRepo,
 		metricsHTTP:          deps.Metrics,
-		authHandler:          authHandler,
 		healthHandler:        healthHandler,
 		dashboardHandler:     dashboardHandler,
 		proxyHandler:         proxyHandler,
@@ -139,8 +91,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		websocketHandler:     websocketHandler,
 		sourceHandler:        sourceHandler,
 		formatHistoryHandler: formatHistoryHandler,
-		poolHandler:          poolHandler,
-		userHandler:          userHandler,
 		proxyControlHandler:  proxyControlHandler,
 	}
 
@@ -155,14 +105,6 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		}
 	})
 
-	// The repository invalidates shared credentials on user changes. Drop the
-	// proxy server's cached pool chain too so it rebuilds the user's routing.
-	userHandler.SetOnUserChanged(func(username string) {
-		if s.proxyServer != nil {
-			s.proxyServer.InvalidateUser(username)
-		}
-	})
-
 	s.setupMiddleware()
 	s.setupRoutes()
 
@@ -170,7 +112,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 		Addr:         fmt.Sprintf(":%d", s.port),
 		Handler:      s.router,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 10 * time.Minute, // health checks on large pools can take several minutes
+		WriteTimeout: 10 * time.Minute, // a proxy test can take as long as its check timeout
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -204,13 +146,6 @@ func (s *Server) setupMiddleware() {
 	}))
 
 	s.router.Use(middleware.RequestID)
-	// RealIP rewrites RemoteAddr from X-Forwarded-For / X-Real-IP. Only do that
-	// when an upstream reverse proxy is trusted to set them; otherwise a directly
-	// exposed API would let a client choose its own apparent address, which the
-	// login rate limiter keys on.
-	if s.trustProxyHeaders {
-		s.router.Use(middleware.RealIP)
-	}
 	s.router.Use(MetricsMiddleware())
 	s.router.Use(LoggerMiddleware(s.logger))
 	s.router.Use(middleware.Recoverer)
@@ -225,123 +160,77 @@ func (s *Server) setupRoutes() {
 	// and chi would otherwise answer 405. net/http drops the body for HEAD.
 	s.router.Head("/health", s.healthHandler.Health)
 
-	// Prometheus exposition endpoint. Not behind the admin JWT — scrapers
-	// don't do login flows; the handler itself enforces the optional bearer
-	// token (METRICS_BEARER_TOKEN).
+	// Prometheus exposition endpoint. Not behind the shared password — the
+	// handler itself enforces the optional bearer token (METRICS_BEARER_TOKEN).
 	if s.metricsHTTP != nil {
 		s.router.Get("/metrics", s.metricsHTTP.ServeHTTP)
 	}
 
-	// Auth: only login is public; everything else requires a valid JWT
-	s.router.With(s.authLimiter.Login).Post("/api/v1/auth/login", s.authHandler.Login)
+	auth := PasswordMiddleware(s.password)
 
 	// ── Protected routes ───────────────────────────────────────────────────
 	s.router.Route("/api/v1", func(r chi.Router) {
-		// Client-control endpoints: accessible with an admin JWT or with
-		// proxy-user Basic credentials, so the client actually using the proxy
-		// can invalidate/release without holding an admin token. Handlers
-		// scope proxy-user calls to the user's own pools. Authentication counts
-		// credential failures without limiting successful control traffic.
-		r.Group(func(cr chi.Router) {
-			cr.Use(JWTOrProxyUserMiddleware(s.jwtSecret, s.userRepo, s.logger, s.authLimiter))
+		r.Use(auth)
+		r.Post("/proxies/{id}/invalidate", s.proxyControlHandler.InvalidateProxy)
+		r.Post("/sessions/invalidate", s.proxyControlHandler.InvalidateSession)
+		r.Post("/sessions/release", s.proxyControlHandler.ReleaseSession)
+		r.Get("/proxies/working", s.proxyControlHandler.ExportWorkingProxies)
 
-			cr.Post("/proxies/{id}/invalidate", s.proxyControlHandler.InvalidateProxy)
-			cr.Post("/sessions/invalidate", s.proxyControlHandler.InvalidateSession)
-			cr.Post("/sessions/release", s.proxyControlHandler.ReleaseSession)
-			cr.Get("/proxies/working", s.proxyControlHandler.ExportWorkingProxies)
-		})
+		// Health & Status
+		r.Get("/status", s.healthHandler.Status)
+		r.Get("/database/health", s.healthHandler.DatabaseHealth)
+		r.Get("/database/stats", s.healthHandler.DatabaseStats)
 
-		// Everything else requires an admin JWT.
-		r.Group(func(r chi.Router) {
-			r.Use(JWTMiddleware(s.jwtSecret))
+		// Dashboard endpoints
+		r.Get("/dashboard/stats", s.dashboardHandler.GetStats)
+		r.Get("/dashboard/domains", s.dashboardHandler.GetDomainStats)
+		r.Get("/dashboard/charts/traffic", s.dashboardHandler.GetTrafficChart)
+		r.Get("/dashboard/charts/response-time", s.dashboardHandler.GetResponseTimeChart)
+		r.Get("/dashboard/charts/success-rate", s.dashboardHandler.GetSuccessRateChart)
 
-			// Auth (require token — change-password, whoami)
-			r.Post("/auth/change-password", s.authHandler.ChangePassword)
-			r.Get("/auth/me", s.authHandler.GetAdminInfo)
+		// Proxy management
+		r.Get("/proxies", s.proxyHandler.List)
+		r.Post("/proxies", s.proxyHandler.Create)
+		r.Post("/proxies/bulk", s.proxyHandler.BulkCreate)
+		r.Post("/proxies/bulk-delete", s.proxyHandler.BulkDelete)
+		r.Post("/proxies/bulk-tags", s.proxyHandler.BulkTag)
+		r.Post("/proxies/bulk-test", s.proxyHandler.BulkTest)
+		r.Get("/proxies/bulk-test", s.proxyHandler.BulkTestLatest)
+		r.Get("/proxies/bulk-test/{job_id}", s.proxyHandler.BulkTestStatus)
+		r.Delete("/proxies", s.proxyHandler.DeleteAll)
+		r.Get("/proxies/export", s.proxyHandler.Export)
+		r.Get("/proxies/tags", s.proxyHandler.Tags)
+		r.Put("/proxies/{id}", s.proxyHandler.Update)
+		r.Delete("/proxies/{id}", s.proxyHandler.Delete)
+		r.Post("/proxies/{id}/test", s.proxyHandler.Test)
+		r.Post("/proxies/{id}/reactivate", s.proxyControlHandler.ReactivateProxy)
+		r.Get("/proxies/domain-cooldowns", s.proxyControlHandler.ListDomainCooldowns)
+		r.Get("/proxies/scope-cooldowns", s.proxyControlHandler.ListScopeCooldowns)
+		r.Post("/proxies/reload", s.proxyControlHandler.ReloadProxyPool)
 
-			// Health & Status
-			r.Get("/status", s.healthHandler.Status)
-			r.Get("/database/health", s.healthHandler.DatabaseHealth)
-			r.Get("/database/stats", s.healthHandler.DatabaseStats)
+		// Sticky sessions
+		r.Get("/sessions", s.proxyControlHandler.ListSessions)
 
-			// Dashboard endpoints
-			r.Get("/dashboard/stats", s.dashboardHandler.GetStats)
-			r.Get("/dashboard/domains", s.dashboardHandler.GetDomainStats)
-			r.Get("/dashboard/charts/traffic", s.dashboardHandler.GetTrafficChart)
-			r.Get("/dashboard/charts/response-time", s.dashboardHandler.GetResponseTimeChart)
-			r.Get("/dashboard/charts/success-rate", s.dashboardHandler.GetSuccessRateChart)
+		// Settings
+		r.Get("/settings", s.settingsHandler.Get)
+		r.Put("/settings", s.settingsHandler.Update)
+		r.Post("/settings/reset", s.settingsHandler.Reset)
 
-			// Proxy management
-			r.Get("/proxies", s.proxyHandler.List)
-			r.Post("/proxies", s.proxyHandler.Create)
-			r.Post("/proxies/bulk", s.proxyHandler.BulkCreate)
-			r.Post("/proxies/bulk-delete", s.proxyHandler.BulkDelete)
-			r.Post("/proxies/bulk-tags", s.proxyHandler.BulkTag)
-			r.Post("/proxies/bulk-test", s.proxyHandler.BulkTest)
-			r.Get("/proxies/bulk-test", s.proxyHandler.BulkTestLatest)
-			r.Get("/proxies/bulk-test/{job_id}", s.proxyHandler.BulkTestStatus)
-			r.Delete("/proxies", s.proxyHandler.DeleteAll)
-			r.Get("/proxies/export", s.proxyHandler.Export)
-			r.Put("/proxies/{id}", s.proxyHandler.Update)
-			r.Delete("/proxies/{id}", s.proxyHandler.Delete)
-			r.Post("/proxies/{id}/test", s.proxyHandler.Test)
-			r.Post("/proxies/{id}/reactivate", s.proxyControlHandler.ReactivateProxy)
-			r.Get("/proxies/domain-cooldowns", s.proxyControlHandler.ListDomainCooldowns)
-			r.Get("/proxies/scope-cooldowns", s.proxyControlHandler.ListScopeCooldowns)
-			r.Post("/proxies/reload", s.proxyControlHandler.ReloadProxyPool)
+		// Proxy Sources
+		r.Get("/sources", s.sourceHandler.List)
+		r.Post("/sources", s.sourceHandler.Create)
+		r.Put("/sources/{id}", s.sourceHandler.Update)
+		r.Delete("/sources/{id}", s.sourceHandler.Delete)
+		r.Post("/sources/{id}/fetch", s.sourceHandler.FetchNow)
+		r.Post("/sources/enrich-geo", s.sourceHandler.EnrichGeo)
 
-			// Sticky sessions (session rotation method)
-			r.Get("/sessions", s.proxyControlHandler.ListSessions)
-
-			// Settings
-			r.Get("/settings", s.settingsHandler.Get)
-			r.Put("/settings", s.settingsHandler.Update)
-			r.Post("/settings/reset", s.settingsHandler.Reset)
-
-			// Proxy Sources
-			r.Get("/sources", s.sourceHandler.List)
-			r.Post("/sources", s.sourceHandler.Create)
-			r.Put("/sources/{id}", s.sourceHandler.Update)
-			r.Delete("/sources/{id}", s.sourceHandler.Delete)
-			r.Post("/sources/{id}/fetch", s.sourceHandler.FetchNow)
-			r.Post("/sources/enrich-geo", s.sourceHandler.EnrichGeo)
-
-			// Line-format history (custom formats used for sources/imports)
-			r.Get("/format-history", s.formatHistoryHandler.List)
-			r.Post("/format-history", s.formatHistoryHandler.Record)
-			r.Delete("/format-history/{id}", s.formatHistoryHandler.Delete)
-
-			// Proxy Users (per-user pool authentication)
-			r.Get("/proxy-users", s.userHandler.List)
-			r.Post("/proxy-users", s.userHandler.Create)
-			r.Get("/proxy-users/{id}", s.userHandler.Get)
-			r.Put("/proxy-users/{id}", s.userHandler.Update)
-			r.Delete("/proxy-users/{id}", s.userHandler.Delete)
-
-			// Proxy Pools
-			r.Get("/pools", s.poolHandler.List)
-			r.Post("/pools", s.poolHandler.Create)
-			r.Get("/pools/geo-summary", s.poolHandler.GeoSummary)
-			r.Get("/pools/geo-countries", s.poolHandler.GeoByCountry)
-			r.Get("/pools/geo-cities/{country_code}", s.poolHandler.GeoCitiesByCountry)
-			r.Get("/pools/isp-list", s.poolHandler.GetISPList)
-			r.Get("/pools/tag-list", s.poolHandler.GetTagList)
-			r.Get("/pools/{id}", s.poolHandler.Get)
-			r.Put("/pools/{id}", s.poolHandler.Update)
-			r.Delete("/pools/{id}", s.poolHandler.Delete)
-			r.Get("/pools/{id}/proxies", s.poolHandler.GetProxies)
-			r.Post("/pools/{id}/proxies", s.poolHandler.AddProxies)
-			r.Delete("/pools/{id}/proxies", s.poolHandler.RemoveProxies)
-			r.Post("/pools/{id}/sync", s.poolHandler.Sync)
-			r.Get("/pools/{id}/export", s.poolHandler.Export)
-			r.Post("/pools/{id}/health-check", s.poolHandler.HealthCheck)
-			r.Get("/pools/{id}/health-check/jobs", s.poolHandler.HealthCheckJobs)
-			r.Get("/pools/{id}/health-check/{job_id}", s.poolHandler.HealthCheckStatus)
-		})
+		// Line-format history (custom formats used for sources/imports)
+		r.Get("/format-history", s.formatHistoryHandler.List)
+		r.Post("/format-history", s.formatHistoryHandler.Record)
+		r.Delete("/format-history/{id}", s.formatHistoryHandler.Delete)
 	})
 
-	// WebSocket routes — protected via token query param
-	s.router.With(JWTMiddleware(s.jwtSecret)).Get("/ws/dashboard", s.websocketHandler.DashboardWebSocket)
+	s.router.With(auth).Get("/ws/dashboard", s.websocketHandler.DashboardWebSocket)
 
 	// Serve the built dashboard (SPA) from the same origin as the API when a web
 	// directory is configured — one binary, one port, no separate Node runtime.
@@ -375,17 +264,4 @@ func (s *Server) SetProxyServer(ps handlers.ProxyServer) {
 	s.proxyServer = ps
 	s.proxyControlHandler.SetProxyServer(ps)
 	s.dashboardHandler.SetProxyServer(ps)
-}
-
-// generateJWTSecret generates a cryptographically secure random JWT secret
-func generateJWTSecret() string {
-	// Generate 32 random bytes (256 bits)
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		// Fallback to timestamp-based random if crypto/rand fails
-		return fmt.Sprintf("fallback-secret-%d", time.Now().UnixNano())
-	}
-
-	// Convert to hex string (64 characters)
-	return hex.EncodeToString(bytes)
 }

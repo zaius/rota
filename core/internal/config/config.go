@@ -15,16 +15,13 @@ type Config struct {
 	APIPort   int
 	LogLevel  string
 	Database  DatabaseConfig
-	AdminUser string
-	AdminPass string
+
+	// Password guards the proxy port, the API and the dashboard
+	// (ROTA_PASSWORD, required).
+	Password string
 
 	// Parquet configures the file-based store for request and tunnel history.
 	Parquet ParquetConfig
-
-	// JWTSecret, when set, signs dashboard session tokens in place of the key
-	// the server generates once and stores in the database. Set it only to
-	// manage or rotate the key yourself; changing it logs every session out.
-	JWTSecret string
 
 	// CORSAllowedOrigins lists browser origins allowed to call the API.
 	// Defaults to ["*"] for zero-config local development. Set explicit
@@ -38,14 +35,6 @@ type Config struct {
 	// defaults to a "web" directory beside the executable, and is empty in dev,
 	// where the dashboard runs under the Vite dev server.
 	WebDir string
-
-	// TrustProxyHeaders controls whether X-Forwarded-For / X-Real-IP are used to
-	// derive the client IP. Enable it only when the API sits behind a trusted
-	// reverse proxy that overwrites those headers. When the API is exposed
-	// directly, a client can set them freely, so trusting them would let an
-	// attacker present a fresh IP on every login attempt and walk straight past
-	// the per-IP block. (TRUST_PROXY_HEADERS, default false)
-	TrustProxyHeaders bool
 
 	// TLSInspect configures optional HTTPS interception (TLS_INSPECT_*).
 	TLSInspect TLSInspectConfig
@@ -65,11 +54,6 @@ type Config struct {
 	// endpoint unauthenticated, the usual choice for internal-network
 	// deployments. (METRICS_BEARER_TOKEN)
 	MetricsBearerToken string
-
-	// Failed-auth protection shares per-IP blocks across proxy and API auth.
-	AuthIPMaxAttempts   int // failures before IP block (AUTH_IP_MAX_ATTEMPTS, default 10)
-	AuthIPWindowMinutes int // sliding failure window (AUTH_IP_WINDOW_MINUTES, default 10)
-	AuthIPBlockMinutes  int // IP block duration (AUTH_IP_BLOCK_MINUTES, default 30)
 }
 
 // DatabaseConfig holds database configuration
@@ -84,9 +68,9 @@ type DatabaseConfig struct {
 
 // TLSInspectConfig holds the server-side half of HTTPS interception.
 //
-// Interception requires this AND the per-user inspect_tls flag: a CA here only
-// makes interception possible, never automatic. With no CA configured, requests
-// for inspection fail; other CONNECT tunnels stay opaque.
+// Interception requires this AND a profile option in the proxy username: a CA
+// here only makes interception possible, never automatic. With no CA
+// configured, requests for inspection fail; other CONNECT tunnels stay opaque.
 type TLSInspectConfig struct {
 	// CACertFile / CAKeyFile are PEM paths for the CA that signs the
 	// certificates presented to intercepted clients. Both or neither.
@@ -110,7 +94,7 @@ type GeoIPConfig struct {
 	// coordinates (GEOIP_CITY_DB).
 	CityDB string
 	// ASNDB is an optional GeoLite2 ASN .mmdb; its AS organization fills the
-	// ISP that pool ISP filters match (GEOIP_ASN_DB).
+	// proxy's ISP (GEOIP_ASN_DB).
 	ASNDB string
 	// LicenseKey enables downloading the databases from MaxMind when they are
 	// missing or older than UpdateHours (MAXMIND_LICENSE_KEY). AccountID
@@ -201,9 +185,7 @@ func Load() (*Config, error) {
 			Name:     getEnv("DB_NAME", "rota"),
 			SSLMode:  getEnv("DB_SSLMODE", "disable"),
 		},
-		AdminUser: getEnv("ROTA_ADMIN_USER", "admin"),
-		AdminPass: getEnv("ROTA_ADMIN_PASSWORD", "admin"),
-		JWTSecret: getEnv("JWT_SECRET", ""),
+		Password: getEnv("ROTA_PASSWORD", ""),
 		Parquet: ParquetConfig{
 			Dir:        getEnv("EVENT_STORE_DIR", defaultEventDir),
 			Instance:   getEnv("EVENT_STORE_INSTANCE", defaultEventInstance),
@@ -212,7 +194,6 @@ func Load() (*Config, error) {
 
 		CORSAllowedOrigins: getEnvAsSlice("CORS_ALLOWED_ORIGINS", []string{"*"}),
 		WebDir:             getEnv("WEB_DIR", defaultWebDir()),
-		TrustProxyHeaders:  getEnvAsBool("TRUST_PROXY_HEADERS", false),
 
 		TLSInspect: TLSInspectConfig{
 			CACertFile:    getEnv("TLS_INSPECT_CA_CERT", ""),
@@ -230,10 +211,6 @@ func Load() (*Config, error) {
 
 		MetricsEnabled:     getEnvAsBool("METRICS_ENABLED", true),
 		MetricsBearerToken: getEnv("METRICS_BEARER_TOKEN", ""),
-
-		AuthIPMaxAttempts:   getEnvAsInt("AUTH_IP_MAX_ATTEMPTS", 10),
-		AuthIPWindowMinutes: getEnvAsInt("AUTH_IP_WINDOW_MINUTES", 10),
-		AuthIPBlockMinutes:  getEnvAsInt("AUTH_IP_BLOCK_MINUTES", 30),
 	}
 
 	// A license key alone is enough: download both databases to the default
@@ -256,6 +233,9 @@ func Load() (*Config, error) {
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
+	if c.Password == "" {
+		return fmt.Errorf("ROTA_PASSWORD is required")
+	}
 	if c.ProxyPort < 1 || c.ProxyPort > 65535 {
 		return fmt.Errorf("invalid proxy port: %d", c.ProxyPort)
 	}
@@ -274,10 +254,6 @@ func (c *Config) Validate() error {
 	}
 	if !validLogLevels[c.LogLevel] {
 		return fmt.Errorf("invalid log level: %s (must be debug, info, warn, or error)", c.LogLevel)
-	}
-
-	if c.AuthIPMaxAttempts < 1 || c.AuthIPWindowMinutes < 1 || c.AuthIPBlockMinutes < 1 {
-		return fmt.Errorf("AUTH_IP_MAX_ATTEMPTS, AUTH_IP_WINDOW_MINUTES and AUTH_IP_BLOCK_MINUTES must be positive")
 	}
 
 	// Half a keypair means someone intended to enable interception and it

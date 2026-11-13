@@ -3,30 +3,30 @@ package models
 import "time"
 
 // Settings represents system configuration.
-// Proxy server authentication is per-user only (proxy_users); there is no
-// global shared credential setting.
 type Settings struct {
 	Rotation     RotationSettings     `json:"rotation"`
 	HealthCheck  HealthCheckSettings  `json:"healthcheck"`
 	ProxyCleanup ProxyCleanupSettings `json:"proxy_cleanup"`
 }
 
-// RotationSettings holds the per-request behaviour that applies to every pool
-// chain. Rotation strategy itself is configured per pool (rotation_method);
-// the former global method/filter settings served only the removed
-// unauthenticated default chain.
+// RotationSettings holds the per-request behaviour of the proxy port.
 type RotationSettings struct {
 	FollowRedirect bool `json:"follow_redirect"`
 	Timeout        int  `json:"timeout"` // upstream request timeout in seconds
+	// SessionTTLMinutes is how long an idle session keeps its proxy, and the
+	// grace period after a cooldown before a session's use resets its backoff.
+	SessionTTLMinutes int `json:"session_ttl_minutes"`
 }
 
 // HealthCheckSettings represents health check configuration
 type HealthCheckSettings struct {
-	Timeout int      `json:"timeout"`
-	Workers int      `json:"workers"`
-	URL     string   `json:"url"`
-	Status  int      `json:"status"`
-	Headers []string `json:"headers"`
+	// IntervalMinutes is how often every proxy is checked.
+	IntervalMinutes int      `json:"interval_minutes"`
+	Timeout         int      `json:"timeout"`
+	Workers         int      `json:"workers"`
+	URL             string   `json:"url"`
+	Status          int      `json:"status"`
+	Headers         []string `json:"headers"`
 	// StrictTLS verifies the check target's certificate, so a proxy that
 	// intercepts TLS with an expired or forged certificate fails its check.
 	StrictTLS bool `json:"strict_tls"`

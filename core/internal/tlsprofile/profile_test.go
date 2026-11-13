@@ -14,11 +14,10 @@ func TestLookup(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{"empty resolves to pass-through", "", "go", false},
+		{"empty is an error", "", "", true},
 		{"explicit go", "go", "go", false},
 		{"ios", "ios", "ios", false},
 		{"case insensitive", "IOS", "ios", false},
-		{"surrounding space", "  android  ", "android", false},
 		{"unknown name is an error", "iphone", "", true},
 		{"near miss is not corrected", "ios-26", "", true},
 	}
@@ -43,13 +42,13 @@ func TestLookup(t *testing.T) {
 }
 
 // TestPassthroughDoesNotImpersonate guards the branch that keeps the original
-// crypto/tls path: if Passthrough ever gained a client profile, every
-// unconfigured user would silently start being impersonated.
+// crypto/tls path: if Passthrough ever gained a client profile, every client
+// asking for "go" would silently start being impersonated.
 func TestPassthroughDoesNotImpersonate(t *testing.T) {
 	if Passthrough.Impersonates() {
 		t.Error("Passthrough reports that it impersonates")
 	}
-	for _, p := range All() {
+	for _, p := range registry {
 		if p.Name == "go" {
 			continue
 		}
@@ -64,7 +63,7 @@ func TestPassthroughDoesNotImpersonate(t *testing.T) {
 // does. A profile that quietly dropped to http/1.1-only would produce a JA4
 // that matches no real device no matter how good the rest of the handshake is.
 func TestProfilesOfferH2(t *testing.T) {
-	for _, p := range All() {
+	for _, p := range registry {
 		if !p.Impersonates() {
 			continue
 		}
@@ -82,7 +81,7 @@ func TestProfilesOfferH2(t *testing.T) {
 // TestEveryProfileHasUserAgent checks the metadata clients rely on to align
 // their own headers with the handshake Rota sends.
 func TestEveryProfileHasUserAgent(t *testing.T) {
-	for _, p := range All() {
+	for _, p := range registry {
 		if p.Impersonates() && p.UserAgent == "" {
 			t.Errorf("profile %q has no published User-Agent", p.Name)
 		}

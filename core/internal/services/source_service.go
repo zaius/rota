@@ -17,18 +17,11 @@ import (
 	"github.com/alpkeskin/rota/core/pkg/safeworker"
 )
 
-// ProxyTester is the subset of HealthChecker used by SourceService.
-type ProxyTester interface {
-	CheckAllProxies(ctx context.Context) ([]models.ProxyTestResult, error)
-}
-
 // SourceService fetches proxy lists from remote URLs and imports them into the DB.
 type SourceService struct {
 	sourceRepo *repository.SourceRepository
 	proxyRepo  *repository.ProxyRepository
-	poolRepo   *repository.PoolRepository
 	geoSvc     *GeoIPService
-	tester     ProxyTester // optional: auto health-check after import
 	logger     *logger.Logger
 	client     *http.Client
 
@@ -41,24 +34,17 @@ type SourceService struct {
 func NewSourceService(
 	sourceRepo *repository.SourceRepository,
 	proxyRepo *repository.ProxyRepository,
-	poolRepo *repository.PoolRepository,
 	geoSvc *GeoIPService,
 	log *logger.Logger,
 ) *SourceService {
 	return &SourceService{
 		sourceRepo: sourceRepo,
 		proxyRepo:  proxyRepo,
-		poolRepo:   poolRepo,
 		geoSvc:     geoSvc,
 		logger:     log,
 		client:     &http.Client{Timeout: 30 * time.Second},
 		stopCh:     make(chan struct{}),
 	}
-}
-
-// SetHealthChecker sets the proxy tester for auto health checks after import.
-func (s *SourceService) SetHealthChecker(t ProxyTester) {
-	s.tester = t
 }
 
 // Name identifies the service for the lifecycle manager.
@@ -131,19 +117,6 @@ func (s *SourceService) fetchDueSources(ctx context.Context) {
 				"source_id", src.ID, "name", src.Name,
 				"imported", imported, "total", total)
 		}
-	}
-
-	// After all sources are fetched, re-sync all auto_sync pools
-	go s.syncAllPools(ctx)
-}
-
-// syncAllPools re-syncs all auto_sync pools — called after a fetch batch completes
-func (s *SourceService) syncAllPools(ctx context.Context) {
-	synced, err := s.poolRepo.SyncAllAutoSyncPools(ctx)
-	if err != nil {
-		s.logger.Error("auto pool sync after fetch failed", "error", err)
-	} else if synced > 0 {
-		s.logger.Info("auto-synced pools after fetch", "pools", synced)
 	}
 }
 
@@ -271,10 +244,6 @@ func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
 			s.logger.Warn("failed to update geo for proxy", "address", addr, "error", err)
 		}
 	}
-
-	// Re-sync pools now that geo data has changed
-	go s.syncAllPools(context.Background())
-
 	return len(geos), nil
 }
 

@@ -29,8 +29,7 @@ func NewUsageTracker(eventStore events.Store, repo *repository.ProxyRepository) 
 type RequestRecord struct {
 	ProxyID       int
 	ProxyAddress  string
-	PoolID        int    // pool that served the request; 0 = default pool
-	Username      string // proxy user the request was authenticated as
+	Client        string // client label from the proxy username
 	RequestedURL  string
 	Method        string
 	Success       bool
@@ -43,7 +42,7 @@ type RequestRecord struct {
 
 // RecordRequest records a proxy request and updates statistics
 func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) error {
-	metrics.RecordProxyRequest(ctx, record.PoolID, record.Username, record.Success, record.StatusCode, record.ResponseTime)
+	metrics.RecordProxyRequest(ctx, record.Client, record.Success, record.StatusCode, record.ResponseTime)
 
 	// Record the request outcome in the event store. The target domain is
 	// derived from the URL with the same normalization as domain cooldowns,
@@ -51,8 +50,7 @@ func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) 
 	err := t.events.InsertRequest(ctx, events.RequestEvent{
 		ProxyID:       record.ProxyID,
 		ProxyAddress:  record.ProxyAddress,
-		PoolID:        record.PoolID,
-		Username:      record.Username,
+		Username:      record.Client,
 		Method:        record.Method,
 		URL:           record.RequestedURL,
 		Domain:        NormalizeCooldownDomain(record.RequestedURL),
@@ -133,8 +131,7 @@ func (t *UsageTracker) updateProxyStats(ctx context.Context, record RequestRecor
 type TunnelRecord struct {
 	ProxyID      int
 	ProxyAddress string
-	PoolID       int    // pool that served the tunnel; 0 = default pool
-	Username     string // proxy user the tunnel was authenticated as
+	Client       string // client label from the proxy username
 	Host         string // CONNECT authority, host:port
 	BytesUp      int64  // client → target
 	BytesDown    int64  // target → client
@@ -150,14 +147,13 @@ type TunnelRecord struct {
 // establishment already advanced the health state machine when it opened, and
 // a tunnel torn down by either peer is normal, not a proxy failure.
 func (t *UsageTracker) RecordTunnel(ctx context.Context, record TunnelRecord) error {
-	metrics.RecordProxyTunnel(ctx, record.PoolID, record.Username, record.ErrorMessage == "",
+	metrics.RecordProxyTunnel(ctx, record.Client, record.ErrorMessage == "",
 		record.BytesUp, record.BytesDown, int(record.Duration.Milliseconds()))
 
 	err := t.events.InsertTunnel(ctx, events.TunnelEvent{
 		ProxyID:      record.ProxyID,
 		ProxyAddress: record.ProxyAddress,
-		PoolID:       record.PoolID,
-		Username:     record.Username,
+		Username:     record.Client,
 		Host:         record.Host,
 		Domain:       NormalizeCooldownDomain(record.Host),
 		BytesUp:      record.BytesUp,
@@ -173,7 +169,7 @@ func (t *UsageTracker) RecordTunnel(ctx context.Context, record TunnelRecord) er
 	return nil
 }
 
-// RecordHealthCheck records a health check result. Checks are user-initiated
+// RecordHealthCheck records a health check result. Checks are deliberate
 // probes, so the result applies to the proxy's status immediately rather than
 // waiting out the consecutive-failure threshold that request failures use.
 func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, success bool, responseTime int, errorMsg string) error {

@@ -18,7 +18,7 @@
 //	@securityDefinitions.apikey	BearerAuth
 //	@in							header
 //	@name						Authorization
-//	@description				Type "Bearer" followed by a space and JWT token.
+//	@description				Type "Bearer" followed by a space and the ROTA_PASSWORD value.
 package main
 
 import (
@@ -33,7 +33,6 @@ import (
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/api"
-	"github.com/alpkeskin/rota/core/internal/authlimit"
 	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/events"
@@ -112,12 +111,9 @@ func run() error {
 	// Create repositories once — this is the single place they are constructed.
 	proxyRepo := repository.NewProxyRepository(db)
 	settingsRepo := repository.NewSettingsRepository(db)
-	poolRepo := repository.NewPoolRepository(db)
-	userRepo := repository.NewUserRepository(db)
 	dashboardRepo := repository.NewDashboardRepository(db, eventStore)
 	sourceRepo := repository.NewSourceRepository(db)
 	formatHistoryRepo := repository.NewFormatHistoryRepository(db)
-	adminRepo := repository.NewAdminRepository(db)
 
 	// Seed any missing default settings from the single Go-defined source of
 	// truth (migrations no longer seed settings). No-op for keys already set.
@@ -128,22 +124,22 @@ func run() error {
 	// Build background services once and hand their lifecycle to a single
 	// manager, so they start and stop with the process instead of leaking on a
 	// never-cancelled context.Background().
+	healthChecker := proxy.NewHealthChecker(proxyRepo, settingsRepo, proxy.NewUsageTracker(eventStore, proxyRepo), log)
 	geoSvc := services.NewGeoIPService(log, services.NewLocalGeoDB(cfg.GeoIP, log))
-	sourceSvc := services.NewSourceService(sourceRepo, proxyRepo, poolRepo, geoSvc, log)
-	poolSvc := services.NewPoolService(poolRepo, proxyRepo, settingsRepo, log)
+	sourceSvc := services.NewSourceService(sourceRepo, proxyRepo, geoSvc, log)
+	healthCheckSvc := services.NewHealthCheckScheduler(healthChecker, settingsRepo, log)
 	cleanupSvc := services.NewProxyCleanupService(proxyRepo, settingsRepo, eventStore, log)
 	historyCleanupSvc := services.NewHistoryCleanupService(eventStore, log)
 	statsRefresher := services.NewStatsRefresher(eventStore, proxyRepo, time.Minute, log)
 
-	backgroundSvcs := []services.Service{geoSvc, sourceSvc, poolSvc, cleanupSvc, historyCleanupSvc, statsRefresher}
+	backgroundSvcs := []services.Service{geoSvc, sourceSvc, healthCheckSvc, cleanupSvc, historyCleanupSvc, statsRefresher}
 	if metricsProvider != nil {
-		backgroundSvcs = append(backgroundSvcs, metrics.NewFleetPoller(db, poolRepo, 30*time.Second, log))
+		backgroundSvcs = append(backgroundSvcs, metrics.NewFleetPoller(db, 30*time.Second, log))
 	}
 	svcManager := services.NewManager(log, backgroundSvcs...)
 
 	// Optional HTTPS interception. Without a configured CA the inspector is
-	// nil and requests for inspection fail. The per-user inspect_tls flag
-	// requires a server-side CA; other CONNECT tunnels stay opaque.
+	// nil and requests for inspection fail; other CONNECT tunnels stay opaque.
 	var inspector *proxy.TLSInspector
 	if cfg.TLSInspect.Enabled() {
 		ca, err := proxy.LoadCertAuthority(cfg.TLSInspect.CACertFile, cfg.TLSInspect.CAKeyFile)
@@ -151,7 +147,7 @@ func run() error {
 			return fmt.Errorf("failed to load TLS interception CA: %w", err)
 		}
 		inspector = proxy.NewTLSInspector(ca, cfg.TLSInspect.BypassDomains, log)
-		log.Info("HTTPS interception available for opted-in proxy users",
+		log.Info("HTTPS interception available for requests that name a profile",
 			"ca_subject", ca.Subject(),
 			"ca_expires", ca.NotAfter().Format(time.RFC3339),
 			"bypass_domains", len(cfg.TLSInspect.BypassDomains),
@@ -161,25 +157,19 @@ func run() error {
 	}
 
 	// Create servers
-	authLimiter := authlimit.New(cfg.AuthIPMaxAttempts, time.Duration(cfg.AuthIPWindowMinutes)*time.Minute, time.Duration(cfg.AuthIPBlockMinutes)*time.Minute)
-	proxyServer, err := proxy.New(cfg.ProxyPort, log, db, eventStore, proxyRepo, poolRepo, userRepo, settingsRepo, inspector, authLimiter)
+	proxyServer, err := proxy.New(cfg.ProxyPort, cfg.Password, log, eventStore, proxyRepo, settingsRepo, inspector)
 	if err != nil {
 		return fmt.Errorf("failed to create proxy server: %w", err)
 	}
 	apiServer := api.New(cfg, log, db, api.Deps{
 		ProxyRepo:         proxyRepo,
-		EventStore:        eventStore,
 		SettingsRepo:      settingsRepo,
 		DashboardRepo:     dashboardRepo,
 		SourceRepo:        sourceRepo,
 		FormatHistoryRepo: formatHistoryRepo,
-		PoolRepo:          poolRepo,
-		UserRepo:          userRepo,
-		AdminRepo:         adminRepo,
 		SourceSvc:         sourceSvc,
-		PoolSvc:           poolSvc,
+		HealthChecker:     healthChecker,
 		Metrics:           metricsHTTPHandler(metricsProvider),
-		AuthLimiter:       authLimiter,
 	})
 
 	// Set proxy server reference in API server for reload functionality

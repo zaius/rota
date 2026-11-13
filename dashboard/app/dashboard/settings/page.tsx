@@ -1,5 +1,4 @@
 import * as React from "react"
-import { Eye, EyeOff } from "lucide-react"
 import { toast } from "@/lib/toast"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
@@ -89,22 +88,10 @@ export default function SettingsPage() {
   // newline survives typing.
   const [headersText, setHeadersText] = React.useState<string | null>(null)
 
-  // Admin account
-  const [adminUsername, setAdminUsername] = React.useState("")
-  const [newUsername, setNewUsername] = React.useState("")
-  const [currentPass, setCurrentPass] = React.useState("")
-  const [newPass, setNewPass] = React.useState("")
-  const [confirmPass, setConfirmPass] = React.useState("")
-  const [showPass, setShowPass] = React.useState(false)
-  const [changingPass, setChangingPass] = React.useState(false)
-
   React.useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const [data, adminInfo] = await Promise.all([api.getSettings(), api.getAdminInfo()])
-        setSettings(data)
-        setAdminUsername(adminInfo.username)
-        setNewUsername(adminInfo.username)
+        setSettings(await api.getSettings())
       } catch (error) {
         toast.error("Failed to load settings", errorMessage(error, "Unknown error"))
       } finally {
@@ -116,31 +103,6 @@ export default function SettingsPage() {
 
   const patch = <K extends keyof Settings>(key: K, value: Partial<Settings[K]>) =>
     setSettings((s) => (s ? { ...s, [key]: { ...s[key], ...value } } : s))
-
-  const handleChangePassword = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!currentPass) return toast.error("Enter your current password")
-    if (!newPass) return toast.error("Enter a new password")
-    if (newPass.length < 6) return toast.error("New password must be at least 6 characters")
-    if (newPass !== confirmPass) return toast.error("Passwords don't match")
-
-    setChangingPass(true)
-    try {
-      const opts: Parameters<typeof api.changePassword>[0] = { current_password: currentPass, new_password: newPass }
-      if (newUsername && newUsername !== adminUsername) opts.new_username = newUsername
-      const res = await api.changePassword(opts)
-      setAdminUsername(res.username)
-      setNewUsername(res.username)
-      setCurrentPass("")
-      setNewPass("")
-      setConfirmPass("")
-      toast.success("Credentials updated")
-    } catch (err) {
-      toast.error("Failed to change password", errorMessage(err, "Unknown error"))
-    } finally {
-      setChangingPass(false)
-    }
-  }
 
   const handleSave = async () => {
     if (!settings) return
@@ -177,7 +139,7 @@ export default function SettingsPage() {
     <>
       <PageHeader
         title="Settings"
-        description="Runtime configuration of the core. Saving applies everything below at once; the admin account section saves on its own."
+        description="Runtime configuration of the core. Saving applies everything below at once."
       >
         <Button variant="outline" onClick={() => setResetOpen(true)} disabled={isSaving}>
           Reset to defaults
@@ -187,68 +149,7 @@ export default function SettingsPage() {
         </Button>
       </PageHeader>
 
-      {/* Admin account */}
-      <Section
-        title="Admin account"
-        description={
-          <>
-            Dashboard sign-in. Signed in as <span className="font-mono">{adminUsername}</span>.
-          </>
-        }
-      >
-        <form onSubmit={handleChangePassword} className="max-w-2xl">
-          <div className={grid}>
-            <Field id="admin-username" label="Username" hint="Leave unchanged to keep the current one.">
-              <Input
-                id="admin-username"
-                className="font-mono"
-                value={newUsername}
-                onChange={(e) => setNewUsername(e.target.value)}
-                autoComplete="username"
-              />
-            </Field>
-            <Field id="admin-current" label="Current password" hint="Required to confirm any change.">
-              <div className="relative">
-                <Input
-                  id="admin-current"
-                  type={showPass ? "text" : "password"}
-                  value={currentPass}
-                  onChange={(e) => setCurrentPass(e.target.value)}
-                  className="pr-8"
-                  autoComplete="current-password"
-                />
-                <button
-                  type="button"
-                  className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
-                  onClick={() => setShowPass((v) => !v)}
-                  aria-label={showPass ? "Hide passwords" : "Show passwords"}
-                >
-                  {showPass ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                </button>
-              </div>
-            </Field>
-            <div className="hidden lg:block" />
-            <Field id="admin-new" label="New password" hint="At least 6 characters.">
-              <Input id="admin-new" type={showPass ? "text" : "password"} value={newPass} onChange={(e) => setNewPass(e.target.value)} autoComplete="new-password" />
-            </Field>
-            <Field id="admin-confirm" label="Confirm new password">
-              <Input
-                id="admin-confirm"
-                type={showPass ? "text" : "password"}
-                value={confirmPass}
-                onChange={(e) => setConfirmPass(e.target.value)}
-                autoComplete="new-password"
-              />
-            </Field>
-          </div>
-          <Button type="submit" variant="outline" className="mt-4" disabled={changingPass || !currentPass || !newPass}>
-            {changingPass ? "Updating…" : "Update credentials"}
-          </Button>
-        </form>
-      </Section>
-
-      {/* Upstream requests: rotation strategy itself is per pool */}
-      <Section title="Upstream requests" description="Request handling applied to every pool. Rotation strategy is set per pool on the Pools page.">
+      <Section title="Upstream requests" description="Request handling for every proxied request.">
         <div className={grid}>
           <Field id="rotation-timeout" label="Timeout (seconds)" hint="Per upstream attempt.">
             <Input
@@ -257,6 +158,15 @@ export default function SettingsPage() {
               min={1}
               value={settings.rotation.timeout}
               onChange={(e) => patch("rotation", { timeout: num(e.target.value) })}
+            />
+          </Field>
+          <Field id="rotation-session-ttl" label="Session TTL (minutes)" hint="How long an idle session keeps its proxy.">
+            <Input
+              id="rotation-session-ttl"
+              type="number"
+              min={1}
+              value={settings.rotation.session_ttl_minutes}
+              onChange={(e) => patch("rotation", { session_ttl_minutes: num(e.target.value) })}
             />
           </Field>
         </div>
@@ -274,6 +184,15 @@ export default function SettingsPage() {
       {/* Health check */}
       <Section title="Health check" description="The GET each proxy must pass to count as active.">
         <div className={grid}>
+          <Field id="healthcheck-interval" label="Interval (minutes)" hint="How often every proxy is checked.">
+            <Input
+              id="healthcheck-interval"
+              type="number"
+              min={1}
+              value={settings.healthcheck.interval_minutes}
+              onChange={(e) => patch("healthcheck", { interval_minutes: num(e.target.value) })}
+            />
+          </Field>
           <Field id="healthcheck-url" label="URL" hint="GET only." className="sm:col-span-2">
             <Input
               id="healthcheck-url"
@@ -339,7 +258,7 @@ export default function SettingsPage() {
       {/* Proxy cleanup */}
       <Section
         title="Proxy cleanup"
-        description="Periodic removal of proxies that stay dead or keep failing. Deleted proxies leave every pool and come back only if a source lists them again."
+        description="Periodic removal of proxies that stay dead or keep failing. Deleted proxies come back only if a source lists them again."
         className="border-b-0"
       >
         <div className="max-w-2xl">
@@ -393,7 +312,7 @@ export default function SettingsPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Reset every setting to its default?</AlertDialogTitle>
-            <AlertDialogDescription>The core switches to defaults immediately. The admin account and proxy users are not touched.</AlertDialogDescription>
+            <AlertDialogDescription>The core switches to defaults immediately.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>

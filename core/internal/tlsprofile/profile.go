@@ -20,6 +20,8 @@ package tlsprofile
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -30,9 +32,9 @@ import (
 
 // Profile is one named client fingerprint.
 type Profile struct {
-	// Name is the stable identifier used in configuration, in the API, and in
-	// the "-profile-<name>" proxy-username marker. Renaming one breaks
-	// deployed clients, so treat these as wire format.
+	// Name is the stable identifier clients request with the "profile-<name>"
+	// proxy-username option. Renaming one breaks deployed clients, so treat
+	// these as wire format.
 	Name string
 
 	// Label is the human-readable form, for the dashboard.
@@ -60,15 +62,15 @@ type Profile struct {
 	client *profiles.ClientProfile
 }
 
-// Passthrough is the default: Go's own TLS stack, HTTP/1.1 only, no
-// impersonation. It is what every intercepted connection used before profiles
-// existed, and remains what an unconfigured user gets.
+// Passthrough is Go's own TLS stack, HTTP/1.1 only, no impersonation, which a
+// client requests as "go" to inspect a tunnel without changing its handshake.
 var Passthrough = &Profile{
 	Name:  "go",
 	Label: "Go (no impersonation)",
 }
 
-// registry is the closed set of selectable profiles.
+// registry is the closed set of selectable profiles. Names never contain "-",
+// which separates options in the proxy username.
 //
 // The mobile entries are the point of the package; the desktop ones are here
 // because a scraper that wants to look like a browser rather than a phone
@@ -98,7 +100,7 @@ func buildRegistry() map[string]*Profile {
 			// Safe to take from the library: iOS and macOS Safari emitted
 			// identical ClientHellos through 18.x, so the platform label
 			// cannot be wrong.
-			Name:        "ios-18",
+			Name:        "ios18",
 			Label:       "Safari on iOS 18.5 (iPhone)",
 			UserAgent:   ios18UA,
 			headerOrder: safariIOSHeaderOrder,
@@ -121,7 +123,7 @@ func buildRegistry() map[string]*Profile {
 			// The stack behind most native Android apps rather than a browser
 			// — reach for it when the traffic should look like an app, not
 			// like someone browsing.
-			Name:        "android-okhttp",
+			Name:        "okhttp",
 			Label:       "OkHttp 4 on Android 13 (native app)",
 			UserAgent:   "okhttp/4.10.0",
 			headerOrder: okhttpHeaderOrder,
@@ -188,51 +190,18 @@ var (
 	okhttpHeaderOrder = []string{"host", "user-agent", "connection", "accept-encoding"}
 )
 
-// Lookup resolves a profile name. The empty string means "unset", which
-// resolves to the pass-through profile so an unconfigured user keeps today's
-// behaviour.
+// Lookup resolves a profile name.
 //
 // An unrecognized name is an error rather than a silent fall back to
 // pass-through: a caller that asked to look like an iPhone and quietly got Go
 // instead is worse off than one whose connection was refused, because the
 // mistake only shows up as unexplained blocking.
 func Lookup(name string) (*Profile, error) {
-	key := strings.ToLower(strings.TrimSpace(name))
-	if key == "" {
-		return Passthrough, nil
-	}
-	p, ok := registry[key]
+	p, ok := registry[strings.ToLower(name)]
 	if !ok {
-		return nil, fmt.Errorf("unknown TLS profile %q (known: %s)", name, strings.Join(Names(), ", "))
+		return nil, fmt.Errorf("unknown TLS profile %q (known: %s)", name, strings.Join(slices.Sorted(maps.Keys(registry)), ", "))
 	}
 	return p, nil
-}
-
-// Valid reports whether name is a selectable profile, treating the empty
-// string as valid.
-func Valid(name string) bool {
-	_, err := Lookup(name)
-	return err == nil
-}
-
-// Names returns every selectable profile name, sorted.
-func Names() []string {
-	out := make([]string, 0, len(registry))
-	for name := range registry {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// All returns every profile, sorted by name, for the API and dashboard.
-func All() []*Profile {
-	out := make([]*Profile, 0, len(registry))
-	for _, p := range registry {
-		out = append(out, p)
-	}
-	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
-	return out
 }
 
 // Impersonates reports whether this profile changes anything. False for

@@ -117,19 +117,13 @@ func TestIntegration_ProxyBulkUpdateTags(t *testing.T) {
 	}
 }
 
-func TestIntegration_PoolWorkingProxies(t *testing.T) {
+func TestIntegration_WorkingProxies(t *testing.T) {
 	db := testDB(t)
 	cleanTables(t, db)
 	proxies := NewProxyRepository(db)
-	pools := NewPoolRepository(db)
 	ctx := context.Background()
 
-	pool, err := pools.Create(ctx, models.CreatePoolRequest{Name: "export", RotationMethod: "roundrobin", Enabled: true})
-	if err != nil {
-		t.Fatalf("create pool: %v", err)
-	}
 	user, pass := "u", "p"
-	var ids []int
 	for i, state := range []struct {
 		status   string
 		latency  int
@@ -149,10 +143,6 @@ func TestIntegration_PoolWorkingProxies(t *testing.T) {
 			p.ID, state.status, state.latency, state.cooldown); err != nil {
 			t.Fatal(err)
 		}
-		ids = append(ids, p.ID)
-	}
-	if err := pools.AddProxies(ctx, pool.ID, ids); err != nil {
-		t.Fatalf("add proxies: %v", err)
 	}
 
 	addresses := func(ps []models.Proxy) []string {
@@ -163,7 +153,7 @@ func TestIntegration_PoolWorkingProxies(t *testing.T) {
 		return out
 	}
 
-	working, err := pools.WorkingProxies(ctx, pool.ID, 0, false)
+	working, err := proxies.WorkingProxies(ctx, "", nil, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +165,7 @@ func TestIntegration_PoolWorkingProxies(t *testing.T) {
 		t.Errorf("credentials missing: %+v", working[0])
 	}
 
-	all, err := pools.WorkingProxies(ctx, pool.ID, 2, true)
+	all, err := proxies.WorkingProxies(ctx, "", nil, 2, true)
 	if err != nil {
 		t.Fatal(err)
 	}

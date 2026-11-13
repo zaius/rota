@@ -2,18 +2,16 @@ import * as React from "react"
 import { Link, useLocation } from "react-router-dom"
 import {
   Gauge,
-  Layers,
   Network,
   Rss,
   Settings,
-  Users,
   type LucideIcon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { AccountMenu } from "@/components/shell/account-menu"
 
-// Order follows the workflow: what happened → the inventory → how it is
-// grouped and who uses it → configuration. Not alphabetical.
+// Order follows the workflow: what happened → the inventory → where it comes
+// from → configuration. Not alphabetical.
 const NAV: {
   href: string
   label: string
@@ -23,12 +21,10 @@ const NAV: {
   { href: "/dashboard", label: "Overview", icon: Gauge, exact: true },
   { href: "/dashboard/proxies", label: "Proxies", icon: Network },
   { href: "/dashboard/sources", label: "Sources", icon: Rss },
-  { href: "/dashboard/pools", label: "Pools", icon: Layers },
-  { href: "/dashboard/users", label: "Users", icon: Users },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ]
 
-export function AppNav({ username }: { username: string }) {
+export function AppNav() {
   const { pathname } = useLocation()
   const tz = React.useMemo(() => {
     try {
@@ -69,7 +65,7 @@ export function AppNav({ username }: { username: string }) {
           </span>
         </Link>
         <div className="md:hidden">
-          <AccountMenu username={username} compact />
+          <AccountMenu compact />
         </div>
       </div>
 
@@ -107,7 +103,7 @@ export function AppNav({ username }: { username: string }) {
 
       <div className="mt-auto hidden flex-col gap-2 md:flex">
         <p className="label px-2">Times in {tz}</p>
-        <AccountMenu username={username} />
+        <AccountMenu />
       </div>
     </aside>
   )

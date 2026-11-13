@@ -8,9 +8,7 @@ import LoginPage from "@/app/login/page"
 import DashboardLayout from "@/app/dashboard/layout"
 import DashboardPage from "@/app/dashboard/page"
 import ProxiesPage from "@/app/dashboard/proxies/page"
-import PoolsPage from "@/app/dashboard/pools/page"
 import SourcesPage from "@/app/dashboard/sources/page"
-import UsersPage from "@/app/dashboard/users/page"
 import SettingsPage from "@/app/dashboard/settings/page"
 
 // The pathless routes carrying errorElement keep a crash inside the theme
@@ -32,9 +30,7 @@ export const router = createBrowserRouter([
                 children: [
                   { path: "dashboard", element: <DashboardPage /> },
                   { path: "dashboard/proxies", element: <ProxiesPage /> },
-                  { path: "dashboard/pools", element: <PoolsPage /> },
                   { path: "dashboard/sources", element: <SourcesPage /> },
-                  { path: "dashboard/users", element: <UsersPage /> },
                   { path: "dashboard/settings", element: <SettingsPage /> },
                 ],
               },

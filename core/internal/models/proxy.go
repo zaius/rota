@@ -189,3 +189,14 @@ type PaginationMeta struct {
 	Total      int `json:"total"`
 	TotalPages int `json:"total_pages"`
 }
+
+// GeoInfo is the result of a GeoIP lookup
+type GeoInfo struct {
+	CountryCode string  `json:"country_code"`
+	CountryName string  `json:"country_name"`
+	RegionName  string  `json:"region_name"`
+	CityName    string  `json:"city_name"`
+	ISP         string  `json:"isp"`
+	Latitude    float64 `json:"lat"`
+	Longitude   float64 `json:"lon"`
+}

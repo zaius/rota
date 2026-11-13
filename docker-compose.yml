@@ -18,14 +18,7 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:-rota_password}
       - DB_NAME=${DB_NAME:-rota}
       - DB_SSLMODE=${DB_SSLMODE:-disable}
-      - ROTA_ADMIN_USER=${ROTA_ADMIN_USER:-admin}
-      - ROTA_ADMIN_PASSWORD=${ROTA_ADMIN_PASSWORD:-admin}
-      # Optional: unset means a key generated once and stored in the database.
-      - JWT_SECRET=${JWT_SECRET:-}
-      - AUTH_IP_MAX_ATTEMPTS=${AUTH_IP_MAX_ATTEMPTS:-10}
-      - AUTH_IP_WINDOW_MINUTES=${AUTH_IP_WINDOW_MINUTES:-10}
-      - AUTH_IP_BLOCK_MINUTES=${AUTH_IP_BLOCK_MINUTES:-30}
-      - TRUST_PROXY_HEADERS=${TRUST_PROXY_HEADERS:-false}
+      - ROTA_PASSWORD=${ROTA_PASSWORD:?Set ROTA_PASSWORD; it guards the proxy, the API and the dashboard}
       # Mount the CA files with docker-compose.tls-inspect.yml when enabled.
       - TLS_INSPECT_CA_CERT=${TLS_INSPECT_CA_CERT:-}
       - TLS_INSPECT_CA_KEY=${TLS_INSPECT_CA_KEY:-}
