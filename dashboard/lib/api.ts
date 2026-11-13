@@ -29,8 +29,6 @@ import {
   ProxyUser,
   CreateProxyUserRequest,
   UpdateProxyUserRequest,
-  PoolAlertRule,
-  CreatePoolAlertRuleRequest,
 } from "./types"
 
 // Empty base = same origin: in production the Go server serves both the SPA and
@@ -477,30 +475,6 @@ class ApiClient {
     }
 
     return response.blob()
-  }
-
-  // ── Alert Rules ──────────────────────────────────────────────────────────
-  async getAlertRules(poolId: number): Promise<PoolAlertRule[]> {
-    const data = await this.request<{ rules: PoolAlertRule[] }>(`/api/v1/pools/${poolId}/alert-rules`)
-    return data.rules
-  }
-
-  async createAlertRule(poolId: number, req: CreatePoolAlertRuleRequest): Promise<PoolAlertRule> {
-    return this.request(`/api/v1/pools/${poolId}/alert-rules`, {
-      method: "POST",
-      body: JSON.stringify(req),
-    })
-  }
-
-  async updateAlertRule(poolId: number, ruleId: number, req: CreatePoolAlertRuleRequest): Promise<PoolAlertRule> {
-    return this.request(`/api/v1/pools/${poolId}/alert-rules/${ruleId}`, {
-      method: "PUT",
-      body: JSON.stringify(req),
-    })
-  }
-
-  async deleteAlertRule(poolId: number, ruleId: number): Promise<void> {
-    return this.request(`/api/v1/pools/${poolId}/alert-rules/${ruleId}`, { method: "DELETE" })
   }
 
   private wsUrl(path: string): string {

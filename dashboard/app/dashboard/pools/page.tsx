@@ -4,11 +4,9 @@ import { api } from "@/lib/api"
 import { cn, errorMessage } from "@/lib/utils"
 import { toast } from "@/lib/toast"
 import {
-  type CreatePoolAlertRuleRequest,
   type CreatePoolRequest,
   type GeoFilter,
   type Job,
-  type PoolAlertRule,
   type PoolProxy,
   type ProxyPool,
   GEO_FILTER_ALL,
@@ -77,14 +75,6 @@ const DEFAULT_POOL_FORM: CreatePoolRequest = {
   enabled: true,
   isp_filters: [],
   tag_filters: [],
-}
-
-const DEFAULT_ALERT_FORM: CreatePoolAlertRuleRequest = {
-  enabled: true,
-  min_active_proxies: 5,
-  webhook_url: "",
-  webhook_method: "POST",
-  cooldown_minutes: 30,
 }
 
 // The open tab and selected pool, kept in the URL.
@@ -174,14 +164,6 @@ export default function PoolsPage() {
     () => api.getProxies({ page: 1, limit: 50, search: pickerQuery || undefined }).then((r) => r.proxies),
     { enabled: pickerOpen },
   )
-
-  // Alert rules
-  const [alertRules, setAlertRules] = useState<PoolAlertRule[]>([])
-  const [alertDialogOpen, setAlertDialogOpen] = useState(false)
-  const [alertForm, setAlertForm] = useState<CreatePoolAlertRuleRequest>(DEFAULT_ALERT_FORM)
-  const [editAlertRule, setEditAlertRule] = useState<PoolAlertRule | null>(null)
-  const [savingAlert, setSavingAlert] = useState(false)
-  const [deleteRuleId, setDeleteRuleId] = useState<number | null>(null)
 
   const selectPool = (id: number) => {
     if (id !== selectedPoolId) setUrl({ pool: String(id) })
@@ -284,15 +266,13 @@ export default function PoolsPage() {
 
   // ── Detail ────────────────────────────────────────────────────────────────
 
-  // loadPoolDetail fetches the members and alert rules of one pool.
   const loadPoolDetail = useCallback(async (poolId: number) => {
     const reqId = ++selectedPoolReq.current
     setPoolProxiesLoading(true)
     try {
-      const [proxiesRes, rules] = await Promise.all([api.getPoolProxies(poolId), api.getAlertRules(poolId).catch(() => [])])
+      const { proxies } = await api.getPoolProxies(poolId)
       if (selectedPoolReq.current !== reqId) return
-      setPoolProxies(proxiesRes.proxies)
-      setAlertRules(rules)
+      setPoolProxies(proxies)
     } catch {
       if (selectedPoolReq.current !== reqId) return
       toast.error("Failed to load pool members")
@@ -316,7 +296,6 @@ export default function PoolsPage() {
       loadPoolDetail(selectedPoolId)
     } else {
       setPoolProxies([])
-      setAlertRules([])
     }
   }, [selectedPoolId, loadPoolDetail])
 
@@ -433,60 +412,6 @@ export default function PoolsPage() {
     }
   }
 
-  // ── Alert rules ───────────────────────────────────────────────────────────
-
-  const openCreateAlertRule = () => {
-    setEditAlertRule(null)
-    setAlertForm(DEFAULT_ALERT_FORM)
-    setAlertDialogOpen(true)
-  }
-
-  const openEditAlertRule = (rule: PoolAlertRule) => {
-    setEditAlertRule(rule)
-    setAlertForm({
-      enabled: rule.enabled,
-      min_active_proxies: rule.min_active_proxies,
-      webhook_url: rule.webhook_url,
-      webhook_method: rule.webhook_method,
-      cooldown_minutes: rule.cooldown_minutes,
-    })
-    setAlertDialogOpen(true)
-  }
-
-  const handleSaveAlertRule = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!selectedPool) return
-    setSavingAlert(true)
-    try {
-      if (editAlertRule) {
-        await api.updateAlertRule(selectedPool.id, editAlertRule.id, alertForm)
-        toast.success("Alert rule updated")
-      } else {
-        await api.createAlertRule(selectedPool.id, alertForm)
-        toast.success("Alert rule created")
-      }
-      setAlertDialogOpen(false)
-      setAlertRules(await api.getAlertRules(selectedPool.id))
-    } catch (err) {
-      toast.error("Failed to save alert rule", errorMessage(err, "Unknown error"))
-    } finally {
-      setSavingAlert(false)
-    }
-  }
-
-  const confirmDeleteRule = async () => {
-    if (!selectedPool || deleteRuleId === null) return
-    try {
-      await api.deleteAlertRule(selectedPool.id, deleteRuleId)
-      setAlertRules((prev) => prev.filter((r) => r.id !== deleteRuleId))
-      toast.success("Alert rule deleted")
-    } catch (err) {
-      toast.error("Failed to delete alert rule", errorMessage(err, "Unknown error"))
-    } finally {
-      setDeleteRuleId(null)
-    }
-  }
-
   // ── Render ────────────────────────────────────────────────────────────────
 
   const totalInPools = pools.reduce((s, p) => s + p.total_proxies, 0)
@@ -593,7 +518,7 @@ export default function PoolsPage() {
               {/* Detail */}
               <div className="min-w-0">
                 {!selectedPool ? (
-                  <EmptyLine>Select a pool to see its members, health and alerts.</EmptyLine>
+                  <EmptyLine>Select a pool to see its members and health.</EmptyLine>
                 ) : (
                   <>
                     <div className="border-border flex flex-wrap items-end justify-between gap-x-6 gap-y-3 border-b px-4 py-4 md:px-6">
@@ -717,7 +642,7 @@ export default function PoolsPage() {
                     </div>
 
                     {/* Members */}
-                    <div className="border-border border-b px-4 py-5 md:px-6">
+                    <div className="px-4 py-5 md:px-6">
                       <div className="mb-3 flex items-baseline justify-between gap-4">
                         <h3 className="label">
                           Members <span className="num">({count(poolProxies.length)})</span>
@@ -779,53 +704,6 @@ export default function PoolsPage() {
                             </TableBody>
                           </Table>
                         </div>
-                      )}
-                    </div>
-
-                    {/* Alerts */}
-                    <div className="px-4 py-5 md:px-6">
-                      <div className="mb-3 flex items-baseline justify-between gap-4">
-                        <h3 className="label">
-                          Alert rules <span className="num">({count(alertRules.length)})</span>
-                        </h3>
-                        <Button variant="outline" size="sm" onClick={openCreateAlertRule}>
-                          Add rule
-                        </Button>
-                      </div>
-                      {alertRules.length === 0 ? (
-                        <p className="text-muted-foreground py-4 text-center">No rules — nobody is told when this pool runs dry.</p>
-                      ) : (
-                        <ul className="divide-border divide-y">
-                          {alertRules.map((rule) => (
-                            <li key={rule.id} className="flex items-center gap-3 py-2">
-                              <OnOff on={rule.enabled} onLabel="On" offLabel="Off" />
-                              <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono" title={rule.webhook_url}>
-                                {rule.webhook_url}
-                              </span>
-                              <span className="num text-muted-foreground shrink-0">
-                                below {count(rule.min_active_proxies)} active · every {rule.cooldown_minutes}m
-                              </span>
-                              {rule.last_fired_at && (
-                                <span className="text-muted-foreground shrink-0" title={formatDateTime(rule.last_fired_at)}>
-                                  fired {relative(rule.last_fired_at)}
-                                </span>
-                              )}
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                  <Button variant="ghost" size="icon-sm" aria-label="Rule actions">
-                                    <ChevronDown aria-hidden />
-                                  </Button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end">
-                                  <DropdownMenuItem onClick={() => openEditAlertRule(rule)}>Edit</DropdownMenuItem>
-                                  <DropdownMenuItem variant="destructive" onClick={() => setDeleteRuleId(rule.id)}>
-                                    Delete
-                                  </DropdownMenuItem>
-                                </DropdownMenuContent>
-                              </DropdownMenu>
-                            </li>
-                          ))}
-                        </ul>
                       )}
                     </div>
                   </>
@@ -1180,70 +1058,6 @@ export default function PoolsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Alert rule */}
-      <Dialog open={alertDialogOpen} onOpenChange={setAlertDialogOpen}>
-        <DialogContent>
-          <form onSubmit={handleSaveAlertRule} className="space-y-4">
-            <DialogHeader>
-              <DialogTitle>{editAlertRule ? "Edit alert rule" : "New alert rule"}</DialogTitle>
-              <DialogDescription>
-                Fires a webhook when the pool&apos;s active count drops below the threshold, at most once per cooldown.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-1.5">
-              <Label htmlFor="rule-url">Webhook URL</Label>
-              <Input
-                id="rule-url"
-                className="font-mono"
-                placeholder="https://hooks.slack.com/…"
-                required
-                value={alertForm.webhook_url}
-                onChange={(e) => setAlertForm({ ...alertForm, webhook_url: e.target.value })}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="rule-min">Fire below (active proxies)</Label>
-                <Input
-                  id="rule-min"
-                  type="number"
-                  min={1}
-                  value={alertForm.min_active_proxies}
-                  onChange={(e) => setAlertForm({ ...alertForm, min_active_proxies: parseInt(e.target.value) || 1 })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="rule-cooldown">Cooldown (minutes)</Label>
-                <Input
-                  id="rule-cooldown"
-                  type="number"
-                  min={1}
-                  value={alertForm.cooldown_minutes}
-                  onChange={(e) => setAlertForm({ ...alertForm, cooldown_minutes: parseInt(e.target.value) || 30 })}
-                />
-              </div>
-            </div>
-            <div className="flex items-center justify-between gap-4">
-              <Label htmlFor="rule-enabled" className="text-foreground">
-                Enabled
-              </Label>
-              <Switch id="rule-enabled" checked={alertForm.enabled} onCheckedChange={(v) => setAlertForm({ ...alertForm, enabled: v })} />
-            </div>
-            <p className="text-muted-foreground font-mono text-[0.6875rem] leading-4">
-              {'{ event: "pool.degraded", pool_id, pool_name, active_proxies, total_proxies, threshold, fired_at }'}
-            </p>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setAlertDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={savingAlert}>
-                {savingAlert ? "Saving…" : editAlertRule ? "Save" : "Create rule"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
       <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1259,18 +1073,6 @@ export default function PoolsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={deleteRuleId !== null} onOpenChange={(o) => !o && setDeleteRuleId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete this alert rule?</AlertDialogTitle>
-            <AlertDialogDescription>The webhook stops firing for this pool.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmDeleteRule}>Delete</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </>
   )
 }

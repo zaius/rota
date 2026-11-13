@@ -61,7 +61,6 @@ func TestProviderEndToEnd(t *testing.T) {
 	RecordAuthRejection(context.Background(), "rate_limited")
 	RecordHealthCheck(context.Background(), false, 950)
 	RecordSourceFetch(context.Background(), true, 12)
-	RecordPoolAlert(context.Background(), true)
 	RecordEventsWritten(context.Background(), "request", 5, true)
 	RecordAPIRequest(context.Background(), "/api/v1/pools", http.MethodGet, 200, 3*time.Millisecond)
 	RegisterProxyObservables(
@@ -98,7 +97,6 @@ func TestProviderEndToEnd(t *testing.T) {
 		"rota_healthcheck_duration_seconds",
 		"rota_source_fetches_total",
 		"rota_source_proxies_imported_total",
-		"rota_pool_alerts_total",
 		"rota_events_written_total",
 		`kind="request"`,
 		"rota_api_requests_total",

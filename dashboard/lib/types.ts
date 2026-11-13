@@ -280,27 +280,6 @@ export interface ProxyPool {
   updated_at: string
 }
 
-export interface PoolAlertRule {
-  id: number
-  pool_id: number
-  enabled: boolean
-  min_active_proxies: number
-  webhook_url: string
-  webhook_method: "POST" | "GET"
-  last_fired_at?: string
-  cooldown_minutes: number
-  created_at: string
-  updated_at: string
-}
-
-export interface CreatePoolAlertRuleRequest {
-  enabled: boolean
-  min_active_proxies: number
-  webhook_url: string
-  webhook_method?: "POST" | "GET"
-  cooldown_minutes?: number
-}
-
 export interface PoolProxy {
   proxy_id: number
   address: string

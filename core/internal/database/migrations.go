@@ -657,6 +657,13 @@ var migrations = []Migration{
 		`,
 		Down: `SELECT 1;`,
 	},
+	{
+		Version:     37,
+		Description: "Drop pool alert rules",
+		// Alerting on rota_pool_proxies in the metrics backend replaces them.
+		Up:   `DROP TABLE IF EXISTS pool_alert_rules;`,
+		Down: `SELECT 1;`,
+	},
 }
 
 // migrationLockKey serializes each migration transaction across instances.

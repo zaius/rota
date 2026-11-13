@@ -337,11 +337,6 @@ func (s *Server) setupRoutes() {
 			r.Post("/pools/{id}/health-check", s.poolHandler.HealthCheck)
 			r.Get("/pools/{id}/health-check/jobs", s.poolHandler.HealthCheckJobs)
 			r.Get("/pools/{id}/health-check/{job_id}", s.poolHandler.HealthCheckStatus)
-			// Alert rules
-			r.Get("/pools/{id}/alert-rules", s.poolHandler.ListAlertRules)
-			r.Post("/pools/{id}/alert-rules", s.poolHandler.CreateAlertRule)
-			r.Put("/pools/{id}/alert-rules/{rule_id}", s.poolHandler.UpdateAlertRule)
-			r.Delete("/pools/{id}/alert-rules/{rule_id}", s.poolHandler.DeleteAlertRule)
 		})
 	})
 

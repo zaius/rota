@@ -24,7 +24,7 @@
 - **Proxy routing:** HTTP and SOCKS proxies, per-pool rotation, ordered fallback pools, retries, and failed-auth protection.
 - **Pools and sources:** Scheduled imports, GeoIP enrichment, geo/ISP/tag filters, automatic or manual membership, and exports.
 - **Sessions:** Exclusive reservations per target or custom scope, idle expiry, and explicit release/invalidation.
-- **Monitoring:** Scheduled health checks, webhook alerts, and request/tunnel history.
+- **Monitoring:** Scheduled health checks and request/tunnel history.
 - **HTTPS inspection:** Optional per-user TLS interception and configurable TLS/HTTP fingerprint profiles.
 - **Security:** Authenticated proxy users, admin JWTs, bcrypt credentials, and login brute-force protection.
 - **Deployment:** Docker Compose, PostgreSQL, file-based Parquet event storage, and Prometheus/OTLP metrics.
@@ -250,35 +250,6 @@ curl -H "Authorization: Bearer $TOKEN" \
 # CSV â€” with status, geo, ISP, success rate
 curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8001/api/v1/pools/{id}/export?format=csv" -o pool.csv
-```
-
-#### Webhook Alerts
-
-Add an alert rule to a pool to be notified when the active proxy count drops below a threshold:
-
-```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  "http://localhost:8001/api/v1/pools/{id}/alert-rules" \
-  -d '{
-    "enabled": true,
-    "min_active_proxies": 10,
-    "webhook_url": "https://hooks.slack.com/...",
-    "cooldown_minutes": 30
-  }'
-```
-
-Payload sent to the webhook:
-```json
-{
-  "event": "pool.degraded",
-  "pool_id": 1,
-  "pool_name": "US Residential",
-  "active_proxies": 3,
-  "total_proxies": 50,
-  "threshold": 10,
-  "fired_at": "2026-04-02T04:30:00Z"
-}
 ```
 
 ### Per-User Routing
@@ -650,7 +621,6 @@ Rota instruments itself once with OpenTelemetry and exports through two paths â€
 | `rota_proxy_users` | gauge | configured proxy users by `enabled` |
 | `rota_healthcheck_checks_total` / `rota_healthcheck_duration_seconds` | counter / histogram | health-check probes by `outcome` |
 | `rota_source_fetches_total` / `rota_source_proxies_imported_total` | counter | source list fetches and new proxies imported |
-| `rota_pool_alerts_total` | counter | alert webhooks by delivery `outcome` |
 | `rota_events_written_total` | counter | request/tunnel history writes by `kind` and `outcome`; failures are lost history |
 | `rota_api_requests_total` / `rota_api_request_duration_seconds` | counter / histogram | management API traffic by `route`, `method`, `status` |
 | `go_*` / `process_*` | various | Go runtime: memory, GC, goroutines |

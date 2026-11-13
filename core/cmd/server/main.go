@@ -131,12 +131,11 @@ func run() error {
 	geoSvc := services.NewGeoIPService(log, services.NewLocalGeoDB(cfg.GeoIP, log))
 	sourceSvc := services.NewSourceService(sourceRepo, proxyRepo, poolRepo, geoSvc, log)
 	poolSvc := services.NewPoolService(poolRepo, proxyRepo, settingsRepo, log)
-	alertWatcher := services.NewAlertWatcher(poolRepo, log)
 	cleanupSvc := services.NewProxyCleanupService(proxyRepo, settingsRepo, eventStore, log)
 	historyCleanupSvc := services.NewHistoryCleanupService(eventStore, log)
 	statsRefresher := services.NewStatsRefresher(eventStore, proxyRepo, time.Minute, log)
 
-	backgroundSvcs := []services.Service{geoSvc, sourceSvc, poolSvc, alertWatcher, cleanupSvc, historyCleanupSvc, statsRefresher}
+	backgroundSvcs := []services.Service{geoSvc, sourceSvc, poolSvc, cleanupSvc, historyCleanupSvc, statsRefresher}
 	if metricsProvider != nil {
 		backgroundSvcs = append(backgroundSvcs, metrics.NewFleetPoller(db, poolRepo, 30*time.Second, log))
 	}

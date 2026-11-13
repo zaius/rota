@@ -50,7 +50,6 @@ var (
 	healthCheckDuration   metric.Float64Histogram
 	sourceFetches         metric.Int64Counter
 	sourceProxiesImported metric.Int64Counter
-	poolAlerts            metric.Int64Counter
 	eventsWritten         metric.Int64Counter
 	apiRequests           metric.Int64Counter
 	apiRequestDuration    metric.Float64Histogram
@@ -87,8 +86,6 @@ func init() {
 		metric.WithDescription("Proxy source list fetches, by outcome"))
 	sourceProxiesImported, _ = meter.Int64Counter("rota.source.proxies_imported",
 		metric.WithDescription("New proxies imported from source fetches"))
-	poolAlerts, _ = meter.Int64Counter("rota.pool.alerts",
-		metric.WithDescription("Pool alert webhooks fired, by delivery outcome"))
 	eventsWritten, _ = meter.Int64Counter("rota.events.written",
 		metric.WithDescription("Request and tunnel history events written to the event store, by kind and outcome"))
 	apiRequests, _ = meter.Int64Counter("rota.api.requests",
@@ -224,15 +221,6 @@ func RecordEventsWritten(ctx context.Context, kind string, count int, success bo
 		attribute.String("kind", kind),
 		attribute.String("outcome", outcomeLabel(success)),
 	))
-}
-
-// RecordPoolAlert records one fired pool alert webhook.
-func RecordPoolAlert(ctx context.Context, delivered bool) {
-	outcome := "delivered"
-	if !delivered {
-		outcome = "failed"
-	}
-	poolAlerts.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
 }
 
 // RecordAPIRequest records one management API request. route is the matched

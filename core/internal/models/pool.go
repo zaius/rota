@@ -35,40 +35,6 @@ type ProxyPool struct {
 	TagFilters    []string    `json:"tag_filters,omitempty"`
 }
 
-// PoolAlertRule defines a webhook alert for a pool when active proxies drop below threshold
-type PoolAlertRule struct {
-	ID               int        `json:"id"`
-	PoolID           int        `json:"pool_id"`
-	Enabled          bool       `json:"enabled"`
-	MinActiveProxies int        `json:"min_active_proxies"`
-	WebhookURL       string     `json:"webhook_url"`
-	WebhookMethod    string     `json:"webhook_method"`
-	LastFiredAt      *time.Time `json:"last_fired_at,omitempty"`
-	CooldownMinutes  int        `json:"cooldown_minutes"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-}
-
-// CreatePoolAlertRuleRequest is the payload for creating an alert rule
-type CreatePoolAlertRuleRequest struct {
-	Enabled          bool   `json:"enabled"`
-	MinActiveProxies int    `json:"min_active_proxies" validate:"required,min=1"`
-	WebhookURL       string `json:"webhook_url"       validate:"required,url"`
-	WebhookMethod    string `json:"webhook_method"    validate:"omitempty,oneof=POST GET"`
-	CooldownMinutes  int    `json:"cooldown_minutes"  validate:"min=1"`
-}
-
-// PoolAlertPayload is what we POST to the webhook URL
-type PoolAlertPayload struct {
-	Event         string    `json:"event"`
-	PoolID        int       `json:"pool_id"`
-	PoolName      string    `json:"pool_name"`
-	ActiveProxies int       `json:"active_proxies"`
-	TotalProxies  int       `json:"total_proxies"`
-	Threshold     int       `json:"threshold"`
-	FiredAt       time.Time `json:"fired_at"`
-}
-
 // PoolProxy is the join between a pool and a proxy (with stats)
 type PoolProxy struct {
 	ProxyID         int        `json:"proxy_id"`
