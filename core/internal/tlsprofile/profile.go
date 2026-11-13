@@ -30,9 +30,9 @@ import (
 
 // Profile is one named client fingerprint.
 type Profile struct {
-	// Name is the stable identifier used in configuration, in the API, and in
-	// the "-profile-<name>" proxy-username marker. Renaming one breaks
-	// deployed clients, so treat these as wire format.
+	// Name is the stable identifier clients request with the "profile-<name>"
+	// proxy-username option. Renaming one breaks deployed clients, so treat
+	// these as wire format.
 	Name string
 
 	// Label is the human-readable form, for the dashboard.
