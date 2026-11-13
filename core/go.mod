@@ -6,12 +6,14 @@ require (
 	github.com/bogdanfinn/fhttp v0.6.8
 	github.com/bogdanfinn/tls-client v1.15.1
 	github.com/bogdanfinn/utls v1.7.7-barnius
+	github.com/caarlos0/env/v11 v11.4.2
 	github.com/gammazero/workerpool v1.1.3
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/go-chi/cors v1.2.2
 	github.com/go-playground/validator/v10 v10.22.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/joho/godotenv v1.5.1
 	github.com/oschwald/geoip2-golang/v2 v2.4.0
 	github.com/parquet-go/parquet-go v0.32.0
 	github.com/pressly/goose/v3 v3.30.1
