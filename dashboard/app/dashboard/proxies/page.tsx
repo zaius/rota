@@ -85,6 +85,10 @@ function parseImportText(text: string, format: string): AddProxyRequest[] {
     .filter((proxy): proxy is AddProxyRequest => proxy !== null)
 }
 
+function isRunning(job: Job | null | undefined): boolean {
+  return job?.status === "pending" || job?.status === "running"
+}
+
 function coolingDown(proxy: Proxy): boolean {
   return !!proxy.cooldown_until && new Date(proxy.cooldown_until) > new Date()
 }
@@ -164,10 +168,6 @@ export default function ProxiesPage() {
   const [importProgress, setImportProgress] = React.useState({ current: 0, total: 0, success: 0, failed: 0, skipped: 0 })
   const [importResults, setImportResults] = React.useState<ImportResult[]>([])
   const [isDragging, setIsDragging] = React.useState(false)
-
-  // Bulk test job
-  const [bulkTestJob, setBulkTestJob] = React.useState<Job | null>(null)
-  const bulkTestPollRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Server-side paginated, filtered and sorted list. The query key carries
   // every parameter, so a change refetches on its own; keepPreviousData keeps
@@ -430,84 +430,52 @@ export default function ProxiesPage() {
 
   // ── Bulk test ────────────────────────────────────────────────────────────
 
-  const stopBulkTestPoll = React.useCallback(() => {
-    if (bulkTestPollRef.current) {
-      clearInterval(bulkTestPollRef.current)
-      bulkTestPollRef.current = null
-    }
-  }, [])
+  // The server keeps the latest bulk test, so polling it re-attaches the
+  // progress strip after a reload. Polling runs only while the test does.
+  const bulkTestQuery = useQuery({
+    queryKey: ["bulk-test"],
+    queryFn: () => api.getLatestBulkTestJob(),
+    refetchInterval: (q) => (isRunning(q.state.data) ? 1500 : false),
+  })
+  const latestJob = bulkTestQuery.data
+  const isBulkTesting = isRunning(latestJob)
+  // The strip shows a test seen running here until it is dismissed; one that
+  // finished before the page loaded stays hidden.
+  const [shownJobId, setShownJobId] = React.useState<string | null>(null)
+  const bulkTestJob = latestJob && latestJob.id === shownJobId ? latestJob : null
+  const watchedJobId = React.useRef<string | null>(null)
 
-  // Poll a bulk-test job until it finishes. Used both when starting a new test
-  // and when re-attaching to an in-flight job after a page reload.
-  const startBulkTestPolling = React.useCallback(
-    (jobId: string) => {
-      stopBulkTestPoll()
-      bulkTestPollRef.current = setInterval(async () => {
-        try {
-          const job = await api.getBulkTestJob(jobId)
-          setBulkTestJob(job)
-          if (job.status === "done" || job.status === "failed") {
-            stopBulkTestPoll()
-            if (job.status === "done") {
-              const detail = [`${job.active} active`, `${job.failed} failed`]
-              if (job.skipped) detail.push(`${job.skipped} skipped`)
-              toast.success(`Tested ${count(job.progress)} proxies`, detail.join(", "))
-            } else {
-              toast.error("Bulk test failed", job.error || "Unknown error")
-            }
-            refetchProxies()
-          }
-        } catch {
-          stopBulkTestPoll()
-          setBulkTestJob(null)
-          toast.error("Lost track of bulk test", "The test may still be running on the server")
-        }
-      }, 1500)
-    },
-    [stopBulkTestPoll, refetchProxies],
-  )
-
-  // Re-attach to an in-flight bulk-test job on load, so a reload doesn't
-  // orphan the progress strip; the server job keeps running regardless.
   React.useEffect(() => {
-    let cancelled = false
-    api
-      .getLatestBulkTestJob()
-      .then((job) => {
-        if (cancelled || !job) return
-        if (job.status === "pending" || job.status === "running") {
-          setBulkTestJob(job)
-          startBulkTestPolling(job.id)
-        }
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
+    if (latestJob && isRunning(latestJob)) {
+      watchedJobId.current = latestJob.id
+      setShownJobId(latestJob.id)
+      return
     }
-  }, [startBulkTestPolling])
-
-  // Stop polling if the page unmounts mid-test.
-  React.useEffect(() => () => stopBulkTestPoll(), [stopBulkTestPoll])
+    if (!watchedJobId.current) return
+    if (latestJob?.id !== watchedJobId.current) {
+      toast.error("Lost track of bulk test", "The test may still be running on the server")
+    } else if (latestJob.status === "done") {
+      const detail = [`${latestJob.active} active`, `${latestJob.failed} failed`]
+      if (latestJob.skipped) detail.push(`${latestJob.skipped} skipped`)
+      toast.success(`Tested ${count(latestJob.progress)} proxies`, detail.join(", "))
+    } else {
+      toast.error("Bulk test failed", latestJob.error || "Unknown error")
+    }
+    watchedJobId.current = null
+    refetchProxies()
+  }, [latestJob, refetchProxies])
 
   const handleBulkTest = async () => {
     if (selectedCount === 0) return
-    stopBulkTestPoll()
     try {
-      const { job_id, total: jobTotal, status: jobStatus } = await api.bulkTestProxies(bulkTarget())
-      // Seed an optimistic running state so the progress strip appears at once.
-      const startedAt = new Date().toISOString()
-      setBulkTestJob({
-        id: job_id, status: jobStatus, progress: 0, total: jobTotal,
-        active: 0, failed: 0, started_at: startedAt, updated_at: startedAt,
-      })
-      startBulkTestPolling(job_id)
+      const { job_id } = await api.bulkTestProxies(bulkTarget())
+      watchedJobId.current = job_id
+      setShownJobId(job_id)
+      queryClient.invalidateQueries({ queryKey: ["bulk-test"] })
     } catch (error) {
-      setBulkTestJob(null)
       toast.error("Failed to start bulk test", errorMessage(error, "Unknown error"))
     }
   }
-
-  const isBulkTesting = bulkTestJob?.status === "pending" || bulkTestJob?.status === "running"
 
   // ── Import ───────────────────────────────────────────────────────────────
 
@@ -739,7 +707,7 @@ export default function ProxiesPage() {
               {bulkTestJob.skipped ? ` · ${count(bulkTestJob.skipped)} skipped` : ""}
             </span>
             {!isBulkTesting && (
-              <button type="button" className="text-muted-foreground hover:text-foreground ml-auto font-medium" onClick={() => setBulkTestJob(null)}>
+              <button type="button" className="text-muted-foreground hover:text-foreground ml-auto font-medium" onClick={() => setShownJobId(null)}>
                 Dismiss
               </button>
             )}
