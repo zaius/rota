@@ -3,21 +3,19 @@ package models
 import "time"
 
 // Settings represents system configuration.
-// Proxy server authentication is per-user only (proxy_users); there is no
-// global shared credential setting.
 type Settings struct {
 	Rotation     RotationSettings     `json:"rotation"`
 	HealthCheck  HealthCheckSettings  `json:"healthcheck"`
 	ProxyCleanup ProxyCleanupSettings `json:"proxy_cleanup"`
 }
 
-// RotationSettings holds the per-request behaviour that applies to every pool
-// chain. Rotation strategy itself is configured per pool (rotation_method);
-// the former global method/filter settings served only the removed
-// unauthenticated default chain.
+// RotationSettings holds the per-request behaviour of the proxy port.
 type RotationSettings struct {
 	FollowRedirect bool `json:"follow_redirect"`
 	Timeout        int  `json:"timeout"` // upstream request timeout in seconds
+	// SessionTTLMinutes is how long an idle session keeps its proxy, and the
+	// grace period after a cooldown before a session's use resets its backoff.
+	SessionTTLMinutes int `json:"session_ttl_minutes"`
 }
 
 // HealthCheckSettings represents health check configuration

@@ -33,7 +33,7 @@ func (f *fakeSettingsStore) Reset(context.Context) error { return nil }
 
 func TestSettingsUpdate_KeepsOmittedSectionsAndFields(t *testing.T) {
 	store := &fakeSettingsStore{current: models.Settings{
-		Rotation: models.RotationSettings{FollowRedirect: true, Timeout: 90},
+		Rotation: models.RotationSettings{FollowRedirect: true, Timeout: 90, SessionTTLMinutes: 10},
 		HealthCheck: models.HealthCheckSettings{
 			Timeout: 60, Workers: 20, URL: "https://api.ipify.org", Status: 200,
 			Headers: []string{"User-Agent: rota"},

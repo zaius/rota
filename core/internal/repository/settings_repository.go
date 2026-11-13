@@ -128,8 +128,9 @@ func (r *SettingsRepository) UpdateAll(ctx context.Context, settings *models.Set
 func defaultSettings() map[string]map[string]any {
 	return map[string]map[string]any{
 		"rotation": {
-			"follow_redirect": false,
-			"timeout":         90,
+			"follow_redirect":     false,
+			"timeout":             90,
+			"session_ttl_minutes": 10,
 		},
 		"healthcheck": {
 			"timeout":    60,
@@ -185,19 +186,19 @@ func (r *SettingsRepository) writeSettings(ctx context.Context, values map[strin
 
 // Helper functions to convert between Settings struct and map
 
+// mapToSettings decodes the stored values over the defaults, so a field added
+// after a key was first seeded reads as its default rather than zero.
 func (r *SettingsRepository) mapToSettings(m map[string]map[string]any) (*models.Settings, error) {
 	settings := &models.Settings{}
-
-	// Convert map to JSON and then to struct
-	settingsJSON, err := json.Marshal(m)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal settings map: %w", err)
+	for _, values := range []map[string]map[string]any{defaultSettings(), m} {
+		settingsJSON, err := json.Marshal(values)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal settings map: %w", err)
+		}
+		if err := json.Unmarshal(settingsJSON, settings); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal settings: %w", err)
+		}
 	}
-
-	if err := json.Unmarshal(settingsJSON, settings); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal settings: %w", err)
-	}
-
 	return settings, nil
 }
 
