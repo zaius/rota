@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,20 +20,21 @@ import (
 // ParquetStore implements Store on local files, so request and tunnel history
 // needs no database server.
 //
-// Each event table is a directory with one file per UTC day. The open day is a
-// tab-separated log; every event is a single append, and queries scan the log
-// directly. When a day ends, one conversion replaces its log with a Parquet
-// file. Queries read logs and Parquet files through the same aggregations.
+// Each event table is a directory with one file per UTC day and instance
+// (EVENT_STORE_INSTANCE). The open day is a tab-separated log; every event is a
+// single append, and queries scan the log directly. When a day ends, one
+// conversion replaces its log with a Parquet file. Queries read logs and
+// Parquet files through the same aggregations.
 //
 // A completed append survives a crash or kill of this process. Surviving power
 // loss or a kernel crash takes EVENT_STORE_SYNC, which makes every append wait
 // for the disk.
 //
-// One process owns a directory: replicas sharing history need a database
-// backend.
+// One process owns a directory.
 type ParquetStore struct {
 	logger       *logger.Logger
-	observe      FlushObserver
+	observe      WriteObserver
+	instance     string
 	syncWrites   bool
 	partitionDay func() int64
 
@@ -52,15 +51,18 @@ type ParquetStore struct {
 	cancel        context.CancelFunc
 	closeOnce     sync.Once
 
-	// rollupClosed holds the rollup of the Parquet files rollupKey names with
-	// their sizes. Only a history import rewrites one of those files, and that
-	// changes its size, so each minute's refresh rescans only logs.
+	// rollupClosed holds the rollup of the Parquet files named by rollupKey.
+	// Those files never change, so each minute's refresh rescans only logs.
 	rollupMu     sync.Mutex
 	rollupKey    string
 	rollupClosed *proxyAgg
 }
 
 var _ Store = (*ParquetStore)(nil)
+
+// WriteObserver hears the outcome of every event write. kind is "request" or
+// "tunnel"; a failed write loses its events.
+type WriteObserver func(ctx context.Context, kind string, count int, success bool)
 
 var lineBuffers = sync.Pool{New: func() any {
 	b := make([]byte, 0, 1024)
@@ -69,15 +71,19 @@ var lineBuffers = sync.Pool{New: func() any {
 
 // NewParquetStore opens the event directory and converts any logs left over
 // from earlier days. observe, which may be nil, hears every write.
-func NewParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe FlushObserver) (*ParquetStore, error) {
+func NewParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe WriteObserver) (*ParquetStore, error) {
 	return newParquetStore(cfg, log, observe, func() int64 { return dayOf(time.Now().UnixMilli()) })
 }
 
-func newParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe FlushObserver, partitionDay func() int64) (*ParquetStore, error) {
+func newParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe WriteObserver, partitionDay func() int64) (*ParquetStore, error) {
+	if !config.ValidEventInstance(cfg.Instance) {
+		return nil, fmt.Errorf("invalid event store instance %q", cfg.Instance)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &ParquetStore{
 		logger:        log,
 		observe:       observe,
+		instance:      cfg.Instance,
 		syncWrites:    cfg.SyncWrites,
 		partitionDay:  partitionDay,
 		convertSignal: make(chan struct{}, 1),
@@ -113,7 +119,7 @@ func newParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe Flus
 
 	go s.runConverter(ctx)
 	s.requestConversion()
-	log.Info("parquet event store ready", "dir", cfg.Dir, "sync_writes", cfg.SyncWrites)
+	log.Info("parquet event store ready", "dir", cfg.Dir, "instance", cfg.Instance, "sync_writes", cfg.SyncWrites)
 	return s, nil
 }
 
@@ -156,8 +162,9 @@ func (s *ParquetStore) runConverter(ctx context.Context) {
 	}
 }
 
-// convertPending converts every log older than the day being written. A log
-// that fails stays queryable, and the next rotation or start retries it.
+// convertPending converts every log of this store older than the day being
+// written. A log that fails stays queryable, and the next rotation or start
+// retries it.
 func (s *ParquetStore) convertPending(ctx context.Context) {
 	s.convertMu.Lock()
 	defer s.convertMu.Unlock()
@@ -169,26 +176,27 @@ func (s *ParquetStore) convertPending(ctx context.Context) {
 			s.logger.Error("failed to list event logs", "error", err)
 			continue
 		}
-		for _, day := range slices.Sorted(maps.Keys(listed)) {
-			if day >= writing || !listed[day].log || ctx.Err() != nil {
+		for _, key := range sortedKeys(listed) {
+			if key.day >= writing || !listed[key].log || !t.owns(key) || ctx.Err() != nil {
 				continue
 			}
+			file := filepath.Base(t.path(key, logSuffix))
 			started := time.Now()
-			if err := t.convert(ctx, day, listed[day]); err != nil {
+			if err := t.convert(ctx, key, listed[key]); err != nil {
 				if ctx.Err() == nil {
-					s.logger.Error("failed to convert event log", "dir", t.dir, "day", dayName(day), "error", err)
+					s.logger.Error("failed to convert event log", "dir", t.dir, "file", file, "error", err)
 				}
 				continue
 			}
-			s.logger.Info("converted event log to parquet", "dir", t.dir, "day", dayName(day), "elapsed", time.Since(started).String())
+			s.logger.Info("converted event log to parquet", "dir", t.dir, "file", file, "elapsed", time.Since(started).String())
 		}
 	}
 }
 
-func (s *ParquetStore) write(ctx context.Context, t *eventTable, kind string, count int, lines []byte) error {
-	err := t.append(lines)
+func (s *ParquetStore) write(ctx context.Context, t *eventTable, kind string, line []byte) error {
+	err := t.append(line)
 	if s.observe != nil {
-		s.observe(ctx, kind, count, err == nil)
+		s.observe(ctx, kind, 1, err == nil)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to append %s event: %w", kind, err)
@@ -198,40 +206,18 @@ func (s *ParquetStore) write(ctx context.Context, t *eventTable, kind string, co
 
 // InsertRequest appends one proxied request outcome.
 func (s *ParquetStore) InsertRequest(ctx context.Context, event RequestEvent) error {
-	return s.InsertRequests(ctx, []RequestEvent{event})
-}
-
-// InsertRequests appends a batch of request outcomes in one write.
-func (s *ParquetStore) InsertRequests(ctx context.Context, events []RequestEvent) error {
-	if len(events) == 0 {
-		return nil
-	}
 	buf := lineBuffers.Get().(*[]byte)
 	defer lineBuffers.Put(buf)
-	*buf = (*buf)[:0]
-	for i := range events {
-		*buf = appendRequestLine(*buf, &events[i])
-	}
-	return s.write(ctx, s.requests, "request", len(events), *buf)
+	*buf = appendRequestLine((*buf)[:0], &event)
+	return s.write(ctx, s.requests, "request", *buf)
 }
 
 // InsertTunnel appends one completed CONNECT tunnel.
 func (s *ParquetStore) InsertTunnel(ctx context.Context, event TunnelEvent) error {
-	return s.InsertTunnels(ctx, []TunnelEvent{event})
-}
-
-// InsertTunnels appends a batch of completed tunnels in one write.
-func (s *ParquetStore) InsertTunnels(ctx context.Context, events []TunnelEvent) error {
-	if len(events) == 0 {
-		return nil
-	}
 	buf := lineBuffers.Get().(*[]byte)
 	defer lineBuffers.Put(buf)
-	*buf = (*buf)[:0]
-	for i := range events {
-		*buf = appendTunnelLine(*buf, &events[i])
-	}
-	return s.write(ctx, s.tunnels, "tunnel", len(events), *buf)
+	*buf = appendTunnelLine((*buf)[:0], &event)
+	return s.write(ctx, s.tunnels, "tunnel", *buf)
 }
 
 // RequestStats returns today/yesterday request aggregates for the dashboard.
@@ -284,7 +270,7 @@ func (s *ParquetStore) ProxyRollup(ctx context.Context) ([]ProxyRequestStats, er
 	for _, f := range files {
 		if f.parquet {
 			closed = append(closed, f)
-			names = append(names, fmt.Sprintf("%s:%d", filepath.Base(f.path), f.size))
+			names = append(names, filepath.Base(f.path))
 		} else {
 			open = append(open, f)
 		}

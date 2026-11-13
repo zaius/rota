@@ -106,34 +106,42 @@ func TestGeoIPASNDatabaseRequiresCity(t *testing.T) {
 	}
 }
 
-func TestEventStoreDefaultsToParquet(t *testing.T) {
-	t.Setenv("EVENT_STORE", "")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.EventStore != "parquet" {
-		t.Fatalf("default event store: got %q", cfg.EventStore)
-	}
-}
-
-func TestEventStoreMirrorValidation(t *testing.T) {
+func TestEventStoreAcceptsOnlyParquet(t *testing.T) {
 	for _, tc := range []struct {
 		store, mirror string
 		valid         bool
 	}{
-		{"postgres", "", true},
-		{"postgres", "parquet", true},
-		{"parquet", "postgres", true},
-		{"parquet", "clickhouse", true},
-		{"parquet", "parquet", false},
-		{"parquet", "mysql", false},
+		{"", "", true},
+		{"parquet", "", true},
+		{"postgres", "", false},
+		{"clickhouse", "", false},
+		{"parquet", "postgres", false},
+		{"", "parquet", false},
 	} {
 		t.Run(tc.store+"/"+tc.mirror, func(t *testing.T) {
 			t.Setenv("EVENT_STORE", tc.store)
 			t.Setenv("EVENT_STORE_MIRROR", tc.mirror)
 			if _, err := Load(); (err == nil) != tc.valid {
 				t.Fatalf("valid=%v, got error %v", tc.valid, err)
+			}
+		})
+	}
+}
+
+func TestEventInstanceValidation(t *testing.T) {
+	for instance, valid := range map[string]bool{
+		"":          true, // the default
+		"rota-2":    true,
+		"edge_eu1":  true,
+		"a.b":       false,
+		"../escape": false,
+		"x/y":       false,
+		"Rota":      false,
+	} {
+		t.Run(instance, func(t *testing.T) {
+			t.Setenv("EVENT_STORE_INSTANCE", instance)
+			if _, err := Load(); (err == nil) != valid {
+				t.Fatalf("valid=%v, got error %v", valid, err)
 			}
 		})
 	}

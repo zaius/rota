@@ -35,9 +35,16 @@ func newFakeDay() *fakeDay {
 
 func (f *fakeDay) get() int64 { return f.day.Load() }
 
+const testInstance = "rota"
+
 func newTestParquetStore(t *testing.T, dir string, day *fakeDay) *ParquetStore {
 	t.Helper()
-	store, err := newParquetStore(&config.ParquetConfig{Dir: dir}, logger.New("error"), nil, day.get)
+	return newTestParquetStoreAs(t, dir, day, testInstance)
+}
+
+func newTestParquetStoreAs(t *testing.T, dir string, day *fakeDay, instance string) *ParquetStore {
+	t.Helper()
+	store, err := newParquetStore(&config.ParquetConfig{Dir: dir, Instance: instance}, logger.New("error"), nil, day.get)
 	if err != nil {
 		t.Fatalf("open parquet store: %v", err)
 	}
@@ -58,99 +65,8 @@ func midnight(t *testing.T, store *ParquetStore, day *fakeDay) {
 	store.convertPending(context.Background())
 }
 
-// parquetTestBackend runs the conformance suite on ParquetStore:
-//
-//	EVENT_STORE_TEST=parquet go test ./internal/events/ -run Integration -v
-//	EVENT_STORE_TEST=parquet-sealed go test ./internal/events/ -run Integration -v
-type parquetTestBackend struct {
-	store    *ParquetStore
-	day      *fakeDay
-	sealed   bool
-	proxyIDs map[string]int
-}
-
-func newParquetTestBackend(t *testing.T, sealed bool) storeBackend {
-	t.Helper()
-	day := newFakeDay()
-	return &parquetTestBackend{
-		store:    newTestParquetStore(t, t.TempDir(), day),
-		day:      day,
-		sealed:   sealed,
-		proxyIDs: map[string]int{},
-	}
-}
-
-func (b *parquetTestBackend) Store() Store {
-	if b.sealed {
-		return sealingStore{ParquetStore: b.store, day: b.day}
-	}
-	return b.store
-}
-
-func (b *parquetTestBackend) SeedProxy(t *testing.T, address string) int {
-	t.Helper()
-	if id, ok := b.proxyIDs[address]; ok {
-		return id
-	}
-	id := len(b.proxyIDs) + 1
-	b.proxyIDs[address] = id
-	return id
-}
-
-func (b *parquetTestBackend) RequestDims(t *testing.T) []rawRequestDims {
-	t.Helper()
-	dims := []rawRequestDims{}
-	for _, row := range readAllRequests(t, b.store) {
-		var d rawRequestDims
-		if row.PoolID != 0 {
-			pool := int(row.PoolID)
-			d.PoolID = &pool
-		}
-		if row.Username != "" {
-			username := row.Username
-			d.Username = &username
-		}
-		if row.Domain != "" {
-			domain := row.Domain
-			d.Domain = &domain
-		}
-		dims = append(dims, d)
-	}
-	return dims
-}
-
-// VerifyRetentionApplied plants files just outside and just inside the
-// retention period: this backend expires whole days by arrival date, so the
-// suite's backdated rows, which arrived today, stay until today expires.
-func (b *parquetTestBackend) VerifyRetentionApplied(t *testing.T, cfg RetentionConfig, _, _ int) {
-	t.Helper()
-	today := b.day.get()
-	expired := today - int64(cfg.RequestRetentionDays) - 1
-	kept := today - int64(cfg.RequestRetentionDays)
-	for _, table := range b.store.tables() {
-		for _, path := range []string{table.path(expired, logSuffix), table.path(expired, parquetSuffix), table.path(kept, logSuffix)} {
-			if err := os.WriteFile(path, nil, 0o640); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if err := b.store.ApplyRetention(context.Background(), cfg); err != nil {
-		t.Fatal(err)
-	}
-	for _, table := range b.store.tables() {
-		for _, path := range []string{table.path(expired, logSuffix), table.path(expired, parquetSuffix)} {
-			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("%s survived retention: %v", path, err)
-			}
-		}
-		if _, err := os.Stat(table.path(kept, logSuffix)); err != nil {
-			t.Errorf("retention removed a day inside the period: %v", err)
-		}
-	}
-}
-
-// sealingStore finishes the current day before every read, so the conformance
-// suite exercises the Parquet read path instead of the log scan.
+// sealingStore finishes the current day before every read, so testStores
+// exercises the Parquet read path instead of the log scan.
 type sealingStore struct {
 	*ParquetStore
 	day *fakeDay
@@ -322,7 +238,7 @@ func TestParquetSkipsDamagedLines(t *testing.T) {
 	if err := store.InsertRequest(ctx, request(100)); err != nil {
 		t.Fatal(err)
 	}
-	path := store.requests.path(store.requests.writingDay(), logSuffix)
+	path := store.requests.path(store.requests.ownKey(store.requests.writingDay()), logSuffix)
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -349,7 +265,7 @@ func TestParquetRepairsTornTailOnReopen(t *testing.T) {
 	if err := store.InsertRequest(ctx, request(100)); err != nil {
 		t.Fatal(err)
 	}
-	path := store.requests.path(day.get(), logSuffix)
+	path := store.requests.path(store.requests.ownKey(day.get()), logSuffix)
 	store.Close()
 
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
@@ -398,7 +314,8 @@ func TestParquetMidnightConvertsAndKeepsAnswers(t *testing.T) {
 	midnight(t, store, day)
 
 	got := dirNames(t, store.requests.dir)
-	want := []string{dayName(closedDay) + parquetSuffix, dayName(day.get()) + logSuffix}
+	want := []string{filepath.Base(store.requests.path(store.requests.ownKey(closedDay), parquetSuffix)),
+		filepath.Base(store.requests.path(store.requests.ownKey(day.get()), logSuffix))}
 	if !slices.Equal(got, want) {
 		t.Fatalf("files after midnight: got %v, want %v", got, want)
 	}
@@ -472,10 +389,11 @@ func TestParquetResumesAfterInterruptedConversion(t *testing.T) {
 	// A crash after the rename leaves the log beside its Parquet file, and a
 	// crash during the write leaves a temp file.
 	requests := filepath.Join(dir, "requests")
-	if err := os.WriteFile(filepath.Join(requests, dayName(closedDay)+logSuffix), appendRequestLine(nil, ptr(request(100))), 0o640); err != nil {
+	log := store.requests.path(store.requests.ownKey(closedDay), logSuffix)
+	if err := os.WriteFile(log, appendRequestLine(nil, ptr(request(100))), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	temp := filepath.Join(requests, dayName(closedDay-1)+parquetSuffix+tempSuffix)
+	temp := store.requests.path(store.requests.ownKey(closedDay-1), parquetSuffix+tempSuffix)
 	if err := os.WriteFile(temp, []byte("partial"), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +404,7 @@ func TestParquetResumesAfterInterruptedConversion(t *testing.T) {
 	}
 	reopened.convertPending(ctx)
 	names := dirNames(t, requests)
-	if slices.Contains(names, dayName(closedDay)+logSuffix) || slices.Contains(names, filepath.Base(temp)) {
+	if slices.Contains(names, filepath.Base(log)) || slices.Contains(names, filepath.Base(temp)) {
 		t.Fatalf("startup left interrupted files behind: %v", names)
 	}
 }
@@ -516,6 +434,96 @@ func TestParquetStartupConvertsOlderLogs(t *testing.T) {
 	}
 	if len(rollup) != 1 || rollup[0].Requests != 1 {
 		t.Fatalf("rollup after startup conversion: %+v", rollup)
+	}
+}
+
+func TestParquetReadsEveryInstanceAndConvertsOnlyItsOwn(t *testing.T) {
+	dir := t.TempDir()
+	day := newFakeDay()
+	a := newTestParquetStoreAs(t, dir, day, "a")
+	b := newTestParquetStoreAs(t, dir, day, "b")
+	ctx := context.Background()
+	for _, insert := range []*ParquetStore{a, b, b} {
+		if err := insert.InsertRequest(ctx, request(100)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	today := day.get()
+	name := func(day int64, instance, suffix string) string {
+		return filepath.Base(a.requests.path(fileKey{day, instance}, suffix))
+	}
+	check := func(want ...string) {
+		t.Helper()
+		slices.Sort(want)
+		if got := dirNames(t, a.requests.dir); !slices.Equal(got, want) {
+			t.Fatalf("files: got %v, want %v", got, want)
+		}
+		for _, store := range []*ParquetStore{a, b} {
+			if got := countToday(t, store); got != 3 {
+				t.Fatalf("%s reads %d of the 3 events", store.instance, got)
+			}
+		}
+	}
+
+	midnight(t, a, day)
+	check(name(today, "a", parquetSuffix), name(today+1, "a", logSuffix), name(today, "b", logSuffix))
+
+	for _, table := range b.tables() {
+		if err := table.rotate(day.get()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.convertPending(ctx)
+	check(name(today, "a", parquetSuffix), name(today+1, "a", logSuffix),
+		name(today, "b", parquetSuffix), name(today+1, "b", logSuffix))
+}
+
+// A log named without an instance, still open when this store starts, gets
+// converted once its day ends, beside the store's own log for that day.
+func TestParquetConvertsUnnamedLogs(t *testing.T) {
+	dir := t.TempDir()
+	day := newFakeDay()
+	today := day.get()
+	requests := filepath.Join(dir, "requests")
+	if err := os.MkdirAll(requests, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []int64{today - 2, today} {
+		if err := os.WriteFile(filepath.Join(requests, dayName(d)+logSuffix), appendRequestLine(nil, ptr(request(100))), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store := newTestParquetStore(t, dir, day)
+	ctx := context.Background()
+	if err := store.InsertRequest(ctx, request(200)); err != nil {
+		t.Fatal(err)
+	}
+	total := func() int64 {
+		t.Helper()
+		rollup, err := store.ProxyRollup(ctx)
+		if err != nil || len(rollup) != 1 {
+			t.Fatalf("rollup: %+v %v", rollup, err)
+		}
+		return rollup[0].Requests
+	}
+	if got := total(); got != 3 {
+		t.Fatalf("want the events of both unnamed logs and the named one, got %d", got)
+	}
+	midnight(t, store, day)
+
+	want := []string{
+		dayName(today-2) + parquetSuffix,
+		dayName(today) + parquetSuffix,
+		filepath.Base(store.requests.path(store.requests.ownKey(today), parquetSuffix)),
+		filepath.Base(store.requests.path(store.requests.ownKey(today+1), logSuffix)),
+	}
+	slices.Sort(want)
+	if got := dirNames(t, requests); !slices.Equal(got, want) {
+		t.Fatalf("files after midnight: got %v, want %v", got, want)
+	}
+	if got := total(); got != 3 {
+		t.Fatalf("conversion changed the count: got %d", got)
 	}
 }
 
@@ -578,7 +586,7 @@ func TestParquetRollupCacheFollowsFiles(t *testing.T) {
 }
 
 func TestParquetSyncWritesAppends(t *testing.T) {
-	store, err := newParquetStore(&config.ParquetConfig{Dir: t.TempDir(), SyncWrites: true}, logger.New("error"), nil, newFakeDay().get)
+	store, err := newParquetStore(&config.ParquetConfig{Dir: t.TempDir(), Instance: testInstance, SyncWrites: true}, logger.New("error"), nil, newFakeDay().get)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -599,13 +607,15 @@ func TestParquetReportsWritesToObserver(t *testing.T) {
 		defer mu.Unlock()
 		counts[fmt.Sprintf("%s/%v", kind, success)] += count
 	}
-	store, err := newParquetStore(&config.ParquetConfig{Dir: t.TempDir()}, logger.New("error"), observe, newFakeDay().get)
+	store, err := newParquetStore(&config.ParquetConfig{Dir: t.TempDir(), Instance: testInstance}, logger.New("error"), observe, newFakeDay().get)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := store.InsertRequests(ctx, []RequestEvent{request(1), request(2)}); err != nil {
-		t.Fatal(err)
+	for _, ms := range []int{1, 2} {
+		if err := store.InsertRequest(ctx, request(ms)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	store.Close()
 	if err := store.InsertRequest(ctx, request(3)); err == nil || !strings.Contains(err.Error(), "closed") {

@@ -1,15 +1,11 @@
 // Package events defines the event store: the single boundary through which
 // the application reads and writes request and tunnel history.
 //
-// Everything behind this interface is an implementation detail of one storage
-// backend. Two rules keep backends swappable (Postgres today, ClickHouse
-// planned):
-//
-//  1. No SQL may join event tables with control-plane tables (proxies, pools,
-//     settings, ...). Cross-store merges happen in Go, on the caller's side.
-//  2. Methods are business questions ("success-rate chart for the last day"),
-//     never raw SQL passthrough. If a caller needs a new shape of answer, the
-//     interface grows a method and every backend implements it.
+// ParquetStore keeps history in local files, apart from the control-plane
+// tables (proxies, pools, settings, ...) in Postgres, so callers merge the two
+// in Go. Methods are business questions ("success-rate chart for the last
+// day"), never raw query passthrough: a caller that needs a new shape of
+// answer adds a method.
 package events
 
 import (
@@ -128,18 +124,12 @@ type Store interface {
 	// InsertRequest records one proxied request outcome.
 	InsertRequest(ctx context.Context, event RequestEvent) error
 
-	// InsertRequests records a batch of request outcomes in one write.
-	InsertRequests(ctx context.Context, events []RequestEvent) error
-
 	// RequestStats returns today/yesterday request aggregates for the
 	// dashboard.
 	RequestStats(ctx context.Context) (*RequestStats, error)
 
 	// InsertTunnel records one completed CONNECT tunnel.
 	InsertTunnel(ctx context.Context, event TunnelEvent) error
-
-	// InsertTunnels records a batch of completed tunnels in one write.
-	InsertTunnels(ctx context.Context, events []TunnelEvent) error
 
 	// TunnelStats aggregates tunnels that closed within the trailing window.
 	// Long-lived tunnels still open are not counted — they have no duration
@@ -176,7 +166,6 @@ type Store interface {
 	// time. Interval is one of "1h", "4h", "1d".
 	SuccessRateChart(ctx context.Context, interval string) ([]models.SuccessRateDataPoint, error)
 
-	// ApplyRetention (re)applies the retention configuration to the backing
-	// store. Implementations decide the mechanism (policies, TTLs, no-op).
+	// ApplyRetention removes the history that cfg has expired.
 	ApplyRetention(ctx context.Context, cfg RetentionConfig) error
 }

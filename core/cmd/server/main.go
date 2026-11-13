@@ -24,7 +24,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -46,49 +45,10 @@ import (
 )
 
 func main() {
-	command := run
-	if len(os.Args) > 1 && os.Args[1] == "import-postgres-history" {
-		command = func() error { return importPostgresHistory(os.Args[2:]) }
-	}
-	if err := command(); err != nil {
+	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-// importPostgresHistory copies request and tunnel history from the Postgres
-// event tables into the parquet store, then exits. Rota may keep running.
-func importPostgresHistory(args []string) error {
-	flags := flag.NewFlagSet("import-postgres-history", flag.ContinueOnError)
-	beforeFlag := flags.String("before", "", "copy events from before this RFC 3339 time (default: the earliest event already in the parquet store)")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	var before time.Time
-	if *beforeFlag != "" {
-		var err error
-		if before, err = time.Parse(time.RFC3339Nano, *beforeFlag); err != nil {
-			return fmt.Errorf("invalid -before: %w", err)
-		}
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
-	}
-	log := logger.New(cfg.LogLevel)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	db, err := database.New(ctx, &cfg.Database, nil, log)
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
-	}
-	defer db.Close()
-
-	return events.ImportPostgresHistory(ctx, db.Pool, cfg.Parquet.Dir, before, func(r events.ImportReport) {
-		log.Info("imported event history", "table", r.Table, "day", r.Day, "action", r.Action, "rows", r.Rows)
-	})
 }
 
 // metricsHTTPHandler returns the /metrics handler, or nil when metrics are
@@ -98,55 +58,6 @@ func metricsHTTPHandler(p *metrics.Provider) http.Handler {
 		return nil
 	}
 	return p.Handler()
-}
-
-// flushHistory writes out buffered request and tunnel events. It gets its own
-// deadline: the servers may already have spent the shutdown context waiting on
-// requests that outlived it. Calls after the first return at once.
-func flushHistory(w *events.BatchWriter, log *logger.Logger) {
-	if w == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := w.Close(ctx); err != nil {
-		log.Warn("event history was not fully written", "error", err)
-	}
-}
-
-// openedEventStore is one event backend and how to shut it down.
-type openedEventStore struct {
-	store events.Store
-	batch *events.BatchWriter // nil when the backend takes events directly
-	close func()
-}
-
-// openEventStore opens a backend by name. Database backends get a batch
-// writer, so a database takes one multi-row insert per flush instead of a
-// round trip per event. The parquet store appends each event directly.
-func openEventStore(ctx context.Context, name string, cfg *config.Config, db *database.DB, log *logger.Logger, observe events.FlushObserver) (*openedEventStore, error) {
-	var store events.Store
-	closeStore := func() {}
-	switch name {
-	case "parquet":
-		files, err := events.NewParquetStore(&cfg.Parquet, log, observe)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open parquet event store: %w", err)
-		}
-		return &openedEventStore{store: files, close: func() { files.Close() }}, nil
-	case "postgres":
-		store = events.NewPostgresStore(db, log)
-	case "clickhouse":
-		ch, err := events.NewClickHouseStore(ctx, &cfg.ClickHouse, log)
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to clickhouse event store: %w", err)
-		}
-		store, closeStore = ch, func() { ch.Close() }
-	default:
-		return nil, fmt.Errorf("unsupported event store: %s", name)
-	}
-	batch := events.NewBatchWriter(store, log, observe)
-	return &openedEventStore{store: batch, batch: batch, close: closeStore}, nil
 }
 
 func run() error {
@@ -191,35 +102,12 @@ func run() error {
 	}
 
 	// Create the event store — the single boundary for time-series event data
-	// (request and tunnel history). Config selects the backend, and optionally
-	// a mirror that also receives every write. Only the primary reports
-	// metrics, so the written-events counter counts each event once.
-	primaryEvents, err := openEventStore(ctx, cfg.EventStore, cfg, db, log, metrics.RecordEventsWritten)
+	// (request and tunnel history).
+	eventStore, err := events.NewParquetStore(&cfg.Parquet, log, metrics.RecordEventsWritten)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open event store: %w", err)
 	}
-	defer primaryEvents.close()
-	eventStore := primaryEvents.store
-	batchWriters := []*events.BatchWriter{primaryEvents.batch}
-
-	if cfg.EventStoreMirror != "" {
-		mirrorEvents, err := openEventStore(ctx, cfg.EventStoreMirror, cfg, db, log, nil)
-		if err != nil {
-			return err
-		}
-		defer mirrorEvents.close()
-		eventStore = events.NewMirrorStore(eventStore, mirrorEvents.store, log)
-		batchWriters = append(batchWriters, mirrorEvents.batch)
-		log.Info("mirroring event writes", "primary", cfg.EventStore, "mirror", cfg.EventStoreMirror)
-	}
-	flushAllHistory := func() {
-		for _, w := range batchWriters {
-			flushHistory(w, log)
-		}
-	}
-	// Registered after the store and database closes, so it runs before them
-	// on every return path, including a server failing to start.
-	defer flushAllHistory()
+	defer eventStore.Close()
 
 	// Create repositories once — this is the single place they are constructed.
 	proxyRepo := repository.NewProxyRepository(db)
@@ -361,10 +249,6 @@ func run() error {
 	// Wait for shutdown to complete
 	shutdownWg.Wait()
 	close(shutdownErrors)
-
-	// Flush buffered history once the servers have stopped producing it, while
-	// the metrics pipeline can still report the writes.
-	flushAllHistory()
 
 	// Stop the metrics pipeline last, so the final OTLP push (if configured)
 	// still sees everything the servers recorded on the way down.

@@ -390,8 +390,7 @@ func (h *ProxyHandler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use a detached context so client disconnect during a long delete doesn't
-	// cancel the DB operation mid-way. Large bulk deletes can take tens of
-	// seconds against TimescaleDB with CASCADE on proxy_requests.
+	// cancel the DB operation mid-way.
 	dbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -742,8 +741,6 @@ func (h *ProxyHandler) exportCSV(w http.ResponseWriter, proxies []models.ProxyWi
 // DeleteAll removes every proxy from the database.
 func (h *ProxyHandler) DeleteAll(w http.ResponseWriter, r *http.Request) {
 	// Use a detached context so client disconnect doesn't cancel the delete.
-	// Deleting all proxies can take minutes when there are many rows in
-	// proxy_requests (CASCADE delete on foreign key).
 	dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 

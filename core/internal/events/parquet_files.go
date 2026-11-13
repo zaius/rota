@@ -2,10 +2,12 @@ package events
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/parquet-go/parquet-go"
 )
 
@@ -51,8 +54,10 @@ func parseDayName(name string) (int64, bool) {
 	return dayOf(t.UnixMilli()), true
 }
 
-// eventTable stores one event stream in one directory. Each UTC day has a log
-// while it is open and a Parquet file once it is finished.
+// eventTable stores one event stream in one directory. Each store writes its
+// own files per UTC day, named by its instance: a log while the day is open
+// and a Parquet file once it is finished. Reads and retention cover every
+// file in the directory; appends and conversion touch only the store's own.
 //
 // A file's day is the day its events arrived, not their own timestamps. A
 // trailing window starting on day D therefore finds every event inside it in
@@ -73,8 +78,30 @@ type eventTable struct {
 	closed bool
 }
 
-func (t *eventTable) path(day int64, suffix string) string {
-	return filepath.Join(t.dir, dayName(day)+suffix)
+// fileKey names one writer's files for one UTC day: <day>.<instance>.log and
+// <day>.<instance>.parquet. An empty instance stands for files named without
+// one (<day>.log, <day>.parquet), which every store treats as its own.
+type fileKey struct {
+	day      int64
+	instance string
+}
+
+func (t *eventTable) path(key fileKey, suffix string) string {
+	name := dayName(key.day)
+	if key.instance != "" {
+		name += "." + key.instance
+	}
+	return filepath.Join(t.dir, name+suffix)
+}
+
+// ownKey names this store's files for day.
+func (t *eventTable) ownKey(day int64) fileKey {
+	return fileKey{day: day, instance: t.store.instance}
+}
+
+// owns reports whether this store appends to and converts the files of key.
+func (t *eventTable) owns(key fileKey) bool {
+	return key.instance == "" || key.instance == t.store.instance
 }
 
 // append writes complete lines to the open day's log in one write. It never
@@ -115,7 +142,7 @@ func (t *eventTable) rotate(day int64) error {
 	if t.store.syncWrites {
 		flags |= os.O_SYNC
 	}
-	file, err := os.OpenFile(t.path(day, logSuffix), flags, 0o640)
+	file, err := os.OpenFile(t.path(t.ownKey(day), logSuffix), flags, 0o640)
 	if err != nil {
 		return fmt.Errorf("failed to open event log: %w", err)
 	}
@@ -134,20 +161,21 @@ func (t *eventTable) rotate(day int64) error {
 }
 
 // writableDay returns the first day at or after want that may take appends:
-// after any day that already has a Parquet file, and on the newest open log.
+// after any day where this store already has a Parquet file, and on its
+// newest open log.
 func (t *eventTable) writableDay(want int64) (int64, error) {
 	files, err := t.list()
 	if err != nil {
 		return 0, err
 	}
-	for day, have := range files {
-		if have.parquet && day >= want {
-			want = day + 1
+	for key, have := range files {
+		if t.owns(key) && have.parquet && key.day >= want {
+			want = key.day + 1
 		}
 	}
-	for day, have := range files {
-		if have.log && !have.parquet && day > want {
-			want = day
+	for key, have := range files {
+		if t.owns(key) && have.log && !have.parquet && key.day > want {
+			want = key.day
 		}
 	}
 	return want, nil
@@ -207,44 +235,61 @@ func (t *eventTable) close() error {
 
 type dayFiles struct{ log, parquet bool }
 
-func (t *eventTable) list() (map[int64]dayFiles, error) {
-	return listDayFiles(t.dir)
-}
-
-// listDayFiles reports which files each day has in one table directory.
-func listDayFiles(dir string) (map[int64]dayFiles, error) {
-	entries, err := os.ReadDir(dir)
+func (t *eventTable) list() (map[fileKey]dayFiles, error) {
+	entries, err := os.ReadDir(t.dir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list event files: %w", err)
 	}
-	files := make(map[int64]dayFiles, len(entries))
+	files := make(map[fileKey]dayFiles, len(entries))
 	for _, entry := range entries {
-		name := entry.Name()
-		base, isLog := strings.CutSuffix(name, logSuffix)
-		if !isLog {
-			var isParquet bool
-			if base, isParquet = strings.CutSuffix(name, parquetSuffix); !isParquet {
-				continue
-			}
-		}
-		day, ok := parseDayName(base)
+		key, isLog, ok := parseFileName(entry.Name())
 		if !ok {
 			continue
 		}
-		have := files[day]
+		have := files[key]
 		have.log = have.log || isLog
 		have.parquet = have.parquet || !isLog
-		files[day] = have
+		files[key] = have
 	}
 	return files, nil
 }
 
+// parseFileName reads the key of a log or Parquet file name.
+func parseFileName(name string) (key fileKey, isLog, ok bool) {
+	base, isLog := strings.CutSuffix(name, logSuffix)
+	if !isLog {
+		var isParquet bool
+		if base, isParquet = strings.CutSuffix(name, parquetSuffix); !isParquet {
+			return fileKey{}, false, false
+		}
+	}
+	day, instance, named := strings.Cut(base, ".")
+	if key.day, ok = parseDayName(day); !ok || named && !config.ValidEventInstance(instance) {
+		return fileKey{}, false, false
+	}
+	key.instance = instance
+	return key, isLog, true
+}
+
+// sortedKeys orders keys by day, then instance.
+func sortedKeys(files map[fileKey]dayFiles) []fileKey {
+	return slices.SortedFunc(maps.Keys(files), func(a, b fileKey) int {
+		return cmp.Or(cmp.Compare(a.day, b.day), strings.Compare(a.instance, b.instance))
+	})
+}
+
+// removeTemps removes the temporary files of this store's interrupted
+// conversions.
 func (t *eventTable) removeTemps() error {
 	matches, err := filepath.Glob(filepath.Join(t.dir, "*"+tempSuffix))
 	if err != nil {
 		return err
 	}
 	for _, match := range matches {
+		key, _, ok := parseFileName(strings.TrimSuffix(filepath.Base(match), tempSuffix))
+		if ok && !t.owns(key) {
+			continue
+		}
 		if err := os.Remove(match); err != nil {
 			return err
 		}
@@ -262,9 +307,10 @@ type eventFile struct {
 	parquet bool
 }
 
-// openFiles opens every file from fromDay onward. A day with both files is a
-// conversion interrupted before it removed the log, so the Parquet file wins.
-// Files stay readable after a later conversion or retention pass unlinks them.
+// openFiles opens every file from fromDay onward, whichever store wrote it. A
+// key with both files is a conversion interrupted before it removed the log,
+// so the Parquet file wins. Files stay readable after a later conversion or
+// retention pass unlinks them.
 func (t *eventTable) openFiles(fromDay int64) ([]*eventFile, error) {
 	t.store.filesMu.RLock()
 	defer t.store.filesMu.RUnlock()
@@ -273,21 +319,17 @@ func (t *eventTable) openFiles(fromDay int64) ([]*eventFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	days := make([]int64, 0, len(listed))
-	for day := range listed {
-		if day >= fromDay {
-			days = append(days, day)
+	files := make([]*eventFile, 0, len(listed))
+	for _, key := range sortedKeys(listed) {
+		if key.day < fromDay {
+			continue
 		}
-	}
-	slices.Sort(days)
-
-	files := make([]*eventFile, 0, len(days))
-	for _, day := range days {
+		have := listed[key]
 		suffix := logSuffix
-		if listed[day].parquet {
+		if have.parquet {
 			suffix = parquetSuffix
 		}
-		f, err := openEventFile(t, t.path(day, suffix), listed[day].parquet)
+		f, err := openEventFile(t, t.path(key, suffix), have.parquet)
 		if err != nil {
 			closeEventFiles(files)
 			return nil, err
@@ -466,9 +508,9 @@ func convertRows[R any](ctx context.Context, lines io.Reader, out io.Writer, par
 
 // convert replaces a finished day's log with its Parquet file. It syncs the
 // new file before removing the log, because the log is the only other copy.
-func (t *eventTable) convert(ctx context.Context, day int64, have dayFiles) error {
-	logPath := t.path(day, logSuffix)
-	target := t.path(day, parquetSuffix)
+func (t *eventTable) convert(ctx context.Context, key fileKey, have dayFiles) error {
+	logPath := t.path(key, logSuffix)
+	target := t.path(key, parquetSuffix)
 	if have.parquet {
 		return t.replace("", target, logPath)
 	}
@@ -532,7 +574,8 @@ func syncDir(path string) error {
 	return dir.Sync()
 }
 
-// expire removes every file from days before the given day.
+// expire removes every file, whichever store wrote it, from days before the
+// given day.
 func (t *eventTable) expire(before int64) error {
 	t.store.filesMu.Lock()
 	defer t.store.filesMu.Unlock()
@@ -540,17 +583,17 @@ func (t *eventTable) expire(before int64) error {
 	if err != nil {
 		return err
 	}
-	for day, have := range listed {
-		if day >= before {
+	for key, have := range listed {
+		if key.day >= before {
 			continue
 		}
 		if have.log {
-			if err := os.Remove(t.path(day, logSuffix)); err != nil {
+			if err := os.Remove(t.path(key, logSuffix)); err != nil {
 				return err
 			}
 		}
 		if have.parquet {
-			if err := os.Remove(t.path(day, parquetSuffix)); err != nil {
+			if err := os.Remove(t.path(key, parquetSuffix)); err != nil {
 				return err
 			}
 		}

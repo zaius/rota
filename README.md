@@ -9,7 +9,6 @@
 <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
 <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.27.1-00ADD8?logo=go"></a>
 <a href="https://react.dev"><img src="https://img.shields.io/badge/React-19-61DAFB?logo=react"></a>
-<a href="https://www.timescale.com/"><img src="https://img.shields.io/badge/TimescaleDB-2.22-FDB515?logo=timescale"></a>
 <a href="https://github.com/zaius/rota/releases"><img src="https://img.shields.io/github/release/zaius/rota"></a>
 <a href="https://github.com/zaius/rota/actions"><img src="https://img.shields.io/github/actions/workflow/status/zaius/rota/release.yaml"></a>
 </p>
@@ -28,7 +27,7 @@
 - **Monitoring:** Scheduled health checks, webhook alerts, and request/tunnel history.
 - **HTTPS inspection:** Optional per-user TLS interception and configurable TLS/HTTP fingerprint profiles.
 - **Security:** Authenticated proxy users, admin JWTs, bcrypt credentials, and login brute-force protection.
-- **Deployment:** Docker Compose, PostgreSQL, file-based Parquet event storage (ClickHouse and TimescaleDB optional), and Prometheus/OTLP metrics.
+- **Deployment:** Docker Compose, PostgreSQL, file-based Parquet event storage, and Prometheus/OTLP metrics.
 
 ---
 
@@ -75,11 +74,9 @@ All settings are controlled through a single `.env` file (see `.env.example` for
 | `ROTA_ADMIN_USER` | `admin` | Initial dashboard username (seeded once) |
 | `ROTA_ADMIN_PASSWORD` | `admin` | Initial dashboard password (seeded once, min 6 chars) |
 | `DB_PASSWORD` | `rota_password` | Database password |
-| `EVENT_STORE` | `parquet` | Backend for request and tunnel history: `parquet`, `postgres` or `clickhouse` |
-| `CLICKHOUSE_PASSWORD` | `rota_password` | ClickHouse password (when `EVENT_STORE=clickhouse`) |
-| `EVENT_STORE_DIR` | `data/events` | History directory (when `EVENT_STORE=parquet`) |
-| `EVENT_STORE_SYNC` | `false` | Make every history append wait for the disk (when `EVENT_STORE=parquet`) |
-| `EVENT_STORE_MIRROR` | _(unset)_ | Second backend that also receives every write, for moving between backends |
+| `EVENT_STORE_DIR` | `data/events` | Directory for request and tunnel history |
+| `EVENT_STORE_INSTANCE` | `rota` | Name in this instance's history file names; keep it fixed |
+| `EVENT_STORE_SYNC` | `false` | Make every history append wait for the disk |
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `METRICS_ENABLED` | `true` | Prometheus `/metrics` endpoint + optional OTLP push — see [Metrics & Observability](#-metrics--observability) |
 | `METRICS_BEARER_TOKEN` | *(empty)* | When set, `/metrics` requires `Authorization: Bearer <token>` |
@@ -125,12 +122,12 @@ docker run -d \
   ghcr.io/zaius/rota:latest
 ```
 
-Or run the whole stack (rota + TimescaleDB) with `docker compose up -d`.
+Or run the whole stack (rota + PostgreSQL) with `docker compose up -d`.
 
 ### From Source
 
 ```bash
-# Prerequisites: Go 1.27.1+, Node.js 22+, pnpm, PostgreSQL 14+ (TimescaleDB optional)
+# Prerequisites: Go 1.27.1+, Node.js 22+, pnpm, PostgreSQL 14+
 
 # Clone the repository
 git clone https://github.com/zaius/rota.git
@@ -187,13 +184,9 @@ The API is served at `http://localhost:8001/api/v1`. See [API Authentication](#-
 
 ## 🏗️ Architecture
 
-The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history use local Parquet files by default, or optional PostgreSQL or ClickHouse. Proxy requests follow each user's main and fallback pools.
+The Go server serves the proxy on **:8000** and the API/React dashboard on **:8001**. PostgreSQL stores configuration; request and tunnel history live in local Parquet files. Proxy requests follow each user's main and fallback pools.
 
-By default Rota keeps history in `EVENT_STORE_DIR` with no extra server. Installs upgrading from a version that kept history in PostgreSQL should set `EVENT_STORE=postgres` to keep it, or use `EVENT_STORE_MIRROR` below to move. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and one Parquet file per finished day, which tools like DuckDB can also read. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage. One Rota process owns it, so multiple replicas need PostgreSQL or ClickHouse.
-
-To move between backends without a gap, set `EVENT_STORE_MIRROR` to a second backend. `EVENT_STORE` keeps answering reads and both receive every new event, so you can switch `EVENT_STORE` once the new backend holds enough history, then unset the mirror.
-
-To copy history that PostgreSQL already holds into the Parquet store, run `rota import-postgres-history` (with Docker Compose: `docker compose exec rota /app/server import-postgres-history`) once the store has started receiving events. It copies every PostgreSQL event older than the earliest one in the files, one day at a time, while Rota keeps running, and records its progress so a second run resumes instead of copying a day twice. Pass `-before <RFC 3339 time>` to choose the cutoff yourself.
+Rota keeps history in `EVENT_STORE_DIR` with no extra server. Each table has a tab-separated log for the current UTC day, which Rota scans directly, and a Parquet file for each finished day, which tools like DuckDB can also read. Files are named `<day>.<instance>.log` and `<day>.<instance>.parquet` after `EVENT_STORE_INSTANCE`. Rota reads every file in the directory, including `<day>.log` and `<day>.parquet` files without an instance name, so a day can have more than one file. It converts only its own logs and unnamed ones, so keep `EVENT_STORE_INSTANCE` the same across restarts. A completed append survives a Rota crash; set `EVENT_STORE_SYNC=true` to survive power loss too, at the cost of write latency. Put the directory on persistent storage, and run one Rota process per directory.
 
 ### Rotation Strategies
 
@@ -472,7 +465,7 @@ curl "http://localhost:8001/api/v1/dashboard/domains?range=24h&domain=example.co
 
 `range` accepts `1h`, `6h`, `24h` (default), `7d`, or `30d`. Omit `domain` for all hosts. `limit` is 1–1000 (default 100); rows are ranked by requests plus completed tunnels, then hostname. Each hostname has its own row; filtering to a parent includes subdomain rows without merging them.
 
-Responses include `requests`, `successes`, `failures`, `rate_limited`, `avg_response_time`, `p50_ms`, `p95_ms`, `tunnels`, `tunnel_errors`, `bytes_up`, and `bytes_down` per domain. Latencies are milliseconds and cover successful requests only. Request outcomes inside opaque HTTPS tunnels are unknown; tunnels and their bytes are counted separately at close time. Historical events without a recorded domain are excluded. The PostgreSQL, ClickHouse and Parquet event stores all support these queries.
+Responses include `requests`, `successes`, `failures`, `rate_limited`, `avg_response_time`, `p50_ms`, `p95_ms`, `tunnels`, `tunnel_errors`, `bytes_up`, and `bytes_down` per domain. Latencies are milliseconds and cover successful requests only. Request outcomes inside opaque HTTPS tunnels are unknown; tunnels and their bytes are counted separately at close time. Historical events without a recorded domain are excluded.
 
 ---
 
@@ -494,8 +487,6 @@ Every tunnel writes a record when it closes, whether or not inspection is enable
 | `proxy_id`, `pool_id`, `username` | Which proxy, pool and user served it |
 
 The dashboard turns these into **Open Tunnels**, **Tunnels (24h)** and **Tunnel Data (24h)**, plus mean concurrency — the number that distinguishes "3 short tunnels" from "3 tunnels held open all day moving 2 GB".
-
-PostgreSQL and ClickHouse receive tunnel and request records in batches, so they appear up to a second after the traffic, and a graceful shutdown writes out whatever is still buffered. The Parquet store appends each record as it happens.
 
 ### Optional: inspecting HTTPS requests
 
@@ -532,7 +523,7 @@ standalone server, export the settings into its environment and restart it.
 
 **2. Enable it per proxy user** with **Inspect HTTPS** or `inspect_tls` via the API. Both the CA and user opt-in are required.
 
-Once on, each request inside the tunnel produces a normal request event with its method, URL, latency and **status code** — which is what makes blocks visible. A `429` or a `403` block page is an answer, not a transport failure, so it still counts as a successful attempt (matching the plain-HTTP path); query `proxy_requests.status_code` to see blocking, rather than the success rate.
+Once on, each request inside the tunnel produces a normal request event with its method, URL, latency and **status code** — which is what makes blocks visible. A `429` or a `403` block page is an answer, not a transport failure, so it still counts as a successful attempt (matching the plain-HTTP path); look at status codes to see blocking, such as the `rate_limited` count in Traffic by Domain or the `status_code` column of the request history, rather than the success rate.
 
 > **Before enabling, understand the trade-offs:**
 > - The client must **trust the CA**, or every intercepted request fails its certificate check.

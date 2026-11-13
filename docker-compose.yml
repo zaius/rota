@@ -12,7 +12,7 @@ services:
       - PROXY_PORT=8000
       - API_PORT=8001
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - DB_HOST=${DB_HOST:-timescaledb}
+      - DB_HOST=${DB_HOST:-postgres}
       - DB_PORT=${DB_PORT:-5432}
       - DB_USER=${DB_USER:-rota}
       - DB_PASSWORD=${DB_PASSWORD:-rota_password}
@@ -36,21 +36,11 @@ services:
       - GEOIP_CITY_DB=${GEOIP_CITY_DB:-}
       - GEOIP_ASN_DB=${GEOIP_ASN_DB:-}
       - GEOIP_UPDATE_HOURS=${GEOIP_UPDATE_HOURS:-168}
-      # Event store: "parquet" (default) keeps request and tunnel history in
-      # files on the rota-data volume, with no extra service; "postgres" keeps
-      # it in the primary database; "clickhouse" moves it to the clickhouse
-      # service (start it with: docker compose --profile clickhouse up -d).
-      - EVENT_STORE=${EVENT_STORE:-parquet}
-      - CLICKHOUSE_HOST=${CLICKHOUSE_HOST:-clickhouse}
-      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT:-9000}
-      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-rota}
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-rota_password}
-      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-rota}
+      # Request and tunnel history lives in Parquet files on the rota-data
+      # volume; see .env.example.
       - EVENT_STORE_DIR=${EVENT_STORE_DIR:-}
+      - EVENT_STORE_INSTANCE=${EVENT_STORE_INSTANCE:-rota}
       - EVENT_STORE_SYNC=${EVENT_STORE_SYNC:-false}
-      # A second backend that also receives every write, for moving between
-      # backends without a gap. EVENT_STORE keeps answering reads.
-      - EVENT_STORE_MIRROR=${EVENT_STORE_MIRROR:-}
       # Prometheus metrics at GET :8001/metrics; see .env.example for the
       # OTEL_* vars that additionally enable OTLP push (e.g. to SigNoz).
       - METRICS_ENABLED=${METRICS_ENABLED:-true}
@@ -62,7 +52,8 @@ services:
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-}
       - OTEL_RESOURCE_ATTRIBUTES=${OTEL_RESOURCE_ATTRIBUTES:-}
     volumes:
-      # Keeps downloaded GeoIP databases across container recreation.
+      # Keeps request history and downloaded GeoIP databases across container
+      # recreation.
       - rota-data:/app/data
     networks:
       - rota-network
@@ -82,21 +73,20 @@ services:
       start_period: 5s
       retries: 3
     depends_on:
-      timescaledb:
+      postgres:
         condition: service_healthy
 
-  timescaledb:
-    image: timescale/timescaledb:2.22.1-pg17
-    container_name: rota-timescaledb
+  postgres:
+    image: postgres:17-alpine
+    container_name: rota-postgres
     restart: unless-stopped
     # Port intentionally NOT exposed to host — DB is internal only.
     environment:
       - POSTGRES_USER=${DB_USER:-rota}
       - POSTGRES_PASSWORD=${DB_PASSWORD:-rota_password}
       - POSTGRES_DB=${DB_NAME:-rota}
-      - TIMESCALEDB_TELEMETRY=off
     volumes:
-      - timescaledb-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     networks:
       - rota-network
     healthcheck:
@@ -106,49 +96,10 @@ services:
       start_period: 10s
       retries: 5
 
-  # Optional event-store backend — only starts with the "clickhouse" profile:
-  #   EVENT_STORE=clickhouse docker compose --profile clickhouse up -d
-  # rota fail-fasts and restarts until ClickHouse is healthy on first boot.
-  clickhouse:
-    image: clickhouse/clickhouse-server:25.3
-    container_name: rota-clickhouse
-    restart: unless-stopped
-    profiles: [clickhouse]
-    # Port intentionally NOT exposed to host — internal only.
-    environment:
-      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-rota}
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-rota_password}
-      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-rota}
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-    networks:
-      - rota-network
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    # ClickHouse sizes itself to the machine by default; on small VMs cap it,
-    # e.g. add:  mem_limit: 1g
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "clickhouse-client",
-          "--user", "${CLICKHOUSE_USER:-rota}",
-          "--password", "${CLICKHOUSE_PASSWORD:-rota_password}",
-          "-q", "SELECT 1",
-        ]
-      interval: 10s
-      timeout: 5s
-      start_period: 15s
-      retries: 5
-
 volumes:
   rota-data:
     driver: local
-  timescaledb-data:
-    driver: local
-  clickhouse-data:
+  postgres-data:
     driver: local
 
 networks:

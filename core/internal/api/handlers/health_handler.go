@@ -64,7 +64,7 @@ func (h *HealthHandler) Status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Get request stats from proxy_requests table
+	// TODO: Get request stats from the event store
 	// For now, using dummy data
 	requestStats := map[string]interface{}{
 		"total":       proxyStats["total_requests"],

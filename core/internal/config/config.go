@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -17,23 +18,8 @@ type Config struct {
 	AdminUser string
 	AdminPass string
 
-	// EventStore selects the backend for request and tunnel history:
-	// "parquet" (default — local files, no extra server), "postgres" (events
-	// live in the primary database), or "clickhouse" (EVENT_STORE).
-	EventStore string
-
-	// EventStoreMirror names a second backend that also receives every write
-	// while EventStore keeps answering reads, for moving between backends
-	// without a gap (EVENT_STORE_MIRROR). Empty disables it.
-	EventStoreMirror string
-
-	// Parquet configures the file-based event store when EVENT_STORE=parquet.
+	// Parquet configures the file-based store for request and tunnel history.
 	Parquet ParquetConfig
-
-	// ClickHouse is the event-store connection when EVENT_STORE=clickhouse.
-	// The primary (Postgres) database is still required for control-plane
-	// data either way.
-	ClickHouse ClickHouseConfig
 
 	// JWTSecret, when set, signs dashboard session tokens in place of the key
 	// the server generates once and stores in the database. Set it only to
@@ -143,17 +129,30 @@ const defaultGeoIPDir = "data/geoip"
 // the container, on the same volume as the GeoIP databases.
 const defaultEventDir = "data/events"
 
-// ClickHouseConfig holds the ClickHouse connection settings (native protocol).
-type ClickHouseConfig struct {
-	Host     string
-	Port     int
-	User     string
-	Password string
-	Name     string
+// defaultEventInstance is fixed rather than the hostname, which changes when a
+// container is recreated.
+const defaultEventInstance = "rota"
+
+// eventInstancePattern keeps an instance name safe in a file name on every
+// platform. It has no dots, which separate the name from the day and the
+// extension.
+var eventInstancePattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+
+// ValidEventInstance reports whether name can name event store files.
+func ValidEventInstance(name string) bool {
+	return eventInstancePattern.MatchString(name)
 }
 
-func validEventStore(name string) bool {
-	return name == "parquet" || name == "postgres" || name == "clickhouse"
+// checkEventStore fails on settings that ask for history anywhere but the
+// Parquet files, so a stale setting stops startup instead of being ignored.
+func checkEventStore() error {
+	if store := os.Getenv("EVENT_STORE"); store != "" && store != "parquet" {
+		return fmt.Errorf("EVENT_STORE=%s is not supported: request and tunnel history lives in Parquet files; unset EVENT_STORE", store)
+	}
+	if os.Getenv("EVENT_STORE_MIRROR") != "" {
+		return fmt.Errorf("EVENT_STORE_MIRROR is not supported: request and tunnel history lives only in Parquet files; unset EVENT_STORE_MIRROR")
+	}
+	return nil
 }
 
 // ParquetConfig holds the settings of the file-based event store.
@@ -161,6 +160,11 @@ type ParquetConfig struct {
 	// Dir holds the event logs and Parquet files. It must outlive the
 	// process, because the current day exists only here.
 	Dir string
+
+	// Instance names the files this process writes in Dir
+	// (EVENT_STORE_INSTANCE). The store converts only logs with its own name,
+	// so the name must stay the same across restarts.
+	Instance string
 
 	// SyncWrites makes every append wait for the disk, so events survive
 	// power loss at the cost of write latency (EVENT_STORE_SYNC).
@@ -181,6 +185,10 @@ func (d *DatabaseConfig) DSN() string {
 func Load() (*Config, error) {
 	loadDotEnv(".env")
 
+	if err := checkEventStore(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
 	cfg := &Config{
 		ProxyPort: getEnvAsInt("PROXY_PORT", 8000),
 		APIPort:   getEnvAsInt("API_PORT", 8001),
@@ -193,20 +201,12 @@ func Load() (*Config, error) {
 			Name:     getEnv("DB_NAME", "rota"),
 			SSLMode:  getEnv("DB_SSLMODE", "disable"),
 		},
-		AdminUser:        getEnv("ROTA_ADMIN_USER", "admin"),
-		AdminPass:        getEnv("ROTA_ADMIN_PASSWORD", "admin"),
-		JWTSecret:        getEnv("JWT_SECRET", ""),
-		EventStore:       getEnv("EVENT_STORE", "parquet"),
-		EventStoreMirror: getEnv("EVENT_STORE_MIRROR", ""),
-		ClickHouse: ClickHouseConfig{
-			Host:     getEnv("CLICKHOUSE_HOST", "localhost"),
-			Port:     getEnvAsInt("CLICKHOUSE_PORT", 9000),
-			User:     getEnv("CLICKHOUSE_USER", "rota"),
-			Password: getEnv("CLICKHOUSE_PASSWORD", ""),
-			Name:     getEnv("CLICKHOUSE_DB", "rota"),
-		},
+		AdminUser: getEnv("ROTA_ADMIN_USER", "admin"),
+		AdminPass: getEnv("ROTA_ADMIN_PASSWORD", "admin"),
+		JWTSecret: getEnv("JWT_SECRET", ""),
 		Parquet: ParquetConfig{
 			Dir:        getEnv("EVENT_STORE_DIR", defaultEventDir),
+			Instance:   getEnv("EVENT_STORE_INSTANCE", defaultEventInstance),
 			SyncWrites: getEnvAsBool("EVENT_STORE_SYNC", false),
 		},
 
@@ -276,12 +276,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid log level: %s (must be debug, info, warn, or error)", c.LogLevel)
 	}
 
-	if !validEventStore(c.EventStore) {
-		return fmt.Errorf("invalid event store: %s (must be parquet, postgres or clickhouse)", c.EventStore)
-	}
-	if c.EventStoreMirror != "" && (!validEventStore(c.EventStoreMirror) || c.EventStoreMirror == c.EventStore) {
-		return fmt.Errorf("invalid event store mirror: %s (must be a backend other than %s)", c.EventStoreMirror, c.EventStore)
-	}
 	if c.AuthIPMaxAttempts < 1 || c.AuthIPWindowMinutes < 1 || c.AuthIPBlockMinutes < 1 {
 		return fmt.Errorf("AUTH_IP_MAX_ATTEMPTS, AUTH_IP_WINDOW_MINUTES and AUTH_IP_BLOCK_MINUTES must be positive")
 	}
@@ -299,6 +293,10 @@ func (c *Config) Validate() error {
 	}
 	if c.GeoIP.UpdateHours < 1 {
 		return fmt.Errorf("GEOIP_UPDATE_HOURS must be positive")
+	}
+
+	if !ValidEventInstance(c.Parquet.Instance) {
+		return fmt.Errorf("invalid EVENT_STORE_INSTANCE %q (must be 1-64 lowercase letters, digits, hyphens or underscores)", c.Parquet.Instance)
 	}
 
 	return nil
