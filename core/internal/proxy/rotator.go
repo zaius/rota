@@ -433,6 +433,9 @@ func (r *Rotator) ConnectWithRetry(host string, ctx context.Context) (net.Conn, 
 	var lastErr error
 	rejections := 0
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, clientAbort(err)
+		}
 		p, err := r.pick(ctx, tried)
 		if err != nil {
 			if lastErr != nil {
@@ -445,7 +448,16 @@ func (r *Rotator) ConnectWithRetry(host string, ctx context.Context) (net.Conn, 
 
 		r.logger.Info("CONNECT: trying proxy", "attempt", attempt+1, "proxy", p.Address, "host", host)
 
-		conn, err := connectViaProxy(p, host, r.timeout())
+		attemptCtx, cancel := context.WithTimeout(ctx, r.timeout())
+		conn, err := dialTarget(attemptCtx, p, host)
+		cancel()
+		if err != nil && ctx.Err() != nil {
+			// The client has gone: nobody waits for another attempt, and the
+			// failure says nothing about the proxy.
+			abort := clientAbort(ctx.Err())
+			r.recordAttempt(client, p, "CONNECT://"+host, "CONNECT", 0, start, abort)
+			return nil, nil, abort
+		}
 		if err != nil {
 			r.recordAttempt(client, p, "CONNECT://"+host, "CONNECT", 0, start, err)
 			lastErr = fmt.Errorf("CONNECT proxy %s attempt %d: %w", p.Address, attempt+1, err)
@@ -481,19 +493,4 @@ func (r *Rotator) ConnectWithRetry(host string, ctx context.Context) (net.Conn, 
 	}
 
 	return nil, nil, fmt.Errorf("all %d CONNECT attempts failed, last: %w", maxAttempts, lastErr)
-}
-
-// connectViaProxy dials host through the given proxy for a CONNECT tunnel,
-// dispatching by protocol. It is the sole CONNECT dial path.
-func connectViaProxy(p *models.Proxy, host string, timeout time.Duration) (net.Conn, error) {
-	switch p.Protocol {
-	case "socks5":
-		return connectViaSocks5(p, host)
-	case "socks4", "socks4a":
-		return connectViaSocks5(p, host) // h12.io/socks handles socks4 too; close enough
-	case "http", "https":
-		return connectViaHTTPStandalone(p, host, timeout)
-	default:
-		return nil, forwardingFailure("proxy_configuration_error", fmt.Errorf("unsupported protocol for CONNECT: %s", p.Protocol))
-	}
 }

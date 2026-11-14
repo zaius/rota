@@ -64,6 +64,10 @@ func clientRequestAbort(req *http.Request, ctx context.Context, cause error) err
 	} else if !errors.Is(cause, context.Canceled) {
 		return nil
 	}
+	return clientAbort(cause)
+}
+
+func clientAbort(cause error) error {
 	return forwardingFailure("client_request_aborted", fmt.Errorf("client request aborted: %w", cause))
 }
 

@@ -90,8 +90,26 @@ func isDNSNotFound(err error) bool {
 	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
 }
 
-// connectViaSocks5 dials host through a SOCKS5 proxy.
-func connectViaSocks5(p *models.Proxy, host string) (net.Conn, error) {
+// proxyDial connects to upstream proxies. Its timeout fails an unreachable
+// proxy fast, leaving the rest of the attempt's time for the next proxy.
+var proxyDial = &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
+
+// dialTarget opens a connection to target through p. ctx bounds the whole
+// handshake, and cancelling it abandons the handshake.
+func dialTarget(ctx context.Context, p *models.Proxy, target string) (net.Conn, error) {
+	switch p.Protocol {
+	case "socks5":
+		return dialSocks5(ctx, p, target)
+	case "socks4", "socks4a":
+		return dialSocks5(ctx, p, target) // h12.io/socks handles socks4 too; close enough
+	case "http", "https":
+		return connectViaHTTP(ctx, p, target)
+	default:
+		return nil, forwardingFailure("proxy_configuration_error", fmt.Errorf("unsupported protocol for CONNECT: %s", p.Protocol))
+	}
+}
+
+func dialSocks5(ctx context.Context, p *models.Proxy, target string) (net.Conn, error) {
 	var auth *proxyDialer.Auth
 	if p.Username != nil && *p.Username != "" {
 		pw := ""
@@ -100,31 +118,43 @@ func connectViaSocks5(p *models.Proxy, host string) (net.Conn, error) {
 		}
 		auth = &proxyDialer.Auth{User: *p.Username, Password: pw}
 	}
-	dialer, err := proxyDialer.SOCKS5("tcp", p.Address, auth, proxyDialer.Direct)
+	dialer, err := proxyDialer.SOCKS5("tcp", p.Address, auth, proxyDial)
 	if err != nil {
 		return nil, fmt.Errorf("socks5 dialer: %w", err)
 	}
-	conn, err := dialer.Dial("tcp", host)
+	conn, err := dialer.(proxyDialer.ContextDialer).DialContext(ctx, "tcp", target)
 	if err != nil {
-		return nil, fmt.Errorf("socks5 dial %s via %s: %w", host, p.Address, err)
+		return nil, fmt.Errorf("socks5 dial %s via %s: %w", target, p.Address, err)
 	}
 	return conn, nil
 }
 
-// connectViaHTTPStandalone sends a CONNECT request to an HTTP proxy.
-func connectViaHTTPStandalone(p *models.Proxy, host string, timeout time.Duration) (net.Conn, error) {
-	if timeout < 30*time.Second {
-		timeout = 30 * time.Second
-	}
-
-	conn, err := net.DialTimeout("tcp", p.Address, timeout)
+// connectViaHTTP opens a CONNECT tunnel through an HTTP proxy.
+func connectViaHTTP(ctx context.Context, p *models.Proxy, target string) (net.Conn, error) {
+	conn, err := proxyDial.DialContext(ctx, "tcp", p.Address)
 	if err != nil {
 		return nil, forwardingFailure("proxy_connect_failed", fmt.Errorf("dial proxy %s: %w", p.Address, err))
 	}
+	// The handshake's reads and writes take no context, so its deadline and
+	// cancellation reach them through the connection.
+	deadline, _ := ctx.Deadline()
+	_ = conn.SetDeadline(deadline)
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
+	err = sendCONNECT(conn, p, target)
+	if !stop() && err == nil {
+		err = ctx.Err() // ctx ended just as the handshake finished
+	}
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Time{})
+	return conn, nil
+}
 
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-
-	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", host, host)
+// sendCONNECT asks the proxy for a tunnel to target and reads its answer.
+func sendCONNECT(conn net.Conn, p *models.Proxy, target string) error {
+	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", target, target)
 	if p.Username != nil && *p.Username != "" {
 		pw := ""
 		if p.Password != nil {
@@ -136,34 +166,28 @@ func connectViaHTTPStandalone(p *models.Proxy, host string, timeout time.Duratio
 	req += "User-Agent: Rota-Proxy/1.0\r\nProxy-Connection: Keep-Alive\r\n\r\n"
 
 	if _, err := conn.Write([]byte(req)); err != nil {
-		conn.Close()
-		return nil, forwardingFailure("proxy_handshake_failed", fmt.Errorf("send CONNECT to %s: %w", p.Address, err))
+		return forwardingFailure("proxy_handshake_failed", fmt.Errorf("send CONNECT to %s: %w", p.Address, err))
 	}
 
 	line, err := readCONNECTResponse(conn)
 	if err != nil {
-		conn.Close()
-		return nil, forwardingFailure("proxy_handshake_failed", fmt.Errorf("read CONNECT response from %s: %w", p.Address, err))
+		return forwardingFailure("proxy_handshake_failed", fmt.Errorf("read CONNECT response from %s: %w", p.Address, err))
 	}
 	status, err := connectResponseStatus(line)
 	if err != nil {
-		conn.Close()
-		return nil, forwardingFailure("proxy_handshake_failed", err)
+		return forwardingFailure("proxy_handshake_failed", err)
 	}
-	if status < 200 || status >= 300 {
-		conn.Close()
-		cause := fmt.Errorf("CONNECT target %s via %s rejected: %s", host, p.Address, line)
-		switch {
-		case status == http.StatusProxyAuthRequired:
-			return nil, forwardingFailure("upstream_proxy_auth_failed", cause)
-		case status < 400:
-			return nil, forwardingFailure("proxy_handshake_failed", cause)
-		}
-		return nil, &upstreamFailure{reason: "upstream_connect_rejected", upstreamStatus: status, cause: cause}
+	if status >= 200 && status < 300 {
+		return nil
 	}
-
-	_ = conn.SetDeadline(time.Time{})
-	return conn, nil
+	cause := fmt.Errorf("CONNECT target %s via %s rejected: %s", target, p.Address, line)
+	switch {
+	case status == http.StatusProxyAuthRequired:
+		return forwardingFailure("upstream_proxy_auth_failed", cause)
+	case status < 400:
+		return forwardingFailure("proxy_handshake_failed", cause)
+	}
+	return &upstreamFailure{reason: "upstream_connect_rejected", upstreamStatus: status, cause: cause}
 }
 
 func connectResponseStatus(line string) (int, error) {

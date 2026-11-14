@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/zaius/rota/core/internal/models"
-	proxyDialer "golang.org/x/net/proxy"
 	"h12.io/socks"
 )
 
@@ -156,9 +155,6 @@ func CreateProxyTransport(p *models.Proxy) (*http.Transport, error) {
 			// Don't specify CipherSuites to accept all available ciphers for maximum compatibility
 			// This is acceptable since InsecureSkipVerify is already true
 		},
-		// Timeouts for proxy connections
-		// NOTE: Do NOT set DialContext here - it will override Proxy settings!
-		// Let http.Transport handle proxy dialing automatically
 		TLSHandshakeTimeout:   30 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,
 		ExpectContinueTimeout: 10 * time.Second,
@@ -192,33 +188,18 @@ func CreateProxyTransport(p *models.Proxy) (*http.Transport, error) {
 
 	switch p.Protocol {
 	case "http", "https":
-		// Set proxy URL - http.Transport will handle authentication headers automatically
+		// The transport dials the proxy with DialContext, then speaks to it as
+		// Proxy says, credentials included.
 		transport.Proxy = http.ProxyURL(parsedURL)
+		transport.DialContext = proxyDial.DialContext
 	case "socks4", "socks4a":
 		// Create SOCKS4/SOCKS4A dialer using h12.io/socks
 		// The Dial function accepts URI format: socks4://[user@]host:port
 		transport.Dial = socks.Dial(proxyURL)
 	case "socks5":
-		// Create SOCKS5 dialer
-		var auth *proxyDialer.Auth
-		if p.Username != nil && *p.Username != "" {
-			// Username exists, create auth
-			password := ""
-			if p.Password != nil {
-				password = *p.Password
-			}
-			auth = &proxyDialer.Auth{
-				User:     *p.Username,
-				Password: password,
-			}
+		transport.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+			return dialSocks5(ctx, p, addr)
 		}
-
-		dialer, err := proxyDialer.SOCKS5("tcp", p.Address, auth, proxyDialer.Direct)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create SOCKS5 dialer: %w", err)
-		}
-
-		transport.Dial = dialer.Dial
 	default:
 		return nil, fmt.Errorf("unsupported proxy protocol: %s", p.Protocol)
 	}
