@@ -125,7 +125,7 @@ func run() error {
 	// manager, so they start and stop with the process instead of leaking on a
 	// never-cancelled context.Background().
 	healthChecker := proxy.NewHealthChecker(proxyRepo, settingsRepo, proxy.NewUsageTracker(eventStore, proxyRepo), log)
-	geoSvc := services.NewGeoIPService(log, services.NewLocalGeoDB(cfg.GeoIP, log))
+	geoSvc := services.NewGeoIPService(log)
 	sourceSvc := services.NewSourceService(sourceRepo, proxyRepo, geoSvc, log)
 	healthCheckSvc := services.NewHealthCheckScheduler(healthChecker, settingsRepo, log)
 	cleanupSvc := services.NewProxyCleanupService(proxyRepo, settingsRepo, eventStore, log)

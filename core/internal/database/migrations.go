@@ -3,8 +3,9 @@ package database
 import (
 	"context"
 	"database/sql"
-	_ "embed"
+	"embed"
 	"fmt"
+	"io/fs"
 
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -13,6 +14,9 @@ import (
 
 //go:embed schema.sql
 var schema string
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
 
 // Migrate applies pending migrations. Concurrent instances serialize on a
 // Postgres advisory lock.
@@ -24,7 +28,11 @@ func (db *DB) Migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, nil,
+	files, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		return err
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, files,
 		goose.WithSessionLocker(locker),
 		goose.WithGoMigrations(goose.NewGoMigration(1, &goose.GoFunc{RunTx: createSchema}, nil)),
 		goose.WithSlog(db.logger.Logger),

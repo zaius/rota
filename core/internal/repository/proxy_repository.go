@@ -101,7 +101,7 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 			requests, successful_requests, failed_requests,
 			avg_response_time, last_check,
 			cooldown_until, cooldown_reason,
-			country_code, country_name, region_name, city_name, isp,
+			country_code, country_name,
 			COALESCE(tags, '{}') AS tags,
 			created_at, updated_at
 		FROM proxies
@@ -126,7 +126,7 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 			&p.Requests, &p.SuccessfulRequests, &p.FailedRequests,
 			&p.AvgResponseTime, &p.LastCheck,
 			&p.CooldownUntil, &p.CooldownReason,
-			&p.CountryCode, &p.CountryName, &p.RegionName, &p.CityName, &p.ISP,
+			&p.CountryCode, &p.CountryName,
 			&p.Tags,
 			&p.CreatedAt, &p.UpdatedAt,
 		)
@@ -159,9 +159,6 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 			CooldownReason:  p.CooldownReason,
 			CountryCode:     p.CountryCode,
 			CountryName:     p.CountryName,
-			RegionName:      p.RegionName,
-			CityName:        p.CityName,
-			ISP:             p.ISP,
 			Tags:            tags,
 			CreatedAt:       p.CreatedAt,
 			UpdatedAt:       p.UpdatedAt,
@@ -178,7 +175,7 @@ func (r *ProxyRepository) GetByID(ctx context.Context, id int) (*models.Proxy, e
 			id, address, protocol, username, password, status,
 			requests, successful_requests, failed_requests,
 			avg_response_time, last_check, last_error,
-			country_code, country_name, region_name, city_name, isp,
+			country_code, country_name,
 			COALESCE(tags, '{}') AS tags,
 			created_at, updated_at
 		FROM proxies
@@ -190,7 +187,7 @@ func (r *ProxyRepository) GetByID(ctx context.Context, id int) (*models.Proxy, e
 		&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status,
 		&p.Requests, &p.SuccessfulRequests, &p.FailedRequests,
 		&p.AvgResponseTime, &p.LastCheck, &p.LastError,
-		&p.CountryCode, &p.CountryName, &p.RegionName, &p.CityName, &p.ISP,
+		&p.CountryCode, &p.CountryName,
 		&p.Tags,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
@@ -613,7 +610,7 @@ func scanProxies(rows pgx.Rows) ([]*models.Proxy, error) {
 			&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status,
 			&p.Requests, &p.SuccessfulRequests, &p.FailedRequests,
 			&p.AvgResponseTime, &p.LastCheck, &p.LastError,
-			&p.CountryCode, &p.CountryName, &p.RegionName, &p.CityName, &p.ISP,
+			&p.CountryCode, &p.CountryName,
 			&p.Tags,
 			&p.CreatedAt, &p.UpdatedAt,
 		)
@@ -632,7 +629,7 @@ const proxyFullColumns = `
 	id, address, protocol, username, password, status,
 	requests, successful_requests, failed_requests,
 	avg_response_time, last_check, last_error,
-	country_code, country_name, region_name, city_name, isp,
+	country_code, country_name,
 	COALESCE(tags, '{}') AS tags,
 	created_at, updated_at`
 
@@ -766,15 +763,9 @@ func (r *ProxyRepository) UpdateGeo(ctx context.Context, address string, geo mod
 		UPDATE proxies SET
 			country_code   = $1,
 			country_name   = $2,
-			region_name    = $3,
-			city_name      = $4,
-			latitude       = $5,
-			longitude      = $6,
-			isp            = $7,
 			geo_updated_at = NOW()
-		WHERE address = $8`,
-		geo.CountryCode, geo.CountryName, geo.RegionName, geo.CityName,
-		geo.Latitude, geo.Longitude, geo.ISP, address)
+		WHERE address = $3`,
+		geo.CountryCode, geo.CountryName, address)
 	if err != nil {
 		return fmt.Errorf("failed to update geo for %s: %w", address, err)
 	}

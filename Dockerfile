@@ -40,7 +40,7 @@ FROM alpine:3.24 AS runner
 RUN apk --no-cache add ca-certificates tzdata wget
 WORKDIR /app
 
-# /app/data holds downloaded GeoIP databases; creating it here lets a volume
+# /app/data holds the downloaded GeoIP database; creating it here lets a volume
 # mounted there inherit the rota user's ownership.
 RUN adduser -D -u 1000 rota && mkdir -p /app/data && chown -R rota:rota /app
 

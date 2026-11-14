@@ -22,11 +22,6 @@ type Proxy struct {
 	// GeoIP fields
 	CountryCode  *string    `json:"country_code,omitempty"`
 	CountryName  *string    `json:"country_name,omitempty"`
-	RegionName   *string    `json:"region_name,omitempty"`
-	CityName     *string    `json:"city_name,omitempty"`
-	Latitude     *float64   `json:"latitude,omitempty"`
-	Longitude    *float64   `json:"longitude,omitempty"`
-	ISP          *string    `json:"isp,omitempty"`
 	GeoUpdatedAt *time.Time `json:"geo_updated_at,omitempty"`
 	// Tags
 	Tags      []string  `json:"tags"`
@@ -77,9 +72,6 @@ type ProxyWithStats struct {
 	// GeoIP fields
 	CountryCode *string `json:"country_code,omitempty"`
 	CountryName *string `json:"country_name,omitempty"`
-	RegionName  *string `json:"region_name,omitempty"`
-	CityName    *string `json:"city_name,omitempty"`
-	ISP         *string `json:"isp,omitempty"`
 	// Tags
 	Tags      []string  `json:"tags"`
 	CreatedAt time.Time `json:"created_at"`
@@ -192,11 +184,6 @@ type PaginationMeta struct {
 
 // GeoInfo is the result of a GeoIP lookup
 type GeoInfo struct {
-	CountryCode string  `json:"country_code"`
-	CountryName string  `json:"country_name"`
-	RegionName  string  `json:"region_name"`
-	CityName    string  `json:"city_name"`
-	ISP         string  `json:"isp"`
-	Latitude    float64 `json:"lat"`
-	Longitude   float64 `json:"lon"`
+	CountryCode string `json:"country_code"`
+	CountryName string `json:"country_name"`
 }

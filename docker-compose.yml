@@ -23,12 +23,6 @@ services:
       - TLS_INSPECT_CA_CERT=${TLS_INSPECT_CA_CERT:-}
       - TLS_INSPECT_CA_KEY=${TLS_INSPECT_CA_KEY:-}
       - TLS_INSPECT_BYPASS_DOMAINS=${TLS_INSPECT_BYPASS_DOMAINS:-}
-      # Local MaxMind geolocation instead of ip-api.com; see .env.example.
-      - MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY:-}
-      - MAXMIND_ACCOUNT_ID=${MAXMIND_ACCOUNT_ID:-}
-      - GEOIP_CITY_DB=${GEOIP_CITY_DB:-}
-      - GEOIP_ASN_DB=${GEOIP_ASN_DB:-}
-      - GEOIP_UPDATE_HOURS=${GEOIP_UPDATE_HOURS:-168}
       # Request and tunnel history lives in Parquet files on the rota-data
       # volume; see .env.example.
       - EVENT_STORE_DIR=${EVENT_STORE_DIR:-}

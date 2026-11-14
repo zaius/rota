@@ -222,16 +222,7 @@ Each import upserts proxies and enriches new entries with GeoIP data. Tag proxie
 
 #### GeoIP Source
 
-Locations come from the free [ip-api.com](https://ip-api.com) web service unless local MaxMind databases are configured. Local lookups avoid ip-api.com's rate limit and keep proxy addresses on your server:
-
-| Variable | Purpose |
-|---|---|
-| `MAXMIND_LICENSE_KEY` | Download GeoLite2-City and GeoLite2-ASN into `data/geoip/` and keep them current (free [MaxMind account](https://www.maxmind.com/en/geolite2/signup)) |
-| `MAXMIND_ACCOUNT_ID` | Optional; downloads through MaxMind's account-authenticated endpoint |
-| `GEOIP_CITY_DB` / `GEOIP_ASN_DB` | Paths to existing `.mmdb` files, e.g. kept current by `geoipupdate`; a replaced file is reloaded within the hour |
-| `GEOIP_UPDATE_HOURS` | Re-download age for managed databases (default `168`) |
-
-The ASN database supplies proxies' ISP names. Until the City database loads, lookups keep using ip-api.com, as do proxies given by hostname rather than IP address.
+Rota downloads [IP geolocation by DB-IP](https://db-ip.com) (the free IP to Country Lite database, CC BY 4.0) into `data/geoip/` and replaces it each month, with no account or key. Lookups run on your server; proxies given by hostname are resolved through DNS first.
 
 ### Health checks
 

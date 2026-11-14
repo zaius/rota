@@ -43,10 +43,6 @@ type Config struct {
 	// TLSInspect configures optional HTTPS interception.
 	TLSInspect TLSInspectConfig
 
-	// GeoIP selects local MaxMind databases for proxy geolocation in place of
-	// the ip-api.com web service.
-	GeoIP GeoIPConfig
-
 	// MetricsEnabled controls the OpenTelemetry metrics pipeline: the
 	// Prometheus /metrics endpoint on the API port and, when the standard
 	// OTEL_EXPORTER_OTLP_* env vars are set, OTLP push.
@@ -90,28 +86,6 @@ func (t *TLSInspectConfig) Enabled() bool {
 	return t.CACertFile != "" && t.CAKeyFile != ""
 }
 
-// GeoIPConfig points geolocation at local MaxMind databases. With no City
-// database configured, lookups go to the ip-api.com web service instead.
-type GeoIPConfig struct {
-	// CityDB is a GeoLite2/GeoIP2 City .mmdb for country, region, city and
-	// coordinates.
-	CityDB string `env:"GEOIP_CITY_DB"`
-	// ASNDB is an optional GeoLite2 ASN .mmdb; its AS organization fills the
-	// proxy's ISP.
-	ASNDB string `env:"GEOIP_ASN_DB"`
-	// LicenseKey enables downloading the databases from MaxMind when they are
-	// missing or older than UpdateHours. AccountID selects MaxMind's
-	// authenticated download endpoint.
-	LicenseKey string `env:"MAXMIND_LICENSE_KEY"`
-	AccountID  string `env:"MAXMIND_ACCOUNT_ID"`
-	// UpdateHours is the download age limit.
-	UpdateHours int `env:"GEOIP_UPDATE_HOURS" envDefault:"168"`
-}
-
-// defaultGeoIPDir holds downloaded databases when the environment names no
-// database paths.
-const defaultGeoIPDir = "data/geoip"
-
 // eventInstancePattern keeps an instance name safe in a file name on every
 // platform. It has no dots, which separate the name from the day and the
 // extension.
@@ -139,7 +113,7 @@ type ParquetConfig struct {
 	// Dir holds the event logs and Parquet files. It must outlive the
 	// process, because the current day exists only here. The default is
 	// /app/data/events in the container, on the same volume as the GeoIP
-	// databases.
+	// database.
 	Dir string `env:"EVENT_STORE_DIR" envDefault:"data/events"`
 
 	// Instance names the files this process writes in Dir. The store converts
@@ -186,17 +160,6 @@ func Load() (*Config, error) {
 		cfg.WebDir = defaultWebDir()
 	}
 
-	// A license key alone is enough: download both databases to the default
-	// location.
-	if cfg.GeoIP.LicenseKey != "" {
-		if cfg.GeoIP.CityDB == "" {
-			cfg.GeoIP.CityDB = defaultGeoIPDir + "/GeoLite2-City.mmdb"
-		}
-		if cfg.GeoIP.ASNDB == "" {
-			cfg.GeoIP.ASNDB = defaultGeoIPDir + "/GeoLite2-ASN.mmdb"
-		}
-	}
-
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -231,14 +194,6 @@ func (c *Config) Validate() error {
 	// through absent data.
 	if (c.TLSInspect.CACertFile == "") != (c.TLSInspect.CAKeyFile == "") {
 		return fmt.Errorf("TLS_INSPECT_CA_CERT and TLS_INSPECT_CA_KEY must be set together")
-	}
-
-	// An ASN database only adds ISP names to City lookups.
-	if c.GeoIP.ASNDB != "" && c.GeoIP.CityDB == "" {
-		return fmt.Errorf("GEOIP_ASN_DB requires GEOIP_CITY_DB")
-	}
-	if c.GeoIP.UpdateHours < 1 {
-		return fmt.Errorf("GEOIP_UPDATE_HOURS must be positive")
 	}
 
 	if !ValidEventInstance(c.Parquet.Instance) {
