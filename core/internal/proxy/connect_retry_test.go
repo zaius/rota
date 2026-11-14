@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,12 +17,11 @@ import (
 type connectRequestStore struct {
 	events.Store
 	records chan events.RequestEvent
-	err     error
 }
 
 func (s *connectRequestStore) InsertRequest(_ context.Context, event events.RequestEvent) error {
 	s.records <- event
-	return s.err
+	return nil
 }
 
 func (s *connectRequestStore) next(t *testing.T) events.RequestEvent {
@@ -55,7 +53,7 @@ func TestConnectWithRetry_RejectionRetriesOnceWithoutChargingProxy(t *testing.T)
 			}
 			store := &connectRequestStore{records: make(chan events.RequestEvent, 20)}
 			r := newTestRotator(t, proxies...)
-			r.tracker = NewUsageTracker(store, nil) // Target failures must never access the health DB.
+			r.tracker = NewUsageTracker(store, nil)
 			r.failCounts = map[int]int{1: 2, 2: 2, 3: 2, 4: 2, 5: 2}
 			for request := 1; request <= 3; request++ {
 				conn, binding, err := r.ConnectWithRetry("192.0.2.1:443", requestCtx("", Options{Client: "alice"}))
@@ -113,8 +111,7 @@ func TestConnectWithRetry_RejectionRetryRebindsSession(t *testing.T) {
 		&models.Proxy{ID: 1, Protocol: "http", Address: rejecting.Listener.Addr().String()},
 		&models.Proxy{ID: 2, Protocol: "http", Address: accepting.Listener.Addr().String()},
 	)
-	// Stop after capturing the events so the success skips the health DB.
-	store := &connectRequestStore{records: make(chan events.RequestEvent, 3), err: errors.New("test: skip health DB")}
+	store := &connectRequestStore{records: make(chan events.RequestEvent, 3)}
 	r.tracker = NewUsageTracker(store, nil)
 	r.failCounts[1] = 2
 	ctx := requestCtx("192.0.2.1", Options{Client: "etl", Session: "abc"})
@@ -200,9 +197,7 @@ func TestConnectWithRetry_ProxyFailureRetriesAndChargesProxy(t *testing.T) {
 				&models.Proxy{ID: 1, Protocol: "http", Address: badAddress},
 				&models.Proxy{ID: 2, Protocol: "http", Address: good.Listener.Addr().String()},
 			)
-			// Stop after capturing the events: this test exercises retry accounting,
-			// while database state updates for transport failures are unchanged.
-			store := &connectRequestStore{records: make(chan events.RequestEvent, 2), err: errors.New("test: skip health DB")}
+			store := &connectRequestStore{records: make(chan events.RequestEvent, 2)}
 			r.tracker = NewUsageTracker(store, nil)
 			r.failCounts = map[int]int{1: 2, 2: 2}
 			conn, binding, err := r.ConnectWithRetry("192.0.2.1:443", context.Background())

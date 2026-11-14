@@ -10,8 +10,8 @@ import (
 	"github.com/zaius/rota/core/internal/repository"
 )
 
-// UsageTracker tracks proxy usage and updates statistics: request outcomes are
-// recorded as events in the event store, proxy state lives in the primary DB.
+// UsageTracker records request and tunnel outcomes in the event store and
+// health-check verdicts on the proxy row.
 type UsageTracker struct {
 	events events.Store
 	repo   *repository.ProxyRepository
@@ -33,14 +33,14 @@ type RequestRecord struct {
 	RequestedURL  string
 	Method        string
 	Success       bool
-	TargetFailure bool // target rejection or client abort; does not change proxy health
+	TargetFailure bool // target rejection or client abort, not the proxy's fault
 	ResponseTime  int  // milliseconds
 	StatusCode    int
 	ErrorMessage  string
 	Timestamp     time.Time
 }
 
-// RecordRequest records a proxy request and updates statistics
+// RecordRequest records a proxy request in the event store.
 func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) error {
 	metrics.RecordProxyRequest(ctx, record.Client, record.Success, record.StatusCode, record.ResponseTime)
 
@@ -64,67 +64,7 @@ func (t *UsageTracker) RecordRequest(ctx context.Context, record RequestRecord) 
 	if err != nil {
 		return fmt.Errorf("failed to insert proxy request: %w", err)
 	}
-
-	// Update proxy statistics
-	if err := t.updateProxyStats(ctx, record); err != nil {
-		return fmt.Errorf("failed to update proxy stats: %w", err)
-	}
-
 	return nil
-}
-
-// updateProxyStats advances the proxy's control-plane state machine: status,
-// the consecutive-failure counter (failed_requests), last_check and
-// last_error. Metrics — request counts and response-time averages — are no
-// longer written here; they are derived from the event store by the stats
-// refresher (services.StatsRefresher).
-//
-// The success path only writes on an actual state transition (recovering
-// status, resetting a failure streak, clearing an error), so the common case
-// — a healthy proxy staying healthy — touches no row. A consequence is that
-// last_check advances on transitions and health checks, not on every request.
-func (t *UsageTracker) updateProxyStats(ctx context.Context, record RequestRecord) error {
-	// Target rejections and client aborts remain visible in request history,
-	// but neither advance nor reset the proxy's failure streak.
-	if record.TargetFailure {
-		return nil
-	}
-
-	if record.Success {
-		query := `
-			UPDATE proxies
-			SET
-				failed_requests = 0,
-				last_error      = NULL,
-				status          = 'active',
-				last_check      = $2,
-				updated_at      = NOW()
-			WHERE id = $1
-			  AND (status <> 'active' OR failed_requests <> 0 OR last_error IS NOT NULL)
-		`
-		_, err := t.repo.GetDB().Pool.Exec(ctx, query, record.ProxyID, record.Timestamp)
-		return err
-	}
-
-	var errorMsg *string
-	if record.ErrorMessage != "" {
-		errorMsg = &record.ErrorMessage
-	}
-
-	// failed_requests counts *consecutive* failures (it resets on success);
-	// three in a row marks the proxy failed.
-	query := `
-		UPDATE proxies
-		SET
-			failed_requests = failed_requests + 1,
-			last_error      = $2,
-			last_check      = $3,
-			status          = CASE WHEN failed_requests + 1 >= 3 THEN 'failed' ELSE status END,
-			updated_at      = NOW()
-		WHERE id = $1
-	`
-	_, err := t.repo.GetDB().Pool.Exec(ctx, query, record.ProxyID, errorMsg, record.Timestamp)
-	return err
 }
 
 // TunnelRecord represents one completed CONNECT tunnel.
@@ -142,10 +82,6 @@ type TunnelRecord struct {
 }
 
 // RecordTunnel records a completed CONNECT tunnel in the event store.
-//
-// Unlike RecordRequest this does not touch proxy state: the tunnel's
-// establishment already advanced the health state machine when it opened, and
-// a tunnel torn down by either peer is normal, not a proxy failure.
 func (t *UsageTracker) RecordTunnel(ctx context.Context, record TunnelRecord) error {
 	metrics.RecordProxyTunnel(ctx, record.Client, record.ErrorMessage == "",
 		record.BytesUp, record.BytesDown, int(record.Duration.Milliseconds()))
@@ -172,7 +108,7 @@ func (t *UsageTracker) RecordTunnel(ctx context.Context, record TunnelRecord) er
 // RecordHealthCheck records a health check result. Checks are deliberate
 // probes, so the result applies to the proxy's status immediately rather than
 // waiting out the consecutive-failure threshold that request failures use.
-func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, success bool, responseTime int, errorMsg string) error {
+func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, success bool, responseTime int) error {
 	metrics.RecordHealthCheck(ctx, success, responseTime)
-	return t.repo.RecordCheckResult(ctx, proxyID, success, errorMsg)
+	return t.repo.SetHealthy(ctx, proxyID, success)
 }

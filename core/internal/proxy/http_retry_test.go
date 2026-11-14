@@ -27,7 +27,7 @@ func httpRetryTestRotator(t *testing.T, address string) (*Rotator, *connectReque
 	}
 	store := &connectRequestStore{records: make(chan events.RequestEvent, 10)}
 	r := newTestRotator(t, proxies...)
-	r.tracker = NewUsageTracker(store, nil) // Client aborts must never access the health DB.
+	r.tracker = NewUsageTracker(store, nil)
 	r.failCounts = map[int]int{1: 2, 2: 2, 3: 2, 4: 2, 5: 2}
 	return r, store
 }
@@ -130,7 +130,6 @@ func TestSendWithRetry_UpstreamTimeoutStillRetriesAndChargesProxy(t *testing.T) 
 	}))
 	defer upstream.Close()
 	r, store := httpRetryTestRotator(t, upstream.Listener.Addr().String())
-	store.err = errors.New("test: skip health DB")
 	r.SetSettings(&models.RotationSettings{Timeout: 1})
 	req := httptest.NewRequest(http.MethodGet, "http://clients2.google.com/background", nil)
 	resp, proxyID, err := r.SendWithRetry(req, req.Context())

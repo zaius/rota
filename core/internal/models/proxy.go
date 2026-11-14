@@ -12,10 +12,8 @@ type Proxy struct {
 	Status             string     `json:"status"`
 	Requests           int64      `json:"requests"`
 	SuccessfulRequests int64      `json:"-"`
-	FailedRequests     int64      `json:"-"`
 	AvgResponseTime    int        `json:"avg_response_time"`
 	LastCheck          *time.Time `json:"last_check,omitempty"`
-	LastError          *string    `json:"-"`
 	// Manual invalidation: excluded from rotation until CooldownUntil passes
 	CooldownUntil  *time.Time `json:"cooldown_until,omitempty"`
 	CooldownReason *string    `json:"cooldown_reason,omitempty"`

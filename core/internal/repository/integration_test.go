@@ -90,9 +90,8 @@ func TestIntegration_SeedDefaultsJSON(t *testing.T) {
 	}
 }
 
-// Regression: a failed manual test left the proxy active, because failures
-// never advanced the streak its status read.
-func TestIntegration_RecordCheckResult(t *testing.T) {
+// Regression: a failed manual test left the proxy active.
+func TestIntegration_SetHealthy(t *testing.T) {
 	db := testDB(t)
 	cleanTables(t, db)
 	proxyRepo := NewProxyRepository(db)
@@ -104,33 +103,16 @@ func TestIntegration_RecordCheckResult(t *testing.T) {
 		t.Fatalf("insert proxy: %v", err)
 	}
 
-	var (
-		status  string
-		streak  int
-		lastErr *string
-	)
-	readState := func() {
-		t.Helper()
-		if err := db.Pool.QueryRow(ctx,
-			`SELECT status, failed_requests, last_error FROM proxies WHERE id=$1`, id,
-		).Scan(&status, &streak, &lastErr); err != nil {
-			t.Fatalf("read proxy state: %v", err)
+	for _, healthy := range []bool{false, true} {
+		if err := proxyRepo.SetHealthy(ctx, id, healthy); err != nil {
+			t.Fatalf("SetHealthy(%v): %v", healthy, err)
 		}
-	}
-	for i := 1; i <= 2; i++ {
-		if err := proxyRepo.RecordCheckResult(ctx, id, false, "connection refused"); err != nil {
-			t.Fatalf("RecordCheckResult(fail): %v", err)
+		var status string
+		if err := db.Pool.QueryRow(ctx, `SELECT status FROM proxies WHERE id=$1`, id).Scan(&status); err != nil {
+			t.Fatalf("read proxy status: %v", err)
 		}
-		readState()
-		if status != "failed" || streak != i || lastErr == nil || *lastErr != "connection refused" {
-			t.Fatalf("after failed check %d: status=%q streak=%d last_error=%v", i, status, streak, lastErr)
+		if want := map[bool]string{false: "failed", true: "active"}[healthy]; status != want {
+			t.Fatalf("SetHealthy(%v): status=%q, want %q", healthy, status, want)
 		}
-	}
-	if err := proxyRepo.RecordCheckResult(ctx, id, true, ""); err != nil {
-		t.Fatalf("RecordCheckResult(success): %v", err)
-	}
-	readState()
-	if status != "active" || streak != 0 || lastErr != nil {
-		t.Fatalf("after passing check: status=%q streak=%d last_error=%v", status, streak, lastErr)
 	}
 }

@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	// failureThreshold is how many consecutive failures evict a proxy from the
-	// list until the next refresh.
+	// failureThreshold is how many consecutive failures take a proxy out of
+	// rotation until a health check passes.
 	failureThreshold = 3
 
 	// maxConnectRejections is how many distinct proxies must reject a CONNECT
@@ -150,17 +150,29 @@ func (r *Rotator) pick(ctx context.Context, tried map[int]bool) (*models.Proxy, 
 	return p, nil
 }
 
-// markFailed evicts a proxy only once it has failed failureThreshold times in
-// a row. Evicting on the first failure let one transient timeout drain healthy
-// proxies until the next refresh.
+// markFailed evicts a proxy once it fails failureThreshold times in a row, so
+// one transient timeout doesn't drain healthy proxies. The streak lives only
+// here; marking the proxy failed in the database keeps it out of later
+// refreshes and restarts until a health check passes.
 func (r *Rotator) markFailed(proxyID int) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.failCounts[proxyID]++
-	if r.failCounts[proxyID] >= failureThreshold {
+	evicted := r.failCounts[proxyID] >= failureThreshold
+	if evicted {
 		delete(r.failCounts, proxyID)
 		r.removeLocked(proxyID)
 	}
+	r.mu.Unlock()
+	if !evicted || r.proxyRepo == nil {
+		return
+	}
+	safeworker.Go(r.logger, "mark_proxy_failed", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := r.proxyRepo.SetHealthy(ctx, proxyID, false); err != nil {
+			r.logger.Error("failed to mark proxy failed", "proxy_id", proxyID, "error", err)
+		}
+	})
 }
 
 func (r *Rotator) markSucceeded(proxyID int) {
@@ -194,9 +206,8 @@ func (r *Rotator) record(record RequestRecord) {
 	})
 }
 
-// recordAttempt records an attempt through p. A nil cause is a success.
-// Recording failures too is what advances proxy failure stats and the
-// consecutive-failure auto-disable threshold (see updateProxyStats).
+// recordAttempt records an attempt through p in request history. A nil cause
+// is a success.
 func (r *Rotator) recordAttempt(client string, p *models.Proxy, url, method string, status int, start time.Time, cause error) {
 	record := RequestRecord{
 		ProxyID:      p.ID,

@@ -98,7 +98,7 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 	query := fmt.Sprintf(`
 		SELECT
 			id, address, protocol, username, status,
-			requests, successful_requests, failed_requests,
+			requests, successful_requests,
 			avg_response_time, last_check,
 			cooldown_until, cooldown_reason,
 			country_code, country_name,
@@ -123,7 +123,7 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 		var p models.Proxy
 		err := rows.Scan(
 			&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Status,
-			&p.Requests, &p.SuccessfulRequests, &p.FailedRequests,
+			&p.Requests, &p.SuccessfulRequests,
 			&p.AvgResponseTime, &p.LastCheck,
 			&p.CooldownUntil, &p.CooldownReason,
 			&p.CountryCode, &p.CountryName,
@@ -173,8 +173,8 @@ func (r *ProxyRepository) GetByID(ctx context.Context, id int) (*models.Proxy, e
 	query := `
 		SELECT
 			id, address, protocol, username, password, status,
-			requests, successful_requests, failed_requests,
-			avg_response_time, last_check, last_error,
+			requests, successful_requests,
+			avg_response_time, last_check,
 			country_code, country_name,
 			COALESCE(tags, '{}') AS tags,
 			created_at, updated_at
@@ -185,8 +185,8 @@ func (r *ProxyRepository) GetByID(ctx context.Context, id int) (*models.Proxy, e
 	var p models.Proxy
 	err := r.db.Pool.QueryRow(ctx, query, id).Scan(
 		&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status,
-		&p.Requests, &p.SuccessfulRequests, &p.FailedRequests,
-		&p.AvgResponseTime, &p.LastCheck, &p.LastError,
+		&p.Requests, &p.SuccessfulRequests,
+		&p.AvgResponseTime, &p.LastCheck,
 		&p.CountryCode, &p.CountryName,
 		&p.Tags,
 		&p.CreatedAt, &p.UpdatedAt,
@@ -303,9 +303,6 @@ func (r *ProxyRepository) DeleteDeadProxies(ctx context.Context, maxFailedDays i
 // Proxies absent from the rollup are zeroed: the columns mean "within the
 // event retention window", not lifetime totals. Rows whose values are already
 // current are left untouched. Returns the number of rows written.
-//
-// failed_requests is deliberately not written here — it is the state
-// machine's consecutive-failure counter, owned by the usage tracker.
 func (r *ProxyRepository) ApplyRequestStats(ctx context.Context, stats []events.ProxyRequestStats) (int, error) {
 	ids := make([]int, len(stats))
 	requests := make([]int64, len(stats))
@@ -608,8 +605,8 @@ func scanProxies(rows pgx.Rows) ([]*models.Proxy, error) {
 		var p models.Proxy
 		err := rows.Scan(
 			&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Password, &p.Status,
-			&p.Requests, &p.SuccessfulRequests, &p.FailedRequests,
-			&p.AvgResponseTime, &p.LastCheck, &p.LastError,
+			&p.Requests, &p.SuccessfulRequests,
+			&p.AvgResponseTime, &p.LastCheck,
 			&p.CountryCode, &p.CountryName,
 			&p.Tags,
 			&p.CreatedAt, &p.UpdatedAt,
@@ -627,8 +624,8 @@ func scanProxies(rows pgx.Rows) ([]*models.Proxy, error) {
 
 const proxyFullColumns = `
 	id, address, protocol, username, password, status,
-	requests, successful_requests, failed_requests,
-	avg_response_time, last_check, last_error,
+	requests, successful_requests,
+	avg_response_time, last_check,
 	country_code, country_name,
 	COALESCE(tags, '{}') AS tags,
 	created_at, updated_at`
@@ -772,26 +769,19 @@ func (r *ProxyRepository) UpdateGeo(ctx context.Context, address string, geo mod
 	return nil
 }
 
-// RecordCheckResult applies an explicit health-check result to a proxy. A
-// check is a deliberate probe, so its verdict takes effect at once: success
-// marks the proxy active and resets its consecutive-failure streak, failure
-// marks it failed and extends the streak.
-func (r *ProxyRepository) RecordCheckResult(ctx context.Context, id int, success bool, errMsg string) error {
-	var lastError *string
-	if !success && errMsg != "" {
-		lastError = &errMsg
-	}
+// SetHealthy marks a proxy active or failed. Health checks set either verdict;
+// rotation only marks proxies failed, so a failed proxy returns only when a
+// check passes.
+func (r *ProxyRepository) SetHealthy(ctx context.Context, id int, healthy bool) error {
 	_, err := r.db.Pool.Exec(ctx, `
 		UPDATE proxies SET
-			status          = CASE WHEN $2 THEN 'active' ELSE 'failed' END,
-			failed_requests = CASE WHEN $2 THEN 0 ELSE failed_requests + 1 END,
-			last_error      = $3,
-			last_check      = NOW(),
-			updated_at      = NOW()
+			status     = CASE WHEN $2 THEN 'active' ELSE 'failed' END,
+			last_check = NOW(),
+			updated_at = NOW()
 		WHERE id = $1`,
-		id, success, lastError)
+		id, healthy)
 	if err != nil {
-		return fmt.Errorf("failed to record proxy check result: %w", err)
+		return fmt.Errorf("failed to set proxy health: %w", err)
 	}
 	return nil
 }
@@ -835,54 +825,4 @@ func (r *ProxyRepository) GetStats(ctx context.Context) (map[string]interface{},
 		"total_requests":    stats.TotalRequests,
 		"avg_response_time": int(stats.AvgResponseTime),
 	}, nil
-}
-
-// GetAllActive retrieves all active proxies
-func (r *ProxyRepository) GetAllActive(ctx context.Context) ([]models.ProxyStatusSimple, error) {
-	query := `
-		SELECT
-			id, address, status, requests,
-			successful_requests, failed_requests
-		FROM proxies
-		WHERE status = 'active'
-		ORDER BY address
-	`
-
-	rows, err := r.db.Pool.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get active proxies: %w", err)
-	}
-	defer rows.Close()
-
-	proxies := []models.ProxyStatusSimple{}
-	for rows.Next() {
-		var p struct {
-			ID                 int
-			Address            string
-			Status             string
-			Requests           int64
-			SuccessfulRequests int64
-			FailedRequests     int64
-		}
-
-		err := rows.Scan(&p.ID, &p.Address, &p.Status, &p.Requests, &p.SuccessfulRequests, &p.FailedRequests)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan proxy: %w", err)
-		}
-
-		successRate := 0.0
-		if p.Requests > 0 {
-			successRate = (float64(p.SuccessfulRequests) / float64(p.Requests)) * 100
-		}
-
-		proxies = append(proxies, models.ProxyStatusSimple{
-			ID:          fmt.Sprintf("%d", p.ID),
-			Address:     p.Address,
-			Status:      p.Status,
-			Requests:    p.Requests,
-			SuccessRate: successRate,
-		})
-	}
-
-	return proxies, nil
 }

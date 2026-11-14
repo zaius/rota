@@ -79,17 +79,3 @@ type DomainStatsData struct {
 	Range string        `json:"range"`
 	Data  []DomainStats `json:"data"`
 }
-
-// ProxyStatusSimple represents simplified proxy status for dashboard
-type ProxyStatusSimple struct {
-	ID          string  `json:"id"`
-	Address     string  `json:"address"`
-	Status      string  `json:"status"`
-	Requests    int64   `json:"requests"`
-	SuccessRate float64 `json:"success_rate"`
-}
-
-// ProxyStatusList represents a list of simplified proxy statuses
-type ProxyStatusList struct {
-	Proxies []ProxyStatusSimple `json:"proxies"`
-}
