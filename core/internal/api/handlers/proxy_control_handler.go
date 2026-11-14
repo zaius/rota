@@ -108,15 +108,6 @@ func (h *ProxyControlHandler) SetProxyServer(ps *proxy.Server) {
 }
 
 // ReloadProxyPool reloads proxy settings from the database.
-//
-//	@Summary		Reload proxy pool
-//	@Description	Reload proxy pool from database
-//	@Tags			proxies
-//	@Produce		json
-//	@Success		200	{object}	map[string]interface{}	"Reload confirmation"
-//	@Failure		500	{object}	models.ErrorResponse
-//	@Failure		503	{object}	models.ErrorResponse
-//	@Router			/proxies/reload [post]
 func (h *ProxyControlHandler) ReloadProxyPool(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -276,16 +267,6 @@ func cooldownExpiry(until time.Time, invalid bool) *time.Time {
 // proxy from live rotation immediately, rebinding any sessions that were using it.
 // When a domain is supplied the cooldown is scoped to that domain (and its
 // subdomains) only: the proxy keeps serving every other target.
-//
-//	@Summary		Invalidate a proxy
-//	@Description	Pull a proxy out of rotation for a cooldown period (rate-limited, etc.). Pass "domain" to only invalidate it for that domain and its subdomains, keeping it available for other targets.
-//	@Tags			proxies
-//	@Param			id		path	int		true	"Proxy ID"
-//	@Param			minutes	body	int		false	"Positive cooldown minutes (default 30)"
-//	@Param			reason	body	string	false	"Why the proxy was invalidated"
-//	@Param			domain	body	string	false	"Scope the cooldown to this domain (e.g. foo.com, also covers *.foo.com)"
-//	@Success		200	{object}	map[string]interface{}
-//	@Router			/proxies/{id}/invalidate [post]
 func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
@@ -319,19 +300,6 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 // but not which proxy ID served it. By default each bound proxy is cooled only
 // in that binding's reservation scope. domain overrides with a domain cooldown;
 // global explicitly cools the proxy across all targets and drops all bindings.
-//
-//	@Summary		Invalidate the proxy bound to a session
-//	@Description	Cool each bound proxy in its reservation scope by default. domain and global override cooldown scope. scope restricts which bindings match. minutes sets the base duration (default 30); consecutive invalidations use 1x, 2x, 4x, then exclude until reactivated. Resumed traffic without invalidation for the session TTL resets the streak.
-//	@Tags			sessions
-//	@Param			token	body	string	true	"Session token"
-//	@Param			scope	body	string	false	"Restrict to a reservation scope"
-//	@Param			minutes	body	int		false	"Positive cooldown minutes (default 30)"
-//	@Param			reason	body	string	false	"Why the proxy was invalidated"
-//	@Param			domain	body	string	false	"Scope the cooldown to this domain"
-//	@Param			global	body	bool	false	"Invalidate across all targets instead of the reservation scope"
-//	@Success		200	{object}	map[string]interface{}
-//	@Failure		409	{object}	models.ErrorResponse	"No live session for token"
-//	@Router			/sessions/invalidate [post]
 func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Token string `json:"token"`
@@ -411,15 +379,6 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 // ReactivateProxy clears a proxy's cooldown. A domain or scope in the body
 // clears only that cooldown; otherwise all global, domain and scope cooldowns
 // are cleared.
-//
-//	@Summary		Reactivate a proxy
-//	@Description	Clear a proxy's cooldown. Pass domain or scope to clear one cooldown; omit both to clear all cooldowns.
-//	@Tags			proxies
-//	@Param			id		path	int		true	"Proxy ID"
-//	@Param			domain	body	string	false	"Clear only the cooldown for this domain"
-//	@Param			scope	body	string	false	"Clear only the cooldown for this reservation scope"
-//	@Success		200	{object}	map[string]interface{}
-//	@Router			/proxies/{id}/reactivate [post]
 func (h *ProxyControlHandler) ReactivateProxy(w http.ResponseWriter, r *http.Request) {
 	h.cooldownMu.Lock()
 	defer h.cooldownMu.Unlock()
@@ -521,12 +480,6 @@ func (h *ProxyControlHandler) ReactivateProxy(w http.ResponseWriter, r *http.Req
 }
 
 // ListDomainCooldowns returns all active domain-scoped proxy cooldowns.
-//
-//	@Summary		List domain-scoped proxy cooldowns
-//	@Tags			proxies
-//	@Produce		json
-//	@Success		200	{object}	map[string]interface{}
-//	@Router			/proxies/domain-cooldowns [get]
 func (h *ProxyControlHandler) ListDomainCooldowns(w http.ResponseWriter, r *http.Request) {
 	var cooldowns []models.ProxyDomainCooldown
 	if h.proxyServer != nil {
@@ -541,12 +494,6 @@ func (h *ProxyControlHandler) ListDomainCooldowns(w http.ResponseWriter, r *http
 }
 
 // ListScopeCooldowns returns active reservation-scope cooldowns.
-//
-//	@Summary List reservation scope cooldowns
-//	@Tags proxies
-//	@Produce json
-//	@Success 200 {object} map[string]interface{}
-//	@Router /proxies/scope-cooldowns [get]
 func (h *ProxyControlHandler) ListScopeCooldowns(w http.ResponseWriter, r *http.Request) {
 	cooldowns := []models.ProxyScopeCooldown{}
 	if h.proxyServer != nil {
@@ -558,12 +505,6 @@ func (h *ProxyControlHandler) ListScopeCooldowns(w http.ResponseWriter, r *http.
 }
 
 // ListSessions returns all live sticky-session bindings.
-//
-//	@Summary		List active sessions
-//	@Tags			sessions
-//	@Produce		json
-//	@Success		200	{object}	map[string]interface{}
-//	@Router			/sessions [get]
 func (h *ProxyControlHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 	var sessions []proxy.SessionInfo
 	if h.proxyServer != nil {
@@ -578,13 +519,6 @@ func (h *ProxyControlHandler) ListSessions(w http.ResponseWriter, r *http.Reques
 }
 
 // ReleaseSession drops the bindings of a token, in one scope or all of them.
-//
-//	@Summary		Release a sticky session
-//	@Tags			sessions
-//	@Param			token	body	string	true	"Session token"
-//	@Param			scope	body	string	false	"Restrict to a reservation scope"
-//	@Success		200	{object}	map[string]interface{}
-//	@Router			/sessions/release [post]
 func (h *ProxyControlHandler) ReleaseSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Token string `json:"token"`

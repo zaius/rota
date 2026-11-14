@@ -1,24 +1,4 @@
 // Package main provides the entry point for the Rota Proxy Server
-//
-//	@title			Rota Proxy API
-//	@version		1.0.0
-//	@description	A high-performance proxy rotation server with health monitoring and intelligent routing
-//	@description	Provides comprehensive API for managing proxy servers, monitoring their health,
-//	@description	and configuring rotation strategies.
-//
-//	@contact.name	API Support
-//	@contact.url	https://github.com/alpkeskin/rota
-//
-//	@license.name	LICENSE
-//	@license.url	https://github.com/alpkeskin/rota/blob/main/LICENSE
-//
-//	@host		localhost:8001
-//	@BasePath	/api/v1
-//
-//	@securityDefinitions.apikey	BearerAuth
-//	@in							header
-//	@name						Authorization
-//	@description				Type "Bearer" followed by a space and the ROTA_PASSWORD value.
 package main
 
 import (

@@ -29,13 +29,6 @@ func NewHealthHandler(db *database.DB, proxyRepo *repository.ProxyRepository, lo
 }
 
 // Health handles basic health check
-//
-//	@Summary		Health check
-//	@Description	Check if the API server is running and healthy
-//	@Tags			health
-//	@Produce		json
-//	@Success		200	{object}	map[string]interface{}	"Health status information"
-//	@Router			/health [get]
 func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"status":  "healthy",
@@ -47,14 +40,6 @@ func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 // Status handles detailed status check
-//
-//	@Summary		System status
-//	@Description	Get detailed system status including proxy and request statistics
-//	@Tags			health
-//	@Produce		json
-//	@Success		200	{object}	map[string]interface{}	"Detailed status information"
-//	@Failure		500	{object}	models.ErrorResponse
-//	@Router			/status [get]
 func (h *HealthHandler) Status(w http.ResponseWriter, r *http.Request) {
 	// Get proxy stats
 	proxyStats, err := h.proxyRepo.GetStats(r.Context())
@@ -96,14 +81,6 @@ func (h *HealthHandler) Status(w http.ResponseWriter, r *http.Request) {
 }
 
 // DatabaseHealth handles database health check
-//
-//	@Summary		Database health
-//	@Description	Check database connection health
-//	@Tags			health
-//	@Produce		json
-//	@Success		200	{object}	map[string]interface{}	"Database health information"
-//	@Failure		503	{object}	models.ErrorResponse
-//	@Router			/database/health [get]
 func (h *HealthHandler) DatabaseHealth(w http.ResponseWriter, r *http.Request) {
 	health, err := h.db.Health(r.Context())
 	if err != nil {
@@ -116,13 +93,6 @@ func (h *HealthHandler) DatabaseHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // DatabaseStats handles database statistics
-//
-//	@Summary		Database statistics
-//	@Description	Get database connection pool statistics
-//	@Tags			health
-//	@Produce		json
-//	@Success		200	{object}	map[string]interface{}	"Database pool statistics"
-//	@Router			/database/stats [get]
 func (h *HealthHandler) DatabaseStats(w http.ResponseWriter, r *http.Request) {
 	stats := h.db.Stats()
 

@@ -40,14 +40,6 @@ func (h *SettingsHandler) SetOnUpdate(fn func(ctx context.Context)) {
 }
 
 // Get handles getting current configuration
-//
-//	@Summary		Get settings
-//	@Description	Get current system configuration
-//	@Tags			settings
-//	@Produce		json
-//	@Success		200	{object}	models.Settings	"Current settings"
-//	@Failure		500	{object}	models.ErrorResponse
-//	@Router			/settings [get]
 func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	settings, err := h.settingsRepo.GetAll(r.Context())
 	if err != nil {
@@ -60,17 +52,6 @@ func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 // Update handles updating configuration
-//
-//	@Summary		Update settings
-//	@Description	Update system configuration
-//	@Tags			settings
-//	@Accept			json
-//	@Produce		json
-//	@Param			request	body		models.Settings			true	"Updated settings"
-//	@Success		200		{object}	map[string]interface{}	"Update confirmation"
-//	@Failure		400		{object}	models.ErrorResponse
-//	@Failure		500		{object}	models.ErrorResponse
-//	@Router			/settings [put]
 func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// Decode over the current values: UpdateAll writes every section back, so
 	// a client that omits a section or field (an older dashboard, a partial API
@@ -124,14 +105,6 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 // Reset handles resetting configuration to defaults
-//
-//	@Summary		Reset settings
-//	@Description	Reset configuration to default values
-//	@Tags			settings
-//	@Produce		json
-//	@Success		200	{object}	map[string]interface{}	"Reset confirmation"
-//	@Failure		500	{object}	models.ErrorResponse
-//	@Router			/settings/reset [post]
 func (h *SettingsHandler) Reset(w http.ResponseWriter, r *http.Request) {
 	if err := h.settingsRepo.Reset(r.Context()); err != nil {
 		h.logger.Error("failed to reset settings", "error", err)

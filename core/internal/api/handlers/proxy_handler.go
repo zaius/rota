@@ -46,21 +46,6 @@ func NewProxyHandler(proxyRepo *repository.ProxyRepository, healthChecker *proxy
 }
 
 // List handles proxy listing with pagination and filters
-//
-//	@Summary		List proxies
-//	@Description	Get paginated list of proxies with optional filters
-//	@Tags			proxies
-//	@Produce		json
-//	@Param			page		query		int							false	"Page number"			default(1)
-//	@Param			limit		query		int							false	"Items per page"		default(10)
-//	@Param			search		query		string						false	"Search term"
-//	@Param			status		query		string						false	"Filter by status"
-//	@Param			protocol	query		string						false	"Filter by protocol"
-//	@Param			sort		query		string						false	"Sort field"
-//	@Param			order		query		string						false	"Sort order (asc/desc)"
-//	@Success		200			{object}	models.ProxyListResponse	"List of proxies"
-//	@Failure		500			{object}	models.ErrorResponse
-//	@Router			/proxies [get]
 func (h *ProxyHandler) List(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -104,17 +89,6 @@ func (h *ProxyHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // Create handles proxy creation
-//
-//	@Summary		Create proxy
-//	@Description	Create a new proxy server
-//	@Tags			proxies
-//	@Accept			json
-//	@Produce		json
-//	@Param			request	body		models.CreateProxyRequest	true	"Proxy details"
-//	@Success		201		{object}	models.Proxy				"Created proxy"
-//	@Failure		400		{object}	models.ErrorResponse
-//	@Failure		500		{object}	models.ErrorResponse
-//	@Router			/proxies [post]
 func (h *ProxyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -147,16 +121,6 @@ func (h *ProxyHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 // BulkCreate handles bulk proxy creation
-//
-//	@Summary		Bulk create proxies
-//	@Description	Create multiple proxy servers at once
-//	@Tags			proxies
-//	@Accept			json
-//	@Produce		json
-//	@Param			request	body		models.BulkCreateProxyRequest	true	"List of proxies to create"
-//	@Success		201		{object}	map[string]interface{}			"Creation results"
-//	@Failure		400		{object}	models.ErrorResponse
-//	@Router			/proxies/bulk [post]
 func (h *ProxyHandler) BulkCreate(w http.ResponseWriter, r *http.Request) {
 	var req models.BulkCreateProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -206,19 +170,6 @@ func (h *ProxyHandler) BulkCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // Update handles proxy update
-//
-//	@Summary		Update proxy
-//	@Description	Update an existing proxy server
-//	@Tags			proxies
-//	@Accept			json
-//	@Produce		json
-//	@Param			id		path		int							true	"Proxy ID"
-//	@Param			request	body		models.UpdateProxyRequest	true	"Updated proxy details"
-//	@Success		200		{object}	models.Proxy				"Updated proxy"
-//	@Failure		400		{object}	models.ErrorResponse
-//	@Failure		404		{object}	models.ErrorResponse
-//	@Failure		500		{object}	models.ErrorResponse
-//	@Router			/proxies/{id} [put]
 func (h *ProxyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -268,15 +219,6 @@ func (h *ProxyHandler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 // Delete handles proxy deletion
-//
-//	@Summary		Delete proxy
-//	@Description	Delete a proxy server by ID
-//	@Tags			proxies
-//	@Param			id	path	int	true	"Proxy ID"
-//	@Success		204	"Successfully deleted"
-//	@Failure		400	{object}	models.ErrorResponse
-//	@Failure		500	{object}	models.ErrorResponse
-//	@Router			/proxies/{id} [delete]
 func (h *ProxyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -356,17 +298,6 @@ func normalizeTags(tags []string) []string {
 }
 
 // BulkDelete handles bulk proxy deletion
-//
-//	@Summary		Bulk delete proxies
-//	@Description	Delete multiple proxy servers at once
-//	@Tags			proxies
-//	@Accept			json
-//	@Produce		json
-//	@Param			request	body		models.BulkDeleteProxyRequest	true	"List of proxy IDs to delete"
-//	@Success		200		{object}	map[string]interface{}			"Deletion results"
-//	@Failure		400		{object}	models.ErrorResponse
-//	@Failure		500		{object}	models.ErrorResponse
-//	@Router			/proxies/bulk-delete [post]
 func (h *ProxyHandler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 	var req models.BulkDeleteProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -423,17 +354,6 @@ func (h *ProxyHandler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // Test handles proxy testing
-//
-//	@Summary		Test proxy
-//	@Description	Test a proxy server's connectivity and performance
-//	@Tags			proxies
-//	@Produce		json
-//	@Param			id	path		int							true	"Proxy ID"
-//	@Success		200	{object}	models.ProxyTestResult		"Test results"
-//	@Failure		400	{object}	models.ErrorResponse
-//	@Failure		404	{object}	models.ErrorResponse
-//	@Failure		500	{object}	models.ErrorResponse
-//	@Router			/proxies/{id}/test [post]
 func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -477,17 +397,6 @@ func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 // ID immediately. The frontend polls GET /proxies/bulk-test/{job_id} for
 // progress. The target is either an explicit list of IDs or every proxy
 // matching a filter (all=true).
-//
-//	@Summary		Bulk test proxies
-//	@Description	Start an async job to test multiple proxies, either an explicit list of IDs or every proxy matching a filter (all=true). Poll /proxies/bulk-test/{job_id} for progress.
-//	@Tags			proxies
-//	@Accept			json
-//	@Produce		json
-//	@Param			request	body		models.BulkTestProxyRequest	true	"Proxies to test"
-//	@Success		202		{object}	map[string]interface{}		"Job accepted"
-//	@Failure		400		{object}	models.ErrorResponse
-//	@Failure		500		{object}	models.ErrorResponse
-//	@Router			/proxies/bulk-test [post]
 func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 	var req models.BulkTestProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -617,15 +526,6 @@ func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 }
 
 // BulkTestStatus returns the current status of a bulk-test job.
-//
-//	@Summary		Bulk test status
-//	@Description	Get the status/progress of a bulk proxy-test job.
-//	@Tags			proxies
-//	@Produce		json
-//	@Param			job_id	path		string	true	"Job ID"
-//	@Success		200		{object}	services.Job	"Job status"
-//	@Failure		404		{object}	models.ErrorResponse
-//	@Router			/proxies/bulk-test/{job_id} [get]
 func (h *ProxyHandler) BulkTestStatus(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "job_id")
 	job, ok := services.GetJobStore().Get(jobID)
@@ -639,13 +539,6 @@ func (h *ProxyHandler) BulkTestStatus(w http.ResponseWriter, r *http.Request) {
 // BulkTestLatest returns the most recent bulk-test job (or {"job": null} if
 // none is known). The UI calls this on load so an in-flight test started before
 // a page reload can be re-attached to and its progress resumed.
-//
-//	@Summary		Latest bulk test
-//	@Description	Get the most recent bulk proxy-test job, so the UI can resume tracking after a reload.
-//	@Tags			proxies
-//	@Produce		json
-//	@Success		200	{object}	map[string]interface{}	"Latest job (or null)"
-//	@Router			/proxies/bulk-test [get]
 func (h *ProxyHandler) BulkTestLatest(w http.ResponseWriter, r *http.Request) {
 	job, ok := services.GetJobStore().Latest()
 	if !ok {
@@ -656,12 +549,6 @@ func (h *ProxyHandler) BulkTestLatest(w http.ResponseWriter, r *http.Request) {
 }
 
 // Tags lists the distinct proxy tags.
-//
-//	@Summary		List proxy tags
-//	@Tags			proxies
-//	@Produce		json
-//	@Success		200	{object}	map[string]interface{}
-//	@Router			/proxies/tags [get]
 func (h *ProxyHandler) Tags(w http.ResponseWriter, r *http.Request) {
 	tags, err := h.proxyRepo.ListTags(r.Context())
 	if err != nil {
@@ -673,21 +560,6 @@ func (h *ProxyHandler) Tags(w http.ResponseWriter, r *http.Request) {
 }
 
 // Export handles proxy export
-//
-//	@Summary		Export proxies
-//	@Description	Export proxy list in various formats (txt, json, csv)
-//	@Tags			proxies
-//	@Produce		plain
-//	@Produce		json
-//	@Produce		text/csv
-//	@Param			format		query	string	false	"Export format (txt/json/csv)"	default(txt)
-//	@Param			status		query	string	false	"Filter by status"
-//	@Param			search		query	string	false	"Filter by search term"
-//	@Param			protocol	query	string	false	"Filter by protocol"
-//	@Success		200		{file}	file	"Exported file"
-//	@Failure		400		{object}	models.ErrorResponse
-//	@Failure		500		{object}	models.ErrorResponse
-//	@Router			/proxies/export [get]
 func (h *ProxyHandler) Export(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
 	if format == "" {

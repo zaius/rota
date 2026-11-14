@@ -34,14 +34,6 @@ func NewDashboardHandler(dashboardRepo *repository.DashboardRepository, proxyRep
 }
 
 // GetStats handles dashboard statistics requests
-//
-//	@Summary		Dashboard statistics
-//	@Description	Get dashboard statistics including proxy and request metrics
-//	@Tags			dashboard
-//	@Produce		json
-//	@Success		200	{object}	models.DashboardStats	"Dashboard statistics"
-//	@Failure		500	{object}	models.ErrorResponse
-//	@Router			/dashboard/stats [get]
 func (h *DashboardHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.dashboardRepo.GetStats(r.Context())
 	if err != nil {
@@ -65,15 +57,6 @@ func (h *DashboardHandler) SetProxyServer(ps *proxy.Server) { h.proxyServer = ps
 var trafficRanges = map[string]bool{"1h": true, "6h": true, "24h": true, "7d": true, "30d": true}
 
 // GetDomainStats returns traffic grouped by normalized target hostname.
-//
-//	@Summary Domain traffic statistics
-//	@Tags dashboard
-//	@Produce json
-//	@Param range query string false "Trailing range (1h, 6h, 24h, 7d, 30d)" default(24h)
-//	@Param domain query string false "Filter to this domain and its subdomains"
-//	@Param limit query int false "Maximum domains (1-1000)" default(100)
-//	@Success 200 {object} models.DomainStatsData
-//	@Router /dashboard/domains [get]
 func (h *DashboardHandler) GetDomainStats(w http.ResponseWriter, r *http.Request) {
 	rng := r.URL.Query().Get("range")
 	if rng == "" {
@@ -109,16 +92,6 @@ func (h *DashboardHandler) GetDomainStats(w http.ResponseWriter, r *http.Request
 
 // GetTrafficChart handles traffic series requests: request volume and latency
 // percentiles in shared time buckets.
-//
-//	@Summary		Traffic chart
-//	@Description	Get request volume and latency percentiles bucketed over a trailing range
-//	@Tags			dashboard
-//	@Produce		json
-//	@Param			range	query		string					false	"Trailing range (1h, 6h, 24h, 7d, 30d)"	default(24h)
-//	@Success		200		{object}	models.TrafficChartData	"Traffic series"
-//	@Failure		400		{object}	models.ErrorResponse
-//	@Failure		500		{object}	models.ErrorResponse
-//	@Router			/dashboard/charts/traffic [get]
 func (h *DashboardHandler) GetTrafficChart(w http.ResponseWriter, r *http.Request) {
 	rng := r.URL.Query().Get("range")
 	if rng == "" {
@@ -145,15 +118,6 @@ func (h *DashboardHandler) GetTrafficChart(w http.ResponseWriter, r *http.Reques
 }
 
 // GetResponseTimeChart handles response time chart requests
-//
-//	@Summary		Response time chart
-//	@Description	Get response time chart data for visualization
-//	@Tags			dashboard
-//	@Produce		json
-//	@Param			interval	query		string							false	"Time interval (e.g., 4h, 24h)"	default(4h)
-//	@Success		200			{object}	models.ResponseTimeChartData	"Chart data"
-//	@Failure		500			{object}	models.ErrorResponse
-//	@Router			/dashboard/charts/response-time [get]
 func (h *DashboardHandler) GetResponseTimeChart(w http.ResponseWriter, r *http.Request) {
 	interval := r.URL.Query().Get("interval")
 	if interval == "" {
@@ -175,15 +139,6 @@ func (h *DashboardHandler) GetResponseTimeChart(w http.ResponseWriter, r *http.R
 }
 
 // GetSuccessRateChart handles success rate chart requests
-//
-//	@Summary		Success rate chart
-//	@Description	Get success rate chart data for visualization
-//	@Tags			dashboard
-//	@Produce		json
-//	@Param			interval	query		string							false	"Time interval (e.g., 4h, 24h)"	default(4h)
-//	@Success		200			{object}	models.SuccessRateChartData		"Chart data"
-//	@Failure		500			{object}	models.ErrorResponse
-//	@Router			/dashboard/charts/success-rate [get]
 func (h *DashboardHandler) GetSuccessRateChart(w http.ResponseWriter, r *http.Request) {
 	interval := r.URL.Query().Get("interval")
 	if interval == "" {
