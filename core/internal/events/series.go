@@ -25,16 +25,6 @@ func SeriesWindow(rng string) (bucket, lookback time.Duration) {
 	}
 }
 
-// chartBucketLabel formats a bucket start for a chart axis: the clock time for
-// intra-day intervals, the date for daily ones. Every daily bucket starts at
-// midnight, so a clock-time label would print the same "00:00" for each.
-func chartBucketLabel(bucket time.Time, interval string) string {
-	if interval == "1d" {
-		return bucket.Format("02 Jan")
-	}
-	return bucket.Format("15:04")
-}
-
 // fillTrafficGaps expands a sparse, time-ascending traffic series into a
 // dense one: every bucket from (now - lookback) through now is present, with
 // zero-valued points for buckets without traffic. Charts then render

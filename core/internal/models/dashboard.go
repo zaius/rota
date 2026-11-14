@@ -38,19 +38,6 @@ type TunnelStats struct {
 	RequestsToday int64 `json:"requests_today"`
 }
 
-// ChartDataPoint represents a single data point in a chart
-type ChartDataPoint struct {
-	Time  string `json:"time"`
-	Value int    `json:"value"`
-}
-
-// SuccessRateDataPoint represents a data point for success rate chart
-type SuccessRateDataPoint struct {
-	Time    string `json:"time"`
-	Success int    `json:"success"`
-	Failure int    `json:"failure"`
-}
-
 // TrafficPoint is one time bucket of the traffic series: request volume plus
 // latency percentiles of the successful requests in the bucket. P50Ms/P95Ms
 // are 0 when the bucket has no successful requests.
@@ -91,16 +78,6 @@ type DomainStats struct {
 type DomainStatsData struct {
 	Range string        `json:"range"`
 	Data  []DomainStats `json:"data"`
-}
-
-// ResponseTimeChartData represents response time chart data
-type ResponseTimeChartData struct {
-	Data []ChartDataPoint `json:"data"`
-}
-
-// SuccessRateChartData represents success rate chart data
-type SuccessRateChartData struct {
-	Data []SuccessRateDataPoint `json:"data"`
 }
 
 // ProxyStatusSimple represents simplified proxy status for dashboard

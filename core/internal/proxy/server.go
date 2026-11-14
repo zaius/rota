@@ -275,9 +275,6 @@ func (s *Server) ClearProxyDomainCooldowns(proxyID int) int {
 	return s.domainCD.ClearProxy(proxyID)
 }
 
-// ListDomainCooldowns returns a snapshot of all active domain cooldowns.
-func (s *Server) ListDomainCooldowns() []models.ProxyDomainCooldown { return s.domainCD.List() }
-
 func (s *Server) SetScopeCooldown(c models.ProxyScopeCooldown) {
 	s.scopeCooldownMu.Lock()
 	defer s.scopeCooldownMu.Unlock()
@@ -288,10 +285,6 @@ func (s *Server) ClearScopeCooldowns(proxyID int, scope string) int {
 	s.scopeCooldownMu.Lock()
 	defer s.scopeCooldownMu.Unlock()
 	return s.sessionMgr.ClearScopeCooldowns(proxyID, scope)
-}
-
-func (s *Server) ListScopeCooldowns() []models.ProxyScopeCooldown {
-	return s.sessionMgr.ListScopeCooldowns()
 }
 
 // ReloadSettings reloads settings from database and updates components

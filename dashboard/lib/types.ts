@@ -59,17 +59,6 @@ export interface TunnelStats {
   requests_today: number
 }
 
-export interface ChartDataPoint {
-  time: string
-  value?: number
-  success?: number
-  failure?: number
-}
-
-export interface ChartResponse {
-  data: ChartDataPoint[]
-}
-
 export type ChartRange = "1h" | "6h" | "24h" | "7d" | "30d"
 
 export interface TrafficPoint {
@@ -150,10 +139,6 @@ export interface UpdateProxyRequest {
   username?: string | null
   password?: string | null
   tags?: string[]
-}
-
-export interface BulkProxyRequest {
-  proxies: AddProxyRequest[]
 }
 
 // Narrows a bulk operation to the proxies matching the current list filters.

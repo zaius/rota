@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/alpkeskin/rota/core/internal/api/handlers"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -13,10 +12,7 @@ import (
 // (e.g. wget --spider); chi only matches registered methods, so HEAD must be
 // routed explicitly or the container reports unhealthy on a 405.
 func TestHealthRouteAnswersGetAndHead(t *testing.T) {
-	s := &Server{
-		router:        chi.NewRouter(),
-		healthHandler: handlers.NewHealthHandler(nil, nil, nil),
-	}
+	s := &Server{router: chi.NewRouter()}
 	s.setupRoutes()
 
 	for _, method := range []string{http.MethodGet, http.MethodHead} {

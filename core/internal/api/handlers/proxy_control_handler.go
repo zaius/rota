@@ -479,31 +479,6 @@ func (h *ProxyControlHandler) ReactivateProxy(w http.ResponseWriter, r *http.Req
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "reactivated", "id": proxyObj.ID})
 }
 
-// ListDomainCooldowns returns all active domain-scoped proxy cooldowns.
-func (h *ProxyControlHandler) ListDomainCooldowns(w http.ResponseWriter, r *http.Request) {
-	var cooldowns []models.ProxyDomainCooldown
-	if h.proxyServer != nil {
-		cooldowns = h.proxyServer.ListDomainCooldowns()
-	}
-	if cooldowns == nil {
-		cooldowns = []models.ProxyDomainCooldown{}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"domain_cooldowns": cooldowns})
-}
-
-// ListScopeCooldowns returns active reservation-scope cooldowns.
-func (h *ProxyControlHandler) ListScopeCooldowns(w http.ResponseWriter, r *http.Request) {
-	cooldowns := []models.ProxyScopeCooldown{}
-	if h.proxyServer != nil {
-		if live := h.proxyServer.ListScopeCooldowns(); live != nil {
-			cooldowns = live
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"scope_cooldowns": cooldowns})
-}
-
 // ListSessions returns all live sticky-session bindings.
 func (h *ProxyControlHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 	var sessions []proxy.SessionInfo

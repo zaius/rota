@@ -158,14 +158,6 @@ type Store interface {
 	// are ordered by requests + completed tunnels descending, then hostname.
 	DomainStats(ctx context.Context, rng, domain string, limit int) ([]models.DomainStats, error)
 
-	// ResponseTimeChart returns average response time of successful requests
-	// bucketed over time. Interval is one of "1h", "4h", "1d".
-	ResponseTimeChart(ctx context.Context, interval string) ([]models.ChartDataPoint, error)
-
-	// SuccessRateChart returns success/failure percentages bucketed over
-	// time. Interval is one of "1h", "4h", "1d".
-	SuccessRateChart(ctx context.Context, interval string) ([]models.SuccessRateDataPoint, error)
-
 	// ApplyRetention removes the history that cfg has expired.
 	ApplyRetention(ctx context.Context, cfg RetentionConfig) error
 }

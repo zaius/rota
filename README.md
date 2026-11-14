@@ -347,7 +347,7 @@ Two explicit overrides are available:
 - `"domain": "example.com"` cools each matched proxy for that domain and its subdomains, regardless of reservation scope. Include `scope` to select a particular binding when the token is used in multiple scopes.
 - `"global": true` cools each matched proxy across all targets and drops all of its bindings. `global` and `domain` cannot be combined.
 
-Inspect active cooldowns and permanent exclusions with `GET /api/v1/proxies/scope-cooldowns` or `GET /api/v1/proxies/domain-cooldowns`. In these lists, `invalid: true` means the exclusion has no expiry, regardless of the stored `cooldown_until` timestamp. Reactivate an exact scope with `POST /api/v1/proxies/{id}/reactivate` and `{"scope":"shopping"}`; use `{"domain":"example.com"}` for an explicit domain exclusion, or omit both to clear all cooldowns and exclusions for that proxy. Reactivation also clears the failure history. Global session invalidation (`global: true`) and direct proxy-ID invalidation retain their fixed-duration behavior; only reactivation lifts a permanent scope/domain exclusion.
+Reactivate an exact scope with `POST /api/v1/proxies/{id}/reactivate` and `{"scope":"shopping"}`; use `{"domain":"example.com"}` for an explicit domain exclusion, or omit both to clear all cooldowns and exclusions for that proxy. Reactivation also clears the failure history. Global session invalidation (`global: true`) and direct proxy-ID invalidation retain their fixed-duration behavior; only reactivation lifts a permanent scope/domain exclusion.
 
 A client can call these endpoints with the same credentials it uses on the proxy port, since the API accepts `ROTA_PASSWORD` as a Basic password with any username:
 

@@ -118,11 +118,6 @@ type BulkCreateItemResult struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// BulkCreateProxyRequest represents a request to create multiple proxies
-type BulkCreateProxyRequest struct {
-	Proxies []CreateProxyRequest `json:"proxies" validate:"required,min=1"`
-}
-
 // ProxyFilter narrows a bulk operation to the proxies matching the same
 // list-style filters used by the management screen. An empty filter matches
 // every proxy.

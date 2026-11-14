@@ -45,16 +45,3 @@ func (m *SessionManager) ClearScopeCooldowns(proxyID int, scope string) int {
 	}
 	return n
 }
-
-func (m *SessionManager) ListScopeCooldowns() []models.ProxyScopeCooldown {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := []models.ProxyScopeCooldown{}
-	now := time.Now()
-	for _, c := range m.cooldowns {
-		if c.Invalid || c.CooldownUntil.After(now) {
-			out = append(out, c)
-		}
-	}
-	return out
-}

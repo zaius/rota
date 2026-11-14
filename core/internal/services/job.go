@@ -68,14 +68,6 @@ func (s *JobStore) CreateBulkTest(total int) *Job {
 	return job
 }
 
-// Get returns a job by ID.
-func (s *JobStore) Get(id string) (*Job, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	j, ok := s.jobs[id]
-	return j, ok
-}
-
 // Update mutates a job (caller must hold no lock).
 func (s *JobStore) Update(id string, fn func(*Job)) {
 	s.mu.Lock()

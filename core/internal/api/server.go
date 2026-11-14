@@ -8,7 +8,6 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/api/handlers"
 	"github.com/alpkeskin/rota/core/internal/config"
-	"github.com/alpkeskin/rota/core/internal/database"
 	"github.com/alpkeskin/rota/core/internal/proxy"
 	"github.com/alpkeskin/rota/core/internal/repository"
 	"github.com/alpkeskin/rota/core/internal/services"
@@ -41,7 +40,6 @@ type Server struct {
 	router      *chi.Mux
 	server      *http.Server
 	logger      *logger.Logger
-	db          *database.DB
 	port        int
 	password    string
 	corsOrigins []string
@@ -52,7 +50,6 @@ type Server struct {
 	proxyServer *proxy.Server
 
 	// Handlers
-	healthHandler        *handlers.HealthHandler
 	dashboardHandler     *handlers.DashboardHandler
 	proxyHandler         *handlers.ProxyHandler
 	settingsHandler      *handlers.SettingsHandler
@@ -64,8 +61,7 @@ type Server struct {
 // New creates a new API server instance from injected dependencies. It builds
 // only API-layer objects (handlers, middleware, HTTP server); repositories and
 // background services are owned by the composition root and passed in via deps.
-func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Server {
-	healthHandler := handlers.NewHealthHandler(db, deps.ProxyRepo, log)
+func New(cfg *config.Config, log *logger.Logger, deps Deps) *Server {
 	dashboardHandler := handlers.NewDashboardHandler(deps.DashboardRepo, deps.ProxyRepo, log)
 	proxyHandler := handlers.NewProxyHandler(deps.ProxyRepo, deps.HealthChecker, log)
 	settingsHandler := handlers.NewSettingsHandler(deps.SettingsRepo, log, nil) // onUpdate set below
@@ -76,13 +72,11 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB, deps Deps) *Se
 	s := &Server{
 		router:               chi.NewRouter(),
 		logger:               log,
-		db:                   db,
 		port:                 cfg.APIPort,
 		password:             cfg.Password,
 		corsOrigins:          cfg.CORSAllowedOrigins,
 		webDir:               cfg.WebDir,
 		metricsHTTP:          deps.Metrics,
-		healthHandler:        healthHandler,
 		dashboardHandler:     dashboardHandler,
 		proxyHandler:         proxyHandler,
 		settingsHandler:      settingsHandler,
@@ -152,10 +146,10 @@ func (s *Server) setupMiddleware() {
 // setupRoutes configures all API routes
 func (s *Server) setupRoutes() {
 	// ── Fully public routes ────────────────────────────────────────────────
-	s.router.Get("/health", s.healthHandler.Health)
+	s.router.Get("/health", handlers.Health)
 	// HEAD too — probes like wget --spider and some load balancers send HEAD,
 	// and chi would otherwise answer 405. net/http drops the body for HEAD.
-	s.router.Head("/health", s.healthHandler.Health)
+	s.router.Head("/health", handlers.Health)
 
 	// Prometheus exposition endpoint. Not behind the shared password — the
 	// handler itself enforces the optional bearer token (METRICS_BEARER_TOKEN).
@@ -173,27 +167,21 @@ func (s *Server) setupRoutes() {
 		r.Post("/sessions/release", s.proxyControlHandler.ReleaseSession)
 		r.Get("/proxies/working", s.proxyControlHandler.ExportWorkingProxies)
 
-		// Health & Status
-		r.Get("/status", s.healthHandler.Status)
-		r.Get("/database/health", s.healthHandler.DatabaseHealth)
-		r.Get("/database/stats", s.healthHandler.DatabaseStats)
+		// The dashboard checks the password against this route.
+		r.Get("/status", handlers.Health)
 
 		// Dashboard endpoints
 		r.Get("/dashboard/stats", s.dashboardHandler.GetStats)
 		r.Get("/dashboard/domains", s.dashboardHandler.GetDomainStats)
 		r.Get("/dashboard/charts/traffic", s.dashboardHandler.GetTrafficChart)
-		r.Get("/dashboard/charts/response-time", s.dashboardHandler.GetResponseTimeChart)
-		r.Get("/dashboard/charts/success-rate", s.dashboardHandler.GetSuccessRateChart)
 
 		// Proxy management
 		r.Get("/proxies", s.proxyHandler.List)
 		r.Post("/proxies", s.proxyHandler.Create)
-		r.Post("/proxies/bulk", s.proxyHandler.BulkCreate)
 		r.Post("/proxies/bulk-delete", s.proxyHandler.BulkDelete)
 		r.Post("/proxies/bulk-tags", s.proxyHandler.BulkTag)
 		r.Post("/proxies/bulk-test", s.proxyHandler.BulkTest)
 		r.Get("/proxies/bulk-test", s.proxyHandler.BulkTestLatest)
-		r.Get("/proxies/bulk-test/{job_id}", s.proxyHandler.BulkTestStatus)
 		r.Delete("/proxies", s.proxyHandler.DeleteAll)
 		r.Get("/proxies/export", s.proxyHandler.Export)
 		r.Get("/proxies/tags", s.proxyHandler.Tags)
@@ -201,8 +189,6 @@ func (s *Server) setupRoutes() {
 		r.Delete("/proxies/{id}", s.proxyHandler.Delete)
 		r.Post("/proxies/{id}/test", s.proxyHandler.Test)
 		r.Post("/proxies/{id}/reactivate", s.proxyControlHandler.ReactivateProxy)
-		r.Get("/proxies/domain-cooldowns", s.proxyControlHandler.ListDomainCooldowns)
-		r.Get("/proxies/scope-cooldowns", s.proxyControlHandler.ListScopeCooldowns)
 		r.Post("/proxies/reload", s.proxyControlHandler.ReloadProxyPool)
 
 		// Sticky sessions

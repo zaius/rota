@@ -120,55 +120,6 @@ func (h *ProxyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, proxy)
 }
 
-// BulkCreate handles bulk proxy creation
-func (h *ProxyHandler) BulkCreate(w http.ResponseWriter, r *http.Request) {
-	var req models.BulkCreateProxyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-	if err := validateStruct(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if len(req.Proxies) == 0 {
-		writeError(w, http.StatusBadRequest, "At least one proxy is required")
-		return
-	}
-
-	created := 0
-	failed := 0
-	results := []map[string]interface{}{}
-
-	for _, proxyReq := range req.Proxies {
-		proxy, err := h.proxyRepo.Create(r.Context(), proxyReq)
-		if err != nil {
-			failed++
-			results = append(results, map[string]interface{}{
-				"address": proxyReq.Address,
-				"status":  "failed",
-				"error":   err.Error(),
-			})
-		} else {
-			created++
-			results = append(results, map[string]interface{}{
-				"address": proxyReq.Address,
-				"status":  "success",
-				"id":      fmt.Sprintf("%d", proxy.ID),
-			})
-		}
-	}
-
-	response := map[string]interface{}{
-		"created": created,
-		"failed":  failed,
-		"results": results,
-	}
-
-	writeJSON(w, http.StatusCreated, response)
-}
-
 // Update handles proxy update
 func (h *ProxyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
@@ -394,9 +345,9 @@ func (h *ProxyHandler) Test(w http.ResponseWriter, r *http.Request) {
 }
 
 // BulkTest starts an async job that tests multiple proxies and returns the job
-// ID immediately. The frontend polls GET /proxies/bulk-test/{job_id} for
-// progress. The target is either an explicit list of IDs or every proxy
-// matching a filter (all=true).
+// ID immediately. The dashboard polls GET /proxies/bulk-test for progress. The
+// target is either an explicit list of IDs or every proxy matching a filter
+// (all=true).
 func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 	var req models.BulkTestProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -523,17 +474,6 @@ func (h *ProxyHandler) BulkTest(w http.ResponseWriter, r *http.Request) {
 		"total":  tested,
 		"status": job.Status,
 	})
-}
-
-// BulkTestStatus returns the current status of a bulk-test job.
-func (h *ProxyHandler) BulkTestStatus(w http.ResponseWriter, r *http.Request) {
-	jobID := chi.URLParam(r, "job_id")
-	job, ok := services.GetJobStore().Get(jobID)
-	if !ok {
-		writeError(w, http.StatusNotFound, "Job not found")
-		return
-	}
-	writeJSON(w, http.StatusOK, job)
 }
 
 // BulkTestLatest returns the most recent bulk-test job (or {"job": null} if

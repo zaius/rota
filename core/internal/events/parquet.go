@@ -325,7 +325,7 @@ func (s *ParquetStore) TrafficSeries(ctx context.Context, rng string) ([]models.
 	now := time.Now()
 	from := now.Add(-lookback).UnixMilli()
 	agg, err := collect(ctx, s.requests, dayOf(from), bucketColumns, func() *bucketAgg {
-		return newBucketAgg(from, bucket.Milliseconds(), true)
+		return newBucketAgg(from, bucket.Milliseconds())
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get traffic series: %w", err)
@@ -363,65 +363,6 @@ func (s *ParquetStore) DomainStats(ctx context.Context, rng, domain string, limi
 	}
 	total.merge(tunnels)
 	return total.stats(limit), nil
-}
-
-// chartBuckets maps an API interval to a bucket width and lookback period.
-func chartBuckets(interval string) (width, lookback time.Duration) {
-	switch interval {
-	case "1h":
-		return time.Hour, 24 * time.Hour
-	case "1d":
-		return 24 * time.Hour, 7 * 24 * time.Hour
-	default: // "4h"
-		return 4 * time.Hour, 24 * time.Hour
-	}
-}
-
-func (s *ParquetStore) chartAgg(ctx context.Context, interval string) (*bucketAgg, error) {
-	width, lookback := chartBuckets(interval)
-	from := time.Now().Add(-lookback).UnixMilli()
-	return collect(ctx, s.requests, dayOf(from), bucketColumns, func() *bucketAgg {
-		return newBucketAgg(from, width.Milliseconds(), false)
-	})
-}
-
-// ResponseTimeChart returns average response time of successful requests
-// bucketed over time.
-func (s *ParquetStore) ResponseTimeChart(ctx context.Context, interval string) ([]models.ChartDataPoint, error) {
-	agg, err := s.chartAgg(ctx, interval)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get response time chart: %w", err)
-	}
-	data := []models.ChartDataPoint{}
-	for _, start := range agg.sortedStarts() {
-		counts := agg.buckets[start]
-		if counts.successes == 0 {
-			continue
-		}
-		data = append(data, models.ChartDataPoint{
-			Time:  chartBucketLabel(time.UnixMilli(start).UTC(), interval),
-			Value: int(counts.successMs / counts.successes),
-		})
-	}
-	return data, nil
-}
-
-// SuccessRateChart returns success/failure percentages bucketed over time.
-func (s *ParquetStore) SuccessRateChart(ctx context.Context, interval string) ([]models.SuccessRateDataPoint, error) {
-	agg, err := s.chartAgg(ctx, interval)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get success rate chart: %w", err)
-	}
-	data := []models.SuccessRateDataPoint{}
-	for _, start := range agg.sortedStarts() {
-		counts := agg.buckets[start]
-		data = append(data, models.SuccessRateDataPoint{
-			Time:    chartBucketLabel(time.UnixMilli(start).UTC(), interval),
-			Success: int(counts.successes * 100 / counts.requests),
-			Failure: int((counts.requests - counts.successes) * 100 / counts.requests),
-		})
-	}
-	return data, nil
 }
 
 // ApplyRetention removes the files of expired days. A file goes only once its

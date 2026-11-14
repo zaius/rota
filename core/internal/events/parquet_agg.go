@@ -241,19 +241,18 @@ func (a *proxyAgg) rollup() []ProxyRequestStats {
 const bucketColumns = colTimestamp | colResponseTime | colSuccess
 
 type bucketCounts struct {
-	requests, successes, successMs int64
-	latency                        latencyCounts
+	requests, successes int64
+	latency             latencyCounts
 }
 
 // bucketAgg groups requests into fixed-width buckets aligned to the epoch.
 type bucketAgg struct {
 	from, width int64
-	latencies   bool
 	buckets     map[int64]*bucketCounts
 }
 
-func newBucketAgg(from, width int64, latencies bool) *bucketAgg {
-	return &bucketAgg{from: from, width: width, latencies: latencies, buckets: map[int64]*bucketCounts{}}
+func newBucketAgg(from, width int64) *bucketAgg {
+	return &bucketAgg{from: from, width: width, buckets: map[int64]*bucketCounts{}}
 }
 
 func (a *bucketAgg) add(b *eventBatch) {
@@ -277,10 +276,7 @@ func (a *bucketAgg) add(b *eventBatch) {
 		current.requests++
 		if b.success[i] {
 			current.successes++
-			current.successMs += int64(b.responseTime[i])
-			if a.latencies {
-				current.latency.add(b.responseTime[i])
-			}
+			current.latency.add(b.responseTime[i])
 		}
 	}
 }
@@ -294,7 +290,6 @@ func (a *bucketAgg) merge(other *bucketAgg) {
 		}
 		counts.requests += from.requests
 		counts.successes += from.successes
-		counts.successMs += from.successMs
 		counts.latency.merge(&from.latency)
 	}
 }

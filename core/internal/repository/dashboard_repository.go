@@ -84,13 +84,3 @@ func (r *DashboardRepository) GetTrafficChart(ctx context.Context, rng string) (
 func (r *DashboardRepository) GetDomainStats(ctx context.Context, rng, domain string, limit int) ([]models.DomainStats, error) {
 	return r.events.DomainStats(ctx, rng, domain, limit)
 }
-
-// GetResponseTimeChart retrieves response time chart data
-func (r *DashboardRepository) GetResponseTimeChart(ctx context.Context, interval string) ([]models.ChartDataPoint, error) {
-	return r.events.ResponseTimeChart(ctx, interval)
-}
-
-// GetSuccessRateChart retrieves success rate chart data
-func (r *DashboardRepository) GetSuccessRateChart(ctx context.Context, interval string) ([]models.SuccessRateDataPoint, error) {
-	return r.events.SuccessRateChart(ctx, interval)
-}

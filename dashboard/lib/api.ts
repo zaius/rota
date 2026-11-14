@@ -3,12 +3,10 @@ import {
   ProxiesResponse,
   DashboardStats,
   DomainStatsResponse,
-  ChartResponse,
   TrafficChartResponse,
   Settings,
   AddProxyRequest,
   UpdateProxyRequest,
-  BulkProxyRequest,
   BulkDeleteRequest,
   BulkTagRequest,
   BulkTestRequest,
@@ -131,18 +129,6 @@ class ApiClient {
     )
   }
 
-  async getResponseTimeChart(interval: string = "4h"): Promise<ChartResponse> {
-    return this.request<ChartResponse>(
-      `/api/v1/dashboard/charts/response-time?interval=${interval}`
-    )
-  }
-
-  async getSuccessRateChart(interval: string = "4h"): Promise<ChartResponse> {
-    return this.request<ChartResponse>(
-      `/api/v1/dashboard/charts/success-rate?interval=${interval}`
-    )
-  }
-
   // Proxies
   async getProxies(params?: {
     page?: number
@@ -187,17 +173,6 @@ class ApiClient {
     })
   }
 
-  async bulkAddProxies(request: BulkProxyRequest): Promise<{
-    created: number
-    failed: number
-    results: Array<{ address: string; status: string; id?: string }>
-  }> {
-    return this.request("/api/v1/proxies/bulk", {
-      method: "POST",
-      body: JSON.stringify(request),
-    })
-  }
-
   async bulkDeleteProxies(request: BulkDeleteRequest): Promise<{
     deleted: number
     message: string
@@ -232,10 +207,6 @@ class ApiClient {
       method: "POST",
       body: JSON.stringify(request),
     })
-  }
-
-  async getBulkTestJob(jobId: string): Promise<Job> {
-    return this.request<Job>(`/api/v1/proxies/bulk-test/${jobId}`)
   }
 
   async getLatestBulkTestJob(): Promise<Job | null> {

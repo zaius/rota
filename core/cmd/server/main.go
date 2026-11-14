@@ -141,7 +141,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to create proxy server: %w", err)
 	}
-	apiServer := api.New(cfg, log, db, api.Deps{
+	apiServer := api.New(cfg, log, api.Deps{
 		ProxyRepo:         proxyRepo,
 		SettingsRepo:      settingsRepo,
 		DashboardRepo:     dashboardRepo,
