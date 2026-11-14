@@ -14,6 +14,7 @@ import (
 
 	"github.com/zaius/rota/core/internal/models"
 	proxyDialer "golang.org/x/net/proxy"
+	"h12.io/socks"
 )
 
 const connectTargetLookupTimeout = 5 * time.Second
@@ -118,7 +119,7 @@ func dialTarget(ctx context.Context, p *models.Proxy, target string) (net.Conn, 
 	case "socks5":
 		return dialSocks5(ctx, p, target)
 	case "socks4", "socks4a":
-		return dialSocks5(ctx, p, target) // h12.io/socks handles socks4 too; close enough
+		return dialSocks4(p, target)
 	case "http", "https":
 		return connectViaHTTP(ctx, p, target)
 	default:
@@ -142,6 +143,18 @@ func dialSocks5(ctx context.Context, p *models.Proxy, target string) (net.Conn, 
 	conn, err := dialer.(proxyDialer.ContextDialer).DialContext(ctx, "tcp", target)
 	if err != nil {
 		return nil, fmt.Errorf("socks5 dial %s via %s: %w", target, p.Address, err)
+	}
+	return conn, nil
+}
+
+// dialSocks4 takes no context because h12.io/socks doesn't: the dial timeout
+// bounds each step of the handshake instead.
+func dialSocks4(p *models.Proxy, target string) (net.Conn, error) {
+	u := proxyURL(p)
+	u.RawQuery = "timeout=" + proxyDial.Timeout.String()
+	conn, err := socks.Dial(u.String())("tcp", target)
+	if err != nil {
+		return nil, fmt.Errorf("%s dial %s via %s: %w", p.Protocol, target, p.Address, err)
 	}
 	return conn, nil
 }

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/zaius/rota/core/internal/models"
-	"h12.io/socks"
 )
 
 // transportCache caches *http.Transport per proxy to avoid creating a new
@@ -111,17 +110,24 @@ func ConfigureCheckTLS(t *http.Transport, p *models.Proxy, strict bool) {
 	if p.Protocol != "https" {
 		return
 	}
-	proxyURL := &url.URL{Scheme: "http", Host: p.Address}
+	u := proxyURL(p)
+	u.Scheme = "http"
+	t.Proxy = http.ProxyURL(u)
+	// Every request goes through the proxy, so every dial is to the proxy.
+	t.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) { return dialProxy(ctx, p) }
+}
+
+// proxyURL is p's address as a URL carrying its credentials.
+func proxyURL(p *models.Proxy) *url.URL {
+	u := &url.URL{Scheme: p.Protocol, Host: p.Address}
 	if p.Username != nil && *p.Username != "" {
 		pass := ""
 		if p.Password != nil {
 			pass = *p.Password
 		}
-		proxyURL.User = url.UserPassword(*p.Username, pass)
+		u.User = url.UserPassword(*p.Username, pass)
 	}
-	t.Proxy = http.ProxyURL(proxyURL)
-	// Every request goes through the proxy, so every dial is to the proxy.
-	t.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) { return dialProxy(ctx, p) }
+	return u
 }
 
 // CreateProxyTransport creates an HTTP transport configured for the given proxy
@@ -143,45 +149,15 @@ func CreateProxyTransport(p *models.Proxy) (*http.Transport, error) {
 		ExpectContinueTimeout: 10 * time.Second,
 	}
 
-	// Parse proxy URL
-	var proxyURL string
-	var authMasked string // For logging (hide credentials)
-
-	if p.Username != nil && *p.Username != "" {
-		// Username exists, include authentication
-		if p.Password != nil && *p.Password != "" {
-			// Both username and password
-			proxyURL = fmt.Sprintf("%s://%s:%s@%s", p.Protocol, *p.Username, *p.Password, p.Address)
-			authMasked = fmt.Sprintf("%s://[username]:[password]@%s", p.Protocol, p.Address)
-		} else {
-			// Only username (API key), password is empty
-			proxyURL = fmt.Sprintf("%s://%s:@%s", p.Protocol, *p.Username, p.Address)
-			authMasked = fmt.Sprintf("%s://[api_key]:@%s", p.Protocol, p.Address)
-		}
-	} else {
-		// No authentication
-		proxyURL = fmt.Sprintf("%s://%s", p.Protocol, p.Address)
-		authMasked = proxyURL
-	}
-
-	parsedURL, err := url.Parse(proxyURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid proxy URL %s: %w", authMasked, err)
-	}
-
 	switch p.Protocol {
 	case "http", "https":
 		// The transport dials the proxy with DialContext, then speaks to it as
 		// Proxy says, credentials included.
-		transport.Proxy = http.ProxyURL(parsedURL)
+		transport.Proxy = http.ProxyURL(proxyURL(p))
 		transport.DialContext = proxyDial.DialContext
-	case "socks4", "socks4a":
-		// Create SOCKS4/SOCKS4A dialer using h12.io/socks
-		// The Dial function accepts URI format: socks4://[user@]host:port
-		transport.Dial = socks.Dial(proxyURL)
-	case "socks5":
+	case "socks4", "socks4a", "socks5":
 		transport.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
-			return dialSocks5(ctx, p, addr)
+			return dialTarget(ctx, p, addr)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported proxy protocol: %s", p.Protocol)
