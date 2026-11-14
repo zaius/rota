@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -94,6 +95,22 @@ func isDNSNotFound(err error) bool {
 // proxy fast, leaving the rest of the attempt's time for the next proxy.
 var proxyDial = &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
 
+// dialProxy connects to p itself, completing the TLS handshake to an https
+// proxy. Like proxied traffic, it accepts any certificate and TLS 1.0.
+func dialProxy(ctx context.Context, p *models.Proxy) (net.Conn, error) {
+	conn, err := proxyDial.DialContext(ctx, "tcp", p.Address)
+	if err != nil || p.Protocol != "https" {
+		return conn, err
+	}
+	serverName, _, _ := net.SplitHostPort(p.Address)
+	tlsConn := tls.Client(conn, &tls.Config{ServerName: serverName, InsecureSkipVerify: true, MinVersion: tls.VersionTLS10})
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("proxy TLS handshake: %w", err)
+	}
+	return tlsConn, nil
+}
+
 // dialTarget opens a connection to target through p. ctx bounds the whole
 // handshake, and cancelling it abandons the handshake.
 func dialTarget(ctx context.Context, p *models.Proxy, target string) (net.Conn, error) {
@@ -129,9 +146,9 @@ func dialSocks5(ctx context.Context, p *models.Proxy, target string) (net.Conn, 
 	return conn, nil
 }
 
-// connectViaHTTP opens a CONNECT tunnel through an HTTP proxy.
+// connectViaHTTP opens a CONNECT tunnel through an HTTP or HTTPS proxy.
 func connectViaHTTP(ctx context.Context, p *models.Proxy, target string) (net.Conn, error) {
-	conn, err := proxyDial.DialContext(ctx, "tcp", p.Address)
+	conn, err := dialProxy(ctx, p)
 	if err != nil {
 		return nil, forwardingFailure("proxy_connect_failed", fmt.Errorf("dial proxy %s: %w", p.Address, err))
 	}

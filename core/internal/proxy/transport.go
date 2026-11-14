@@ -120,25 +120,8 @@ func ConfigureCheckTLS(t *http.Transport, p *models.Proxy, strict bool) {
 		proxyURL.User = url.UserPassword(*p.Username, pass)
 	}
 	t.Proxy = http.ProxyURL(proxyURL)
-	serverName, _, _ := net.SplitHostPort(p.Address)
-	var dialer net.Dialer
 	// Every request goes through the proxy, so every dial is to the proxy.
-	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		conn, err := dialer.DialContext(ctx, network, addr)
-		if err != nil {
-			return nil, err
-		}
-		tlsConn := tls.Client(conn, &tls.Config{
-			ServerName:         serverName,
-			InsecureSkipVerify: true,
-			MinVersion:         tls.VersionTLS10,
-		})
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("proxy TLS handshake: %w", err)
-		}
-		return tlsConn, nil
-	}
+	t.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) { return dialProxy(ctx, p) }
 }
 
 // CreateProxyTransport creates an HTTP transport configured for the given proxy
