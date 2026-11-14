@@ -9,6 +9,8 @@ Rota is a rotating proxy server. Clients connect to one address, and Rota forwar
 
 Rota is built for trusted clients on a private network. One shared password guards the proxy, the API and the dashboard. It has no accounts and no login rate limiting, so keep both ports off the public internet.
 
+[Quick start](#quick-start) · [Documentation](#documentation) · [Using the proxy](#using-the-proxy) · [API](#api) · [Operating](#operating) · [Running without Compose](#running-without-compose) · [Development](#development)
+
 ![Rota dashboard](static/dashboard.png)
 
 ## Quick start
@@ -26,6 +28,12 @@ curl -x "http://scraper:$ROTA_PASSWORD@localhost:8000" https://api.ipify.org
 ```
 
 Every setting is an environment variable, described in [`.env.example`](.env.example) and parsed in [`config.go`](core/internal/config/config.go).
+
+## Documentation
+
+- [Sticky sessions and invalidation](docs/sessions.md): holding one proxy for a job, releasing it, and cooling down a proxy the target has blocked.
+- [Proxy status codes](docs/errors.md): the `407` and `592` to `594` responses Rota sends, and what a client should do with each.
+- [HTTPS inspection and TLS fingerprints](docs/tls-inspection.md): recording the requests inside HTTPS tunnels and choosing the fingerprint the target sees.
 
 ## Using the proxy
 
