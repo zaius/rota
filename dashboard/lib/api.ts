@@ -18,6 +18,7 @@ import {
   FormatHistoryEntry,
   Job,
   JobStatus,
+  Session,
 } from "./types"
 
 // Empty base = same origin: in production the Go server serves both the SPA and
@@ -256,6 +257,11 @@ class ApiClient {
   async getTagList(): Promise<string[]> {
     const res = await this.request<{ tags: string[] | null }>("/api/v1/proxies/tags")
     return res.tags ?? []
+  }
+
+  async getSessions(): Promise<Session[]> {
+    const res = await this.request<{ sessions: Session[] }>("/api/v1/sessions")
+    return res.sessions
   }
 
   async reloadProxies(): Promise<{ status: string; message: string }> {

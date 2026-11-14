@@ -235,6 +235,16 @@ export interface UpdateSourceRequest {
 
 export type JobStatus = "pending" | "running" | "done" | "failed"
 
+// Session is one live sticky-session binding: a token holding a proxy in a scope.
+export interface Session {
+  token: string
+  scope: string
+  proxy_id: number
+  created_at: string
+  last_used: string
+  expires_at: string
+}
+
 // Job is the shape the bulk proxy test returns and the UI polls.
 export interface Job {
   id: string
