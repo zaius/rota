@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/models"
 	proxyDialer "golang.org/x/net/proxy"
 )
 

@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/google/uuid"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // JobStatus represents the state of an async, pollable job.

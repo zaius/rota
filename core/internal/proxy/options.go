@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/internal/tlsprofile"
+	"github.com/zaius/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/tlsprofile"
 )
 
 // Options are the per-request choices a client encodes in its proxy username.

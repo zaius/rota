@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/events"
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/events"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 func httpRetryTestRotator(t *testing.T, address string) (*Rotator, *connectRequestStore) {

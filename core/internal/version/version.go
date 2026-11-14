@@ -5,7 +5,7 @@ import "runtime/debug"
 
 // The build sets Version with
 //
-//	-ldflags "-X github.com/alpkeskin/rota/core/internal/version.Version=v1.2.3"
+//	-ldflags "-X github.com/zaius/rota/core/internal/version.Version=v1.2.3"
 //
 // Release images and binaries pass the git tag. Builds without it report the
 // VCS revision Go embedded, or "dev" when there is none (e.g. a Docker build,

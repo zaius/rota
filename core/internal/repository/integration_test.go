@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/alpkeskin/rota/core/internal/config"
-	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/internal/config"
+	"github.com/zaius/rota/core/internal/database"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // These tests exercise the real SQL against a Postgres instance.

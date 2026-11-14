@@ -1,4 +1,4 @@
-module github.com/alpkeskin/rota/core
+module github.com/zaius/rota/core
 
 go 1.27.1
 

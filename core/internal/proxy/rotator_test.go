@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/internal/models"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // newTestRotator builds a Rotator over a fixed proxy list, with no database.

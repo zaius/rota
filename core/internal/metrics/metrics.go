@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-const scopeName = "github.com/alpkeskin/rota/core"
+const scopeName = "github.com/zaius/rota/core"
 
 var meter = otel.Meter(scopeName)
 

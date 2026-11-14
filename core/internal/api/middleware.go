@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/metrics"
-	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/zaius/rota/core/internal/metrics"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // LoggerMiddleware logs HTTP requests

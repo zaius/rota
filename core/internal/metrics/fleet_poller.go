@@ -8,9 +8,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/pkg/logger"
-	"github.com/alpkeskin/rota/core/pkg/safeworker"
+	"github.com/zaius/rota/core/internal/database"
+	"github.com/zaius/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/pkg/safeworker"
 )
 
 // FleetPoller periodically counts proxies by status in the primary database

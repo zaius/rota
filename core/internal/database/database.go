@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/config"
-	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/zaius/rota/core/internal/config"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // DB wraps the database connection pool

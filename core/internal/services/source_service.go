@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/lineformat"
-	"github.com/alpkeskin/rota/core/internal/metrics"
-	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/internal/repository"
-	"github.com/alpkeskin/rota/core/pkg/logger"
-	"github.com/alpkeskin/rota/core/pkg/safeworker"
+	"github.com/zaius/rota/core/internal/lineformat"
+	"github.com/zaius/rota/core/internal/metrics"
+	"github.com/zaius/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/repository"
+	"github.com/zaius/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/pkg/safeworker"
 )
 
 // SourceService fetches proxy lists from remote URLs and imports them into the DB.

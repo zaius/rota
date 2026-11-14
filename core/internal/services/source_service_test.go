@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alpkeskin/rota/core/internal/lineformat"
+	"github.com/zaius/rota/core/internal/lineformat"
 )
 
 // A single overlong line used to trip bufio.ErrTooLong and fail the whole

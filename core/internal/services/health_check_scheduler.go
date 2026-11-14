@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/proxy"
-	"github.com/alpkeskin/rota/core/internal/repository"
-	"github.com/alpkeskin/rota/core/pkg/logger"
-	"github.com/alpkeskin/rota/core/pkg/safeworker"
+	"github.com/zaius/rota/core/internal/proxy"
+	"github.com/zaius/rota/core/internal/repository"
+	"github.com/zaius/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/pkg/safeworker"
 )
 
 // HealthCheckScheduler checks every proxy on the health-check interval. It is

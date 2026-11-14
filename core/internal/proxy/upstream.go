@@ -19,7 +19,7 @@ import (
 	http2 "github.com/bogdanfinn/fhttp/http2"
 	utls "github.com/bogdanfinn/utls"
 
-	"github.com/alpkeskin/rota/core/internal/tlsprofile"
+	"github.com/zaius/rota/core/internal/tlsprofile"
 )
 
 // upstreamSession is one TLS session to the target, carrying requests in

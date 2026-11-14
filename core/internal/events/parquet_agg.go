@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // latencyLowLimit bounds the flat array of latency counts. Almost every

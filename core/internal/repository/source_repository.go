@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/internal/lineformat"
-	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/jackc/pgx/v5"
+	"github.com/zaius/rota/core/internal/database"
+	"github.com/zaius/rota/core/internal/lineformat"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // SourceRepository handles proxy_sources database operations

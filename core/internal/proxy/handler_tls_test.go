@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/internal/models"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // Drive a CONNECT through the router and an upstream proxy to a TLS origin,

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // Regression: saving the dashboard's edit form cleared the proxy's stored

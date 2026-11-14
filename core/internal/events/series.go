@@ -3,7 +3,7 @@ package events
 import (
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // SeriesWindow maps a chart range to its bucket width and lookback period.

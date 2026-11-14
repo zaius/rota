@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/jackc/pgx/v5"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 func (r *ProxyRepository) SetScopeCooldown(ctx context.Context, id int, scope string, until time.Time, reason string) (*models.Proxy, error) {

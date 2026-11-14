@@ -12,7 +12,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // RequestEvent is one proxied request outcome.

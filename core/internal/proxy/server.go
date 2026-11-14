@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/events"
-	"github.com/alpkeskin/rota/core/internal/metrics"
-	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/internal/repository"
-	"github.com/alpkeskin/rota/core/pkg/logger"
-	"github.com/alpkeskin/rota/core/pkg/safeworker"
+	"github.com/zaius/rota/core/internal/events"
+	"github.com/zaius/rota/core/internal/metrics"
+	"github.com/zaius/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/repository"
+	"github.com/zaius/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/pkg/safeworker"
 )
 
 // proxyRouter authenticates incoming proxy requests and dispatches them by

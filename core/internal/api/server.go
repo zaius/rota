@@ -6,15 +6,15 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/api/handlers"
-	"github.com/alpkeskin/rota/core/internal/config"
-	"github.com/alpkeskin/rota/core/internal/proxy"
-	"github.com/alpkeskin/rota/core/internal/repository"
-	"github.com/alpkeskin/rota/core/internal/services"
-	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/zaius/rota/core/internal/api/handlers"
+	"github.com/zaius/rota/core/internal/config"
+	"github.com/zaius/rota/core/internal/proxy"
+	"github.com/zaius/rota/core/internal/repository"
+	"github.com/zaius/rota/core/internal/services"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // Deps holds the repositories and services the API layer needs. They are built

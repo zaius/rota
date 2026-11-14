@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/config"
-	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/pkg/logger"
-	"github.com/alpkeskin/rota/core/pkg/safeworker"
+	"github.com/zaius/rota/core/internal/config"
+	"github.com/zaius/rota/core/internal/models"
+	"github.com/zaius/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/pkg/safeworker"
 )
 
 // ParquetStore implements Store on local files, so request and tunnel history

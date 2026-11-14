@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/jackc/pgx/v5"
+	"github.com/zaius/rota/core/internal/database"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // SettingsRepository handles settings database operations

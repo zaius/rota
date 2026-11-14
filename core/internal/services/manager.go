@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // Service is a long-running background job managed by a Manager.

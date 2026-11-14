@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/internal/proxy"
-	"github.com/alpkeskin/rota/core/internal/repository"
-	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/go-chi/chi/v5"
+	"github.com/zaius/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/proxy"
+	"github.com/zaius/rota/core/internal/repository"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // ProxyControlHandler serves the live proxy-control endpoints (reload,

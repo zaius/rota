@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/tlsprofile"
-	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/internal/tlsprofile"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // TLSInspector terminates client TLS inside a CONNECT tunnel so the individual

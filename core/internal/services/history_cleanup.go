@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/events"
-	"github.com/alpkeskin/rota/core/pkg/logger"
-	"github.com/alpkeskin/rota/core/pkg/safeworker"
+	"github.com/zaius/rota/core/internal/events"
+	"github.com/zaius/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/pkg/safeworker"
 )
 
 const (

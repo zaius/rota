@@ -12,15 +12,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/api"
-	"github.com/alpkeskin/rota/core/internal/config"
-	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/internal/events"
-	"github.com/alpkeskin/rota/core/internal/metrics"
-	"github.com/alpkeskin/rota/core/internal/proxy"
-	"github.com/alpkeskin/rota/core/internal/repository"
-	"github.com/alpkeskin/rota/core/internal/services"
-	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/internal/api"
+	"github.com/zaius/rota/core/internal/config"
+	"github.com/zaius/rota/core/internal/database"
+	"github.com/zaius/rota/core/internal/events"
+	"github.com/zaius/rota/core/internal/metrics"
+	"github.com/zaius/rota/core/internal/proxy"
+	"github.com/zaius/rota/core/internal/repository"
+	"github.com/zaius/rota/core/internal/services"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 func main() {

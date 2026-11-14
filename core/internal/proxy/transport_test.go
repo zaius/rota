@@ -3,7 +3,7 @@ package proxy
 import (
 	"testing"
 
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 func strptr(s string) *string { return &s }

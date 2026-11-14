@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/database"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // FormatHistoryRepository stores custom line formats the user has used, so the

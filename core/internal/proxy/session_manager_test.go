@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 func reserveForTest(m *SessionManager, key sessionIdentity, proxyID int, ttl time.Duration) error {

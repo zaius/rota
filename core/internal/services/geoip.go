@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
-	"github.com/alpkeskin/rota/core/pkg/logger"
-	"github.com/alpkeskin/rota/core/pkg/safeworker"
 	"github.com/oschwald/geoip2-golang/v2"
+	"github.com/zaius/rota/core/internal/models"
+	"github.com/zaius/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/pkg/safeworker"
 )
 
 // geoDBPath is relative to the working directory: /app/data/geoip in the

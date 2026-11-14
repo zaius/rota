@@ -24,7 +24,7 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; d
   rm -rf "$stage"
   mkdir -p "$stage"
   (cd "$root/core" && CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath \
-    -ldflags "-s -w -X github.com/alpkeskin/rota/core/internal/version.Version=$version" \
+    -ldflags "-s -w -X github.com/zaius/rota/core/internal/version.Version=$version" \
     -o "$stage/rota$ext" ./cmd/server)
   cp -R "$root/dashboard/dist" "$stage/web"
   cp "$root/LICENSE" "$root/.env.example" "$stage/"

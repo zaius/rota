@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/google/uuid"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // ProxyIDHeader is set on every proxied response (and on the CONNECT 200) to

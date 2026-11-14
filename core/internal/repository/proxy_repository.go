@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/database"
-	"github.com/alpkeskin/rota/core/internal/events"
-	"github.com/alpkeskin/rota/core/internal/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/zaius/rota/core/internal/database"
+	"github.com/zaius/rota/core/internal/events"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // ProxyRepository handles proxy database operations

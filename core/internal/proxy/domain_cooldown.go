@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // DomainCooldownManager holds per-domain proxy invalidations for the

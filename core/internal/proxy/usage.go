@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/events"
-	"github.com/alpkeskin/rota/core/internal/metrics"
-	"github.com/alpkeskin/rota/core/internal/repository"
+	"github.com/zaius/rota/core/internal/events"
+	"github.com/zaius/rota/core/internal/metrics"
+	"github.com/zaius/rota/core/internal/repository"
 )
 
 // UsageTracker tracks proxy usage and updates statistics: request outcomes are

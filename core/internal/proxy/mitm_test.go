@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/tlsprofile"
-	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/internal/tlsprofile"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // inspectedTunnel wires an origin server to a TLSInspector over real sockets

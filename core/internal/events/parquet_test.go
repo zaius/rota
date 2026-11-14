@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/config"
-	"github.com/alpkeskin/rota/core/pkg/logger"
 	"github.com/parquet-go/parquet-go"
+	"github.com/zaius/rota/core/internal/config"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // fakeDay supplies the store's partition day. It starts at the real day and

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 
-	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // Call runs fn and recovers a panic from it, logging the worker name, the

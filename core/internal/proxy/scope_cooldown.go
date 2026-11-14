@@ -3,7 +3,7 @@ package proxy
 import (
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/models"
+	"github.com/zaius/rota/core/internal/models"
 )
 
 // SetScopeCooldown keeps other scopes' bindings intact. A cooled binding

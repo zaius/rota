@@ -20,8 +20,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 
-	"github.com/alpkeskin/rota/core/internal/version"
-	"github.com/alpkeskin/rota/core/pkg/logger"
+	"github.com/zaius/rota/core/internal/version"
+	"github.com/zaius/rota/core/pkg/logger"
 )
 
 // Provider owns the installed metrics SDK: the Prometheus registry backing the

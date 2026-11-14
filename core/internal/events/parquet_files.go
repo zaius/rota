@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/config"
 	"github.com/parquet-go/parquet-go"
+	"github.com/zaius/rota/core/internal/config"
 )
 
 const (

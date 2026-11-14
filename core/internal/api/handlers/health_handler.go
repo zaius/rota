@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/alpkeskin/rota/core/internal/version"
+	"github.com/zaius/rota/core/internal/version"
 )
 
 var startTime = time.Now()
