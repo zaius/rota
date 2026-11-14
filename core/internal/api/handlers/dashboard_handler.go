@@ -57,6 +57,10 @@ func (h *DashboardHandler) SetProxyServer(ps *proxy.Server) { h.proxyServer = ps
 var trafficRanges = map[string]bool{"1h": true, "6h": true, "24h": true, "7d": true, "30d": true}
 
 // GetDomainStats returns traffic grouped by normalized target hostname.
+//
+// Query: range (1h, 6h, 24h — the default — 7d or 30d), domain (a host and
+// its subdomains; each hostname keeps its own row), limit (1–1000, default
+// 100).
 func (h *DashboardHandler) GetDomainStats(w http.ResponseWriter, r *http.Request) {
 	rng := r.URL.Query().Get("range")
 	if rng == "" {

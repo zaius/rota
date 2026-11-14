@@ -10,7 +10,8 @@ import (
 )
 
 // These application-specific statuses distinguish Rota-generated failures from
-// HTTP responses received upstream. Keep their meanings in sync with README.md.
+// HTTP responses received upstream. Keep their meanings in sync with
+// docs/errors.md.
 const (
 	StatusForwardingFailed         = 592
 	StatusNoProxyAvailable         = 593

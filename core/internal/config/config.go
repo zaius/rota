@@ -15,7 +15,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Config holds all application configuration
+// Config holds the settings that .env.example describes for operators.
 type Config struct {
 	ProxyPort int    `env:"PROXY_PORT" envDefault:"8000"`
 	APIPort   int    `env:"API_PORT" envDefault:"8001"`
