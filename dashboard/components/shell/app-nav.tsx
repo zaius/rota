@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom"
 import {
   Gauge,
   Network,
+  Pin,
   Rss,
   Settings,
   type LucideIcon,
@@ -20,6 +21,7 @@ const NAV: {
 }[] = [
   { href: "/dashboard", label: "Overview", icon: Gauge, exact: true },
   { href: "/dashboard/proxies", label: "Proxies", icon: Network },
+  { href: "/dashboard/sessions", label: "Sessions", icon: Pin },
   { href: "/dashboard/sources", label: "Sources", icon: Rss },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ]

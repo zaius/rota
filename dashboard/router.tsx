@@ -8,6 +8,7 @@ import LoginPage from "@/app/login/page"
 import DashboardLayout from "@/app/dashboard/layout"
 import DashboardPage from "@/app/dashboard/page"
 import ProxiesPage from "@/app/dashboard/proxies/page"
+import SessionsPage from "@/app/dashboard/sessions/page"
 import SourcesPage from "@/app/dashboard/sources/page"
 import SettingsPage from "@/app/dashboard/settings/page"
 
@@ -30,6 +31,7 @@ export const router = createBrowserRouter([
                 children: [
                   { path: "dashboard", element: <DashboardPage /> },
                   { path: "dashboard/proxies", element: <ProxiesPage /> },
+                  { path: "dashboard/sessions", element: <SessionsPage /> },
                   { path: "dashboard/sources", element: <SourcesPage /> },
                   { path: "dashboard/settings", element: <SettingsPage /> },
                 ],

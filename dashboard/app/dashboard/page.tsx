@@ -9,7 +9,6 @@ import { Segment } from "@/components/controls"
 import { StatusLabel } from "@/components/status"
 import { SplitBar } from "@/components/usage-bar"
 import { DomainStats } from "@/components/domain-stats"
-import { Sessions } from "@/components/sessions"
 import { useUrlState } from "@/hooks/use-url-state"
 import { api } from "@/lib/api"
 import { bytes, count, ms, percent, signedPercent } from "@/lib/format"
@@ -225,8 +224,6 @@ export default function OverviewPage() {
           />
         </Section>
       )}
-
-      <Sessions />
 
       <Section title="Requests" description={`${range.hint} Succeeded and failed requests per bucket.`}>
         {!hasTraffic ? (
