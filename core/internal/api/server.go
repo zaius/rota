@@ -112,8 +112,7 @@ func New(cfg *config.Config, log *logger.Logger, deps Deps) *Server {
 
 // setupMiddleware configures middleware for the API server
 func (s *Server) setupMiddleware() {
-	// Handle OPTIONS requests first (for CORS preflight)
-	s.router.Use(OptionsMiddleware())
+	s.router.Use(MethodMiddleware())
 
 	// CORS middleware. Credentialed CORS with a wildcard origin is invalid per
 	// the Fetch spec and is rejected by browsers, so only enable credentials

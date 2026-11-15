@@ -81,21 +81,24 @@ func presentedPassword(r *http.Request) string {
 	return ""
 }
 
-// OptionsMiddleware handles all OPTIONS requests with 200 OK
-// This ensures CORS preflight requests are properly handled
-func OptionsMiddleware() func(next http.Handler) http.Handler {
+// MethodMiddleware answers CORS preflights and refuses methods the API never
+// serves before anything records them: net/http accepts any token as a
+// method, so recording raw methods would let anyone create metric series.
+func MethodMiddleware() func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "OPTIONS" {
-				// Set basic CORS headers for preflight
+			switch r.Method {
+			case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodDelete:
+				next.ServeHTTP(w, r)
+			case http.MethodOptions:
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, X-CSRF-Token")
 				w.Header().Set("Access-Control-Max-Age", "300")
 				w.WriteHeader(http.StatusOK)
-				return
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			}
-			next.ServeHTTP(w, r)
 		})
 	}
 }
