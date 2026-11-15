@@ -192,18 +192,18 @@ func (r *Rotator) removeLocked(proxyID int) {
 	r.proxies = slices.DeleteFunc(r.proxies, func(p *models.Proxy) bool { return p.ID == proxyID })
 }
 
-// record asynchronously records one upstream attempt outcome.
+// record records one upstream attempt outcome. It only appends to the event
+// log, so it runs inline: a goroutine could still be writing when shutdown
+// closes the event store, losing the event.
 func (r *Rotator) record(record RequestRecord) {
 	if r.tracker == nil || record.ProxyID <= 0 {
 		return
 	}
-	safeworker.Go(r.logger, "record_request", func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := r.tracker.RecordRequest(ctx, record); err != nil {
-			r.logger.Error("failed to record proxy request", "error", err)
-		}
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.tracker.RecordRequest(ctx, record); err != nil {
+		r.logger.Error("failed to record proxy request", "error", err)
+	}
 }
 
 // recordAttempt records an attempt through p in request history. A nil cause

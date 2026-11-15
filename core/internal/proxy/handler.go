@@ -2,11 +2,13 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,16 +33,42 @@ type UpstreamProxyHandler struct {
 	// without this a long-lived tunnel is invisible for as long as it matters
 	// most.
 	openTunnels atomic.Int64
+
+	// connects counts running CONNECT handlers, and cancelling closing ends
+	// their tunnels, so CloseTunnels can end every tunnel and wait for its
+	// history event.
+	connects     sync.WaitGroup
+	closing      context.Context
+	closeTunnels context.CancelFunc
 }
 
 // NewUpstreamProxyHandler creates a new upstream proxy handler. inspector may
 // be nil, in which case requests for TLS inspection fail before forwarding.
 func NewUpstreamProxyHandler(rotator *Rotator, inspector *TLSInspector, log *logger.Logger) *UpstreamProxyHandler {
-	return &UpstreamProxyHandler{rotator: rotator, inspector: inspector, logger: log}
+	h := &UpstreamProxyHandler{rotator: rotator, inspector: inspector, logger: log}
+	h.closing, h.closeTunnels = context.WithCancel(context.Background())
+	return h
 }
 
 // OpenTunnels returns the number of CONNECT tunnels currently established.
 func (h *UpstreamProxyHandler) OpenTunnels() int64 { return h.openTunnels.Load() }
+
+// CloseTunnels ends every open tunnel and waits until each has recorded its
+// history event, or ctx ends.
+func (h *UpstreamProxyHandler) CloseTunnels(ctx context.Context) error {
+	h.closeTunnels()
+	done := make(chan struct{})
+	go func() {
+		h.connects.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // HandleHTTPRequest handles HTTP requests (non-CONNECT) and writes the proxied
 // response directly to w.
@@ -84,6 +112,10 @@ func (h *UpstreamProxyHandler) HandleHTTPRequest(w http.ResponseWriter, r *http.
 // connection, establishes an upstream tunnel, and copies data bidirectionally
 // using splice(2) on Linux.
 func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *http.Request) {
+	// Counted from the start, not from the hijack: http.Server.Shutdown waits
+	// for this handler until it hijacks, so CloseTunnels can't miss it.
+	h.connects.Add(1)
+	defer h.connects.Done()
 	host := r.Host
 
 	h.logger.Debug("handling CONNECT request",
@@ -134,6 +166,11 @@ func (h *UpstreamProxyHandler) HandleConnectRequest(w http.ResponseWriter, r *ht
 	}
 	defer clientConn.Close()
 	binding.EndWithSession(clientConn, upstreamConn)
+	stop := context.AfterFunc(h.closing, func() {
+		shutdownConn(clientConn)
+		shutdownConn(upstreamConn)
+	})
+	defer stop()
 
 	// Send 200 Connection Established to the client. The serving proxy's ID
 	// rides along as a header — the only response the client sees before the

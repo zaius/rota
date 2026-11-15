@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -218,7 +219,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.sessionMgr.Stop()
 	s.domainCD.Stop()
 
-	return s.server.Shutdown(ctx)
+	err := s.server.Shutdown(ctx)
+	// http.Server.Shutdown neither waits for nor closes hijacked connections,
+	// so open CONNECT tunnels would die with the process without writing their
+	// history event. End them here and wait for those events, before main
+	// closes the event store.
+	return errors.Join(err, s.handler.CloseTunnels(ctx))
 }
 
 // OpenTunnels returns the number of CONNECT tunnels currently established.
