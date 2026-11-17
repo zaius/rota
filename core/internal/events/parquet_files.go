@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,14 +29,22 @@ const (
 
 	dayMillis = int64(24 * time.Hour / time.Millisecond)
 
-	logReadBuffer    = 1 << 20
-	batchRows        = 1 << 16
-	convertBatchRows = 1 << 13
-	rowGroupRows     = 256_000
+	logReadBuffer  = 1 << 20
+	batchRows      = 1 << 16
+	writeBatchRows = 1 << 13
+	rowGroupRows   = 256_000
 
 	// scanWorkers caps the cores one query uses, so a wide dashboard range
 	// cannot occupy every core the proxy needs.
 	scanWorkers = 2
+
+	// sweepRows is how many appends pass between sweeps of the open day's
+	// log. Queries parse the unswept lines as text, so it bounds that cost.
+	sweepRows = 1 << 16
+
+	// logOffsetKey names the Parquet metadata entry that records how far into
+	// its day's log a file reaches.
+	logOffsetKey = "rota.log_offset"
 )
 
 var errStoreClosed = errors.New("event store is closed")
@@ -55,9 +64,10 @@ func parseDayName(name string) (int64, bool) {
 }
 
 // eventTable stores one event stream in one directory. Each store writes its
-// own files per UTC day, named by its instance: a log while the day is open
-// and a Parquet file once it is finished. Reads and retention cover every
-// file in the directory; appends and conversion touch only the store's own.
+// own files per UTC day, named by its instance: a log that takes every append,
+// and a Parquet file that sweeps fill from the log and that replaces it once
+// the day is finished. Reads and retention cover every file in the directory;
+// appends and sweeps touch only the store's own.
 //
 // A file's day is the day its events arrived, not their own timestamps. A
 // trailing window starting on day D therefore finds every event inside it in
@@ -68,10 +78,12 @@ type eventTable struct {
 	dir   string
 
 	parseColumns func([]byte, *eventBatch, *interner) bool
-	convertLog   func(context.Context, io.Reader, io.Writer) (int64, error)
+	writeDay     func(ctx context.Context, previous *parquet.File, lines io.Reader, out io.Writer, offset int64) (int64, error)
+	appends      atomic.Int64
 
-	// mu lets appends share the open log. rotate takes it exclusively, so no
-	// append is in flight once a finished log closes.
+	// mu lets appends share the open log. rotate and sweep take it
+	// exclusively, so no append is in flight when a log closes or a sweep
+	// measures it.
 	mu     sync.RWMutex
 	file   *os.File
 	day    int64
@@ -99,7 +111,7 @@ func (t *eventTable) ownKey(day int64) fileKey {
 	return fileKey{day: day, instance: t.store.instance}
 }
 
-// owns reports whether this store appends to and converts the files of key.
+// owns reports whether this store appends to and sweeps the files of key.
 func (t *eventTable) owns(key fileKey) bool {
 	return key.instance == "" || key.instance == t.store.instance
 }
@@ -114,6 +126,9 @@ func (t *eventTable) append(lines []byte) error {
 		if t.file != nil && t.day >= day {
 			_, err := t.file.Write(lines)
 			t.mu.RUnlock()
+			if t.appends.Add(1)%t.store.sweepRows == 0 {
+				t.store.requestSweep()
+			}
 			return err
 		}
 		t.mu.RUnlock()
@@ -155,26 +170,25 @@ func (t *eventTable) rotate(day int64) error {
 	t.file, t.day = file, day
 	if previous != nil {
 		previous.Close()
-		t.store.requestConversion()
+		t.store.requestSweep()
 	}
 	return nil
 }
 
 // writableDay returns the first day at or after want that may take appends:
-// after any day where this store already has a Parquet file, and on its
-// newest open log.
+// after any day this store has finished, and on its newest open log.
 func (t *eventTable) writableDay(want int64) (int64, error) {
 	files, err := t.list()
 	if err != nil {
 		return 0, err
 	}
 	for key, have := range files {
-		if t.owns(key) && have.parquet && key.day >= want {
+		if t.owns(key) && have.parquet && !have.log && key.day >= want {
 			want = key.day + 1
 		}
 	}
 	for key, have := range files {
-		if t.owns(key) && have.log && !have.parquet && key.day > want {
+		if t.owns(key) && have.log && key.day > want {
 			want = key.day
 		}
 	}
@@ -278,8 +292,7 @@ func sortedKeys(files map[fileKey]dayFiles) []fileKey {
 	})
 }
 
-// removeTemps removes the temporary files of this store's interrupted
-// conversions.
+// removeTemps removes the temporary files of this store's interrupted sweeps.
 func (t *eventTable) removeTemps() error {
 	matches, err := filepath.Glob(filepath.Join(t.dir, "*"+tempSuffix))
 	if err != nil {
@@ -297,20 +310,23 @@ func (t *eventTable) removeTemps() error {
 	return nil
 }
 
-// eventFile is one open log or Parquet file. A log reads only up to the size
-// it had when opened, so appends during a scan do not extend the scan.
+// eventFile is one open log or Parquet file. A log reads from start, where
+// its day's Parquet file ends, up to the size it had when opened, so appends
+// during a scan do not extend the scan.
 type eventFile struct {
 	table   *eventTable
 	file    *os.File
 	path    string
+	start   int64
 	size    int64
 	parquet bool
+	// final marks the Parquet file of a finished day, which never changes.
+	final bool
 }
 
-// openFiles opens every file from fromDay onward, whichever store wrote it. A
-// key with both files is a conversion interrupted before it removed the log,
-// so the Parquet file wins. Files stay readable after a later conversion or
-// retention pass unlinks them.
+// openFiles opens every file from fromDay onward, whichever store wrote it.
+// Files stay readable after a later sweep or retention pass replaces or
+// unlinks them.
 func (t *eventTable) openFiles(fromDay int64) ([]*eventFile, error) {
 	t.store.filesMu.RLock()
 	defer t.store.filesMu.RUnlock()
@@ -320,23 +336,52 @@ func (t *eventTable) openFiles(fromDay int64) ([]*eventFile, error) {
 		return nil, err
 	}
 	files := make([]*eventFile, 0, len(listed))
+	fail := func(err error) ([]*eventFile, error) {
+		closeEventFiles(files)
+		return nil, err
+	}
 	for _, key := range sortedKeys(listed) {
 		if key.day < fromDay {
 			continue
 		}
 		have := listed[key]
-		suffix := logSuffix
+		var swept int64
 		if have.parquet {
-			suffix = parquetSuffix
+			f, err := openEventFile(t, t.path(key, parquetSuffix), true)
+			if err != nil {
+				return fail(err)
+			}
+			f.final = !have.log
+			files = append(files, f)
+			if have.log {
+				day, err := openParquet(f.file, f.size)
+				if err != nil {
+					return fail(fmt.Errorf("read %s: %w", f.path, err))
+				}
+				swept = logOffset(day)
+			}
 		}
-		f, err := openEventFile(t, t.path(key, suffix), have.parquet)
-		if err != nil {
-			closeEventFiles(files)
-			return nil, err
+		if have.log {
+			f, err := openEventFile(t, t.path(key, logSuffix), false)
+			if err != nil {
+				return fail(err)
+			}
+			f.start = min(swept, f.size)
+			files = append(files, f)
 		}
-		files = append(files, f)
 	}
 	return files, nil
+}
+
+func openParquet(file *os.File, size int64) (*parquet.File, error) {
+	return parquet.OpenFile(file, size, parquet.SkipBloomFilters(true), parquet.SkipPageIndex(true))
+}
+
+// logOffset returns how far into its day's log a Parquet file reaches.
+func logOffset(day *parquet.File) int64 {
+	value, _ := day.Lookup(logOffsetKey)
+	offset, _ := strconv.ParseInt(value, 10, 64)
+	return offset
 }
 
 func openEventFile(t *eventTable, path string, isParquet bool) (*eventFile, error) {
@@ -385,7 +430,7 @@ func (f *eventFile) scanLog(ctx context.Context, emit func(*eventBatch)) error {
 		emit(b)
 		b.reset()
 	}
-	err := forEachLine(ctx, io.NewSectionReader(f.file, 0, f.size), func(line []byte) error {
+	err := forEachLine(ctx, io.NewSectionReader(f.file, f.start, f.size-f.start), func(line []byte) error {
 		f.table.parseColumns(line, b, in)
 		if b.n == batchRows {
 			flush()
@@ -402,7 +447,7 @@ func (f *eventFile) scanLog(ctx context.Context, emit func(*eventBatch)) error {
 }
 
 func (f *eventFile) scanParquet(ctx context.Context, want columnSet, emit func(*eventBatch)) error {
-	file, err := parquet.OpenFile(f.file, f.size, parquet.SkipBloomFilters(true), parquet.SkipPageIndex(true))
+	file, err := openParquet(f.file, f.size)
 	if err != nil {
 		return err
 	}
@@ -474,11 +519,20 @@ func collect[A interface {
 	return total, nil
 }
 
-// convertRows writes every parseable line of lines to out as one Parquet file
-// and returns how many rows it wrote.
-func convertRows[R any](ctx context.Context, lines io.Reader, out io.Writer, parse func([]byte, *R) bool) (int64, error) {
-	writer := parquet.NewGenericWriter[R](out, parquet.Compression(&parquet.Zstd), parquet.MaxRowsPerRowGroup(rowGroupRows))
-	batch := make([]R, 0, convertBatchRows)
+// writeDay writes out as a day's Parquet file: previous's row groups as they
+// are, then every parseable line of lines, and the log offset the file now
+// reaches. It returns how many rows it added.
+func writeDay[R any](ctx context.Context, previous *parquet.File, lines io.Reader, out io.Writer, offset int64, parse func([]byte, *R) bool) (int64, error) {
+	writer := parquet.NewGenericWriter[R](out, parquet.Compression(&parquet.Zstd), parquet.MaxRowsPerRowGroup(rowGroupRows),
+		parquet.KeyValueMetadata(logOffsetKey, strconv.FormatInt(offset, 10)))
+	if previous != nil {
+		for _, group := range previous.RowGroups() {
+			if _, err := writer.WriteRowGroup(group); err != nil {
+				return 0, err
+			}
+		}
+	}
+	batch := make([]R, 0, writeBatchRows)
 	var rows int64
 	flush := func() error {
 		_, err := writer.Write(batch)
@@ -506,46 +560,100 @@ func convertRows[R any](ctx context.Context, lines io.Reader, out io.Writer, par
 	return rows, writer.Close()
 }
 
-// convert replaces a finished day's log with its Parquet file. It syncs the
-// new file before removing the log, because the log is the only other copy.
-func (t *eventTable) convert(ctx context.Context, key fileKey, have dayFiles) error {
-	logPath := t.path(key, logSuffix)
-	target := t.path(key, parquetSuffix)
-	if have.parquet {
-		return t.replace("", target, logPath)
-	}
-
-	in, err := os.Open(logPath)
+// sweep moves the lines of key's log that its Parquet file does not hold yet
+// into that file and returns how many rows it moved. The new file copies the
+// old one's row groups without decoding them, so a sweep costs the new lines
+// plus a file copy.
+//
+//   - A final sweep takes whatever is left and removes the log, which finishes
+//     the day.
+//   - Any other sweep waits for half of sweepRows lines, because its signal
+//     arrives a few appends after the previous sweep measured the log.
+func (t *eventTable) sweep(ctx context.Context, key fileKey, final bool) (int64, error) {
+	logPath, target := t.path(key, logSuffix), t.path(key, parquetSuffix)
+	log, err := os.OpenFile(logPath, os.O_RDWR, 0)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	defer in.Close()
+	defer log.Close()
 
-	temp := target + tempSuffix
-	out, err := os.Create(temp)
+	// No append is in flight under the lock, so the log ends on a whole line.
+	t.mu.Lock()
+	info, err := log.Stat()
+	t.mu.Unlock()
 	if err != nil {
-		return err
+		return 0, err
 	}
-	rows, err := t.convertLog(ctx, in, out)
+	end := info.Size()
+
+	var previous *parquet.File
+	var start int64
+	old, err := os.Open(target)
 	if err == nil {
-		err = out.Sync()
+		defer old.Close()
+		stat, err := old.Stat()
+		if err != nil {
+			return 0, err
+		}
+		if previous, err = openParquet(old, stat.Size()); err != nil {
+			return 0, err
+		}
+		start = min(logOffset(previous), end)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return 0, err
 	}
-	if closeErr := out.Close(); err == nil {
-		err = closeErr
+
+	if !final {
+		var due int64
+		err := forEachLine(ctx, io.NewSectionReader(log, start, end-start), func([]byte) error {
+			due++
+			return nil
+		})
+		if err != nil || due < max(t.store.sweepRows/2, 1) {
+			return 0, err
+		}
+		logPath = ""
 	}
-	if err != nil {
-		os.Remove(temp)
-		return err
+
+	var rows int64
+	temp := ""
+	if start < end {
+		// The Parquet file must not reach past the log on disk: after a power
+		// loss, appends would land inside the part the file already holds.
+		if err := log.Sync(); err != nil {
+			return 0, err
+		}
+		temp = target + tempSuffix
+		out, err := os.Create(temp)
+		if err != nil {
+			return 0, err
+		}
+		rows, err = t.writeDay(ctx, previous, io.NewSectionReader(log, start, end-start), out, end)
+		if err == nil {
+			err = out.Sync()
+		}
+		if closeErr := out.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			os.Remove(temp)
+			return 0, err
+		}
+		if rows == 0 && previous == nil {
+			os.Remove(temp)
+			temp = ""
+		}
 	}
-	if rows == 0 {
-		os.Remove(temp)
-		return t.replace("", target, logPath)
+	// Windows refuses to replace or remove a file this process holds open.
+	log.Close()
+	if old != nil {
+		old.Close()
 	}
-	return t.replace(temp, target, logPath)
+	return rows, t.replace(temp, target, logPath)
 }
 
 // replace moves temp to target and removes logPath in one step as far as
-// scans can tell. An empty temp only removes the log.
+// scans can tell. An empty temp or logPath skips that half.
 func (t *eventTable) replace(temp, target, logPath string) error {
 	t.store.filesMu.Lock()
 	defer t.store.filesMu.Unlock()
@@ -556,6 +664,9 @@ func (t *eventTable) replace(temp, target, logPath string) error {
 		if err := syncDir(t.dir); err != nil {
 			return err
 		}
+	}
+	if logPath == "" {
+		return nil
 	}
 	return os.Remove(logPath)
 }

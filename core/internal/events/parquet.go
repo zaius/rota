@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/parquet-go/parquet-go"
 	"github.com/zaius/rota/core/internal/config"
 	"github.com/zaius/rota/core/internal/models"
 	"github.com/zaius/rota/core/pkg/logger"
@@ -20,11 +21,12 @@ import (
 // ParquetStore implements Store on local files, so request and tunnel history
 // needs no database server.
 //
-// Each event table is a directory with one file per UTC day and instance
-// (EVENT_STORE_INSTANCE). The open day is a tab-separated log; every event is a
-// single append, and queries scan the log directly. When a day ends, one
-// conversion replaces its log with a Parquet file. Queries read logs and
-// Parquet files through the same aggregations.
+// Each event table is a directory with one Parquet file per UTC day and
+// instance (EVENT_STORE_INSTANCE). Every event is a single append to the open
+// day's tab-separated log. Every sweepRows appends, a sweep moves the new
+// lines into the day's Parquet file, and the last sweep of a day removes its
+// log. Queries read the Parquet files and the unswept end of the log through
+// the same aggregations.
 //
 // A completed append survives a crash or kill of this process. Surviving power
 // loss or a kernel crash takes EVENT_STORE_SYNC, which makes every append wait
@@ -37,22 +39,24 @@ type ParquetStore struct {
 	instance     string
 	syncWrites   bool
 	partitionDay func() int64
+	sweepRows    int64
 
 	requests *eventTable
 	tunnels  *eventTable
 
-	// filesMu makes a conversion's rename and log removal, and retention's
+	// filesMu makes a sweep's rename and log removal, and retention's
 	// removals, atomic to openFiles.
 	filesMu sync.RWMutex
 
-	convertMu     sync.Mutex
-	convertSignal chan struct{}
-	converterDone chan struct{}
-	cancel        context.CancelFunc
-	closeOnce     sync.Once
+	sweepMu     sync.Mutex
+	sweepSignal chan struct{}
+	sweeperDone chan struct{}
+	cancel      context.CancelFunc
+	closeOnce   sync.Once
 
-	// rollupClosed holds the rollup of the Parquet files named by rollupKey.
-	// Those files never change, so each minute's refresh rescans only logs.
+	// rollupClosed holds the rollup of the finished days' Parquet files, named
+	// by rollupKey. Those files never change, so each minute's refresh rescans
+	// only the open day.
 	rollupMu     sync.Mutex
 	rollupKey    string
 	rollupClosed *proxyAgg
@@ -69,41 +73,42 @@ var lineBuffers = sync.Pool{New: func() any {
 	return &b
 }}
 
-// NewParquetStore opens the event directory and converts any logs left over
+// NewParquetStore opens the event directory and sweeps any logs left over
 // from earlier days. observe, which may be nil, hears every write.
 func NewParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe WriteObserver) (*ParquetStore, error) {
-	return newParquetStore(cfg, log, observe, func() int64 { return dayOf(time.Now().UnixMilli()) })
+	return newParquetStore(cfg, log, observe, func() int64 { return dayOf(time.Now().UnixMilli()) }, sweepRows)
 }
 
-func newParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe WriteObserver, partitionDay func() int64) (*ParquetStore, error) {
+func newParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe WriteObserver, partitionDay func() int64, sweepRows int64) (*ParquetStore, error) {
 	if !config.ValidEventInstance(cfg.Instance) {
 		return nil, fmt.Errorf("invalid event store instance %q", cfg.Instance)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &ParquetStore{
-		logger:        log,
-		observe:       observe,
-		instance:      cfg.Instance,
-		syncWrites:    cfg.SyncWrites,
-		partitionDay:  partitionDay,
-		convertSignal: make(chan struct{}, 1),
-		converterDone: make(chan struct{}),
-		cancel:        cancel,
+		logger:       log,
+		observe:      observe,
+		instance:     cfg.Instance,
+		syncWrites:   cfg.SyncWrites,
+		partitionDay: partitionDay,
+		sweepRows:    sweepRows,
+		sweepSignal:  make(chan struct{}, 1),
+		sweeperDone:  make(chan struct{}),
+		cancel:       cancel,
 	}
 	s.requests = &eventTable{
 		store:        s,
 		dir:          filepath.Join(cfg.Dir, "requests"),
 		parseColumns: parseRequestColumns,
-		convertLog: func(ctx context.Context, lines io.Reader, out io.Writer) (int64, error) {
-			return convertRows(ctx, lines, out, parseRequestRow)
+		writeDay: func(ctx context.Context, previous *parquet.File, lines io.Reader, out io.Writer, offset int64) (int64, error) {
+			return writeDay(ctx, previous, lines, out, offset, parseRequestRow)
 		},
 	}
 	s.tunnels = &eventTable{
 		store:        s,
 		dir:          filepath.Join(cfg.Dir, "tunnels"),
 		parseColumns: parseTunnelColumns,
-		convertLog: func(ctx context.Context, lines io.Reader, out io.Writer) (int64, error) {
-			return convertRows(ctx, lines, out, parseTunnelRow)
+		writeDay: func(ctx context.Context, previous *parquet.File, lines io.Reader, out io.Writer, offset int64) (int64, error) {
+			return writeDay(ctx, previous, lines, out, offset, parseTunnelRow)
 		},
 	}
 	for _, t := range s.tables() {
@@ -113,12 +118,12 @@ func newParquetStore(cfg *config.ParquetConfig, log *logger.Logger, observe Writ
 		}
 		if err := t.removeTemps(); err != nil {
 			cancel()
-			return nil, fmt.Errorf("failed to clear interrupted conversions: %w", err)
+			return nil, fmt.Errorf("failed to clear interrupted sweeps: %w", err)
 		}
 	}
 
-	go s.runConverter(ctx)
-	s.requestConversion()
+	go s.runSweeper(ctx)
+	s.requestSweep()
 	log.Info("parquet event store ready", "dir", cfg.Dir, "instance", cfg.Instance, "sync_writes", cfg.SyncWrites)
 	return s, nil
 }
@@ -127,13 +132,13 @@ func (s *ParquetStore) tables() []*eventTable {
 	return []*eventTable{s.requests, s.tunnels}
 }
 
-// Close stops the converter and closes the open logs. A conversion in progress
+// Close stops the sweeper and closes the open logs. A sweep in progress
 // stops; the next start repeats it from the intact log.
 func (s *ParquetStore) Close() error {
 	var firstErr error
 	s.closeOnce.Do(func() {
 		s.cancel()
-		<-s.converterDone
+		<-s.sweeperDone
 		for _, t := range s.tables() {
 			if err := t.close(); err != nil && firstErr == nil {
 				firstErr = err
@@ -143,31 +148,31 @@ func (s *ParquetStore) Close() error {
 	return firstErr
 }
 
-func (s *ParquetStore) requestConversion() {
+func (s *ParquetStore) requestSweep() {
 	select {
-	case s.convertSignal <- struct{}{}:
+	case s.sweepSignal <- struct{}{}:
 	default:
 	}
 }
 
-func (s *ParquetStore) runConverter(ctx context.Context) {
-	defer close(s.converterDone)
+func (s *ParquetStore) runSweeper(ctx context.Context) {
+	defer close(s.sweeperDone)
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-s.convertSignal:
-			safeworker.Call(s.logger, "event_log_convert", func() { s.convertPending(ctx) })
+		case <-s.sweepSignal:
+			safeworker.Call(s.logger, "event_log_sweep", func() { s.sweepPending(ctx) })
 		}
 	}
 }
 
-// convertPending converts every log of this store older than the day being
-// written. A log that fails stays queryable, and the next rotation or start
-// retries it.
-func (s *ParquetStore) convertPending(ctx context.Context) {
-	s.convertMu.Lock()
-	defer s.convertMu.Unlock()
+// sweepPending brings this store's Parquet files up to date with their logs,
+// finishing every day before the one being written. A log that fails stays
+// queryable, and the next signal retries it.
+func (s *ParquetStore) sweepPending(ctx context.Context) {
+	s.sweepMu.Lock()
+	defer s.sweepMu.Unlock()
 
 	for _, t := range s.tables() {
 		writing := t.writingDay()
@@ -177,18 +182,21 @@ func (s *ParquetStore) convertPending(ctx context.Context) {
 			continue
 		}
 		for _, key := range sortedKeys(listed) {
-			if key.day >= writing || !listed[key].log || !t.owns(key) || ctx.Err() != nil {
+			if !listed[key].log || !t.owns(key) || ctx.Err() != nil {
 				continue
 			}
 			file := filepath.Base(t.path(key, logSuffix))
 			started := time.Now()
-			if err := t.convert(ctx, key, listed[key]); err != nil {
+			rows, err := t.sweep(ctx, key, key.day < writing)
+			if err != nil {
 				if ctx.Err() == nil {
-					s.logger.Error("failed to convert event log", "dir", t.dir, "file", file, "error", err)
+					s.logger.Error("failed to sweep event log", "dir", t.dir, "file", file, "error", err)
 				}
 				continue
 			}
-			s.logger.Info("converted event log to parquet", "dir", t.dir, "file", file, "elapsed", time.Since(started).String())
+			if rows > 0 {
+				s.logger.Info("swept event log into parquet", "dir", t.dir, "file", file, "rows", rows, "elapsed", time.Since(started).String())
+			}
 		}
 	}
 }
@@ -268,7 +276,7 @@ func (s *ParquetStore) ProxyRollup(ctx context.Context) ([]ProxyRequestStats, er
 	var closed, open []*eventFile
 	var names []string
 	for _, f := range files {
-		if f.parquet {
+		if f.final {
 			closed = append(closed, f)
 			names = append(names, filepath.Base(f.path))
 		} else {

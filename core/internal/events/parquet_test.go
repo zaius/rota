@@ -35,12 +35,12 @@ const testInstance = "rota"
 
 func newTestParquetStore(t *testing.T, dir string, day *fakeDay) *ParquetStore {
 	t.Helper()
-	return newTestParquetStoreAs(t, dir, day, testInstance)
+	return newTestParquetStoreAs(t, dir, day, testInstance, sweepRows)
 }
 
-func newTestParquetStoreAs(t *testing.T, dir string, day *fakeDay, instance string) *ParquetStore {
+func newTestParquetStoreAs(t *testing.T, dir string, day *fakeDay, instance string, sweepRows int64) *ParquetStore {
 	t.Helper()
-	store, err := newParquetStore(&config.ParquetConfig{Dir: dir, Instance: instance}, logger.New("error"), nil, day.get)
+	store, err := newParquetStore(&config.ParquetConfig{Dir: dir, Instance: instance}, logger.New("error"), nil, day.get, sweepRows)
 	if err != nil {
 		t.Fatalf("open parquet store: %v", err)
 	}
@@ -48,8 +48,8 @@ func newTestParquetStoreAs(t *testing.T, dir string, day *fakeDay, instance stri
 	return store
 }
 
-// midnight moves the partition day forward and finishes the resulting
-// conversions before returning.
+// midnight moves the partition day forward and finishes the day it leaves
+// before returning.
 func midnight(t *testing.T, store *ParquetStore, day *fakeDay) {
 	t.Helper()
 	next := day.day.Add(1)
@@ -58,38 +58,28 @@ func midnight(t *testing.T, store *ParquetStore, day *fakeDay) {
 			t.Fatalf("rotate: %v", err)
 		}
 	}
-	store.convertPending(context.Background())
+	store.sweepPending(context.Background())
 }
 
-// sealingStore finishes the current day before every read, so testStores
-// exercises the Parquet read path instead of the log scan.
-type sealingStore struct {
+// preparedStore runs prepare before every read, so testStores can move the
+// events into the kind of file it wants to read them from.
+type preparedStore struct {
 	*ParquetStore
-	day *fakeDay
+	prepare func()
 }
 
-func (s sealingStore) seal() {
-	next := s.day.day.Add(1)
-	for _, table := range s.tables() {
-		if err := table.rotate(next); err != nil {
-			panic(err)
-		}
-	}
-	s.convertPending(context.Background())
-}
-
-func (s sealingStore) RequestStats(ctx context.Context) (*RequestStats, error) {
-	s.seal()
+func (s preparedStore) RequestStats(ctx context.Context) (*RequestStats, error) {
+	s.prepare()
 	return s.ParquetStore.RequestStats(ctx)
 }
 
-func (s sealingStore) ProxyRollup(ctx context.Context) ([]ProxyRequestStats, error) {
-	s.seal()
+func (s preparedStore) ProxyRollup(ctx context.Context) ([]ProxyRequestStats, error) {
+	s.prepare()
 	return s.ParquetStore.ProxyRollup(ctx)
 }
 
-func (s sealingStore) LowSuccessProxies(ctx context.Context, window time.Duration, minRate float64, minRequests int) ([]int, error) {
-	s.seal()
+func (s preparedStore) LowSuccessProxies(ctx context.Context, window time.Duration, minRate float64, minRequests int) ([]int, error) {
+	s.prepare()
 	return s.ParquetStore.LowSuccessProxies(ctx, window, minRate, minRequests)
 }
 
@@ -106,7 +96,7 @@ func readAllRequests(t *testing.T, store *ParquetStore) []requestRow {
 	rows := []requestRow{}
 	for _, f := range files {
 		if !f.parquet {
-			err := forEachLine(context.Background(), io.NewSectionReader(f.file, 0, f.size), func(line []byte) error {
+			err := forEachLine(context.Background(), io.NewSectionReader(f.file, f.start, f.size-f.start), func(line []byte) error {
 				var row requestRow
 				if parseRequestRow(line, &row) {
 					rows = append(rows, row)
@@ -191,7 +181,7 @@ func TestParquetRepairsTornTailOnReopen(t *testing.T) {
 	}
 }
 
-func TestParquetMidnightConvertsAndKeepsAnswers(t *testing.T) {
+func TestParquetMidnightFinishesDayAndKeepsAnswers(t *testing.T) {
 	day := newFakeDay()
 	store := newTestParquetStore(t, t.TempDir(), day)
 	ctx := context.Background()
@@ -226,7 +216,7 @@ func TestParquetMidnightConvertsAndKeepsAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !slices.Equal(before, after) {
-		t.Fatalf("conversion changed answers:\nbefore %+v\nafter  %+v", before, after)
+		t.Fatalf("finishing the day changed answers:\nbefore %+v\nafter  %+v", before, after)
 	}
 	if len(after) != 1 || after[0].Requests != 3 || after[0].P50Ms != 200 || after[0].TunnelErrors != 1 {
 		t.Fatalf("domain stats: %+v", after)
@@ -238,7 +228,7 @@ func TestParquetMidnightConvertsAndKeepsAnswers(t *testing.T) {
 	}
 }
 
-func TestParquetResumesAfterInterruptedConversion(t *testing.T) {
+func TestParquetResumesAfterInterruptedSweep(t *testing.T) {
 	dir := t.TempDir()
 	day := newFakeDay()
 	store := newTestParquetStore(t, dir, day)
@@ -266,7 +256,7 @@ func TestParquetResumesAfterInterruptedConversion(t *testing.T) {
 	if got := countToday(t, reopened); got != 1 {
 		t.Fatalf("a day with both files must count once: got %d", got)
 	}
-	reopened.convertPending(ctx)
+	reopened.sweepPending(ctx)
 	names := dirNames(t, requests)
 	if slices.Contains(names, filepath.Base(log)) || slices.Contains(names, filepath.Base(temp)) {
 		t.Fatalf("startup left interrupted files behind: %v", names)
@@ -275,11 +265,63 @@ func TestParquetResumesAfterInterruptedConversion(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-func TestParquetReadsEveryInstanceAndConvertsOnlyItsOwn(t *testing.T) {
+// Sweeps move the open day's log into its Parquet file while appends continue.
+// Every event must count once, before and after a restart and in the proxy
+// rollup, and the finished day must be one Parquet file holding every field.
+func TestParquetSweepsOpenDayWithoutLosingOrRepeatingEvents(t *testing.T) {
 	dir := t.TempDir()
 	day := newFakeDay()
-	a := newTestParquetStoreAs(t, dir, day, "a")
-	b := newTestParquetStoreAs(t, dir, day, "b")
+	ctx := context.Background()
+	insert := func(store *ParquetStore, n int) {
+		t.Helper()
+		for range n {
+			if err := store.InsertRequest(ctx, request(100)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	check := func(store *ParquetStore, want int64) {
+		t.Helper()
+		rollup, err := store.ProxyRollup(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := countToday(t, store); got != want || len(rollup) != 1 || rollup[0].Requests != want {
+			t.Fatalf("want %d events, got %d and rollup %+v", want, got, rollup)
+		}
+	}
+
+	store := newTestParquetStoreAs(t, dir, day, testInstance, 2)
+	insert(store, 3)
+	store.sweepPending(ctx)
+	insert(store, 1)
+	check(store, 4)
+	store.Close()
+
+	reopened := newTestParquetStoreAs(t, dir, day, testInstance, 2)
+	check(reopened, 4)
+	insert(reopened, 1)
+	reopened.sweepPending(ctx)
+	check(reopened, 5)
+
+	closedDay := day.get()
+	midnight(t, reopened, day)
+	got := dirNames(t, reopened.requests.dir)
+	want := []string{filepath.Base(reopened.requests.path(reopened.requests.ownKey(closedDay), parquetSuffix)),
+		filepath.Base(reopened.requests.path(reopened.requests.ownKey(day.get()), logSuffix))}
+	if !slices.Equal(got, want) {
+		t.Fatalf("files after midnight: got %v, want %v", got, want)
+	}
+	if rows := readAllRequests(t, reopened); len(rows) != 5 || rows[4].URL != "http://example.com/" {
+		t.Fatalf("finished day: %+v", rows)
+	}
+}
+
+func TestParquetReadsEveryInstanceAndSweepsOnlyItsOwn(t *testing.T) {
+	dir := t.TempDir()
+	day := newFakeDay()
+	a := newTestParquetStoreAs(t, dir, day, "a", sweepRows)
+	b := newTestParquetStoreAs(t, dir, day, "b", sweepRows)
 	ctx := context.Background()
 	for _, insert := range []*ParquetStore{a, b, b} {
 		if err := insert.InsertRequest(ctx, request(100)); err != nil {
@@ -311,7 +353,7 @@ func TestParquetReadsEveryInstanceAndConvertsOnlyItsOwn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	b.convertPending(ctx)
+	b.sweepPending(ctx)
 	check(name(today, "a", parquetSuffix), name(today+1, "a", logSuffix),
 		name(today, "b", parquetSuffix), name(today+1, "b", logSuffix))
 }
@@ -355,7 +397,7 @@ func TestParquetRollupCacheFollowsFiles(t *testing.T) {
 }
 
 // The race detector run of this test also covers appends racing scans,
-// rotation and conversion.
+// rotation and sweeps.
 func TestParquetConcurrentAppendsAndReads(t *testing.T) {
 	day := newFakeDay()
 	store := newTestParquetStore(t, t.TempDir(), day)
@@ -391,11 +433,11 @@ func TestParquetConcurrentAppendsAndReads(t *testing.T) {
 					return
 				}
 			}
-			store.convertPending(ctx)
+			store.sweepPending(ctx)
 		}
 	})
 	wg.Wait()
-	store.convertPending(ctx)
+	store.sweepPending(ctx)
 	if got := countToday(t, store); got != writers*perWriter {
 		t.Fatalf("want %d events, got %d", writers*perWriter, got)
 	}

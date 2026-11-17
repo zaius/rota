@@ -116,10 +116,10 @@ type ParquetConfig struct {
 	// database.
 	Dir string `env:"EVENT_STORE_DIR" envDefault:"data/events"`
 
-	// Instance names the files this process writes in Dir. The store converts
-	// only logs with its own name, so the name must stay the same across
-	// restarts; the default is fixed rather than the hostname, which changes
-	// when a container is recreated.
+	// Instance names the files this process writes in Dir. The store sweeps
+	// only logs with its own name into Parquet, so the name must stay the same
+	// across restarts; the default is fixed rather than the hostname, which
+	// changes when a container is recreated.
 	Instance string `env:"EVENT_STORE_INSTANCE" envDefault:"rota"`
 
 	// SyncWrites makes every append wait for the disk, so events survive

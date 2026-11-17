@@ -6,23 +6,25 @@ import (
 	"time"
 )
 
-// testStores runs fn against a store that answers from the open day's log and
-// against one that converts every day to Parquet before each read, so both
-// read paths keep the Store contract.
+// testStores runs fn against a store that answers from the open day's log, one
+// that sweeps the log into the open day's Parquet file before each read, and
+// one that finishes the day before each read, so every read path keeps the
+// Store contract.
 func testStores(t *testing.T, fn func(t *testing.T, store Store)) {
-	for _, sealed := range []bool{false, true} {
-		name := "log"
-		if sealed {
-			name = "parquet"
-		}
+	for _, name := range []string{"log", "swept", "finished"} {
 		t.Run(name, func(t *testing.T) {
 			day := newFakeDay()
-			files := newTestParquetStore(t, t.TempDir(), day)
-			var store Store = files
-			if sealed {
-				store = sealingStore{ParquetStore: files, day: day}
+			rows := int64(sweepRows)
+			if name == "swept" {
+				rows = 2
 			}
-			fn(t, store)
+			files := newTestParquetStoreAs(t, t.TempDir(), day, testInstance, rows)
+			prepare := map[string]func(){
+				"log":      func() {},
+				"swept":    func() { files.sweepPending(context.Background()) },
+				"finished": func() { midnight(t, files, day) },
+			}[name]
+			fn(t, preparedStore{ParquetStore: files, prepare: prepare})
 		})
 	}
 }
