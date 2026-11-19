@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { Link } from "react-router-dom"
 import { ChevronDown } from "lucide-react"
 import { useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
@@ -209,6 +210,7 @@ export default function SourcesPage() {
                 <TableHead>Protocol</TableHead>
                 <TableHead>Every</TableHead>
                 <TableHead>Last fetch</TableHead>
+                <TableHead className="text-right" title="Proxies in the inventory from this source">Proxies</TableHead>
                 <TableHead className="text-right" title="Lines returned by the source on the last fetch">Lines</TableHead>
                 <TableHead className="text-right" title="Proxies created on the last fetch">New</TableHead>
                 <TableHead>Result</TableHead>
@@ -235,6 +237,11 @@ export default function SourcesPage() {
                   <TableCell className="num">{humanizeMinutes(s.interval_minutes)}</TableCell>
                   <TableCell className="text-muted-foreground whitespace-nowrap" title={s.last_fetched_at ? formatDateTime(s.last_fetched_at) : undefined}>
                     {s.last_fetched_at ? relative(s.last_fetched_at) : "never"}
+                  </TableCell>
+                  <TableCell className="num text-right">
+                    <Link to={`/dashboard/proxies?source=${s.id}`} className="font-medium underline-offset-4 hover:underline">
+                      {count(s.proxy_count)}
+                    </Link>
                   </TableCell>
                   <TableCell className="num text-right">{count(s.last_total)}</TableCell>
                   <TableCell className="num text-right font-medium">{count(s.last_count)}</TableCell>

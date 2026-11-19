@@ -45,6 +45,16 @@ func NewProxyHandler(proxyRepo *repository.ProxyRepository, healthChecker *proxy
 	}
 }
 
+func queryFilter(r *http.Request) models.ProxyFilter {
+	q := r.URL.Query()
+	return models.ProxyFilter{
+		Search:   q.Get("search"),
+		Status:   q.Get("status"),
+		Protocol: q.Get("protocol"),
+		Source:   q.Get("source"),
+	}
+}
+
 // List handles proxy listing with pagination and filters
 func (h *ProxyHandler) List(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters
@@ -58,14 +68,10 @@ func (h *ProxyHandler) List(w http.ResponseWriter, r *http.Request) {
 		limit = 10
 	}
 
-	search := r.URL.Query().Get("search")
-	status := r.URL.Query().Get("status")
-	protocol := r.URL.Query().Get("protocol")
 	sortField := r.URL.Query().Get("sort")
 	sortOrder := r.URL.Query().Get("order")
 
-	// Get proxies
-	proxies, total, err := h.proxyRepo.List(r.Context(), page, limit, search, status, protocol, sortField, sortOrder)
+	proxies, total, err := h.proxyRepo.List(r.Context(), page, limit, queryFilter(r), sortField, sortOrder)
 	if err != nil {
 		h.logger.Error("failed to list proxies", "error", err)
 		writeError(w, http.StatusInternalServerError, "Failed to list proxies")
@@ -506,12 +512,7 @@ func (h *ProxyHandler) Export(w http.ResponseWriter, r *http.Request) {
 		format = "txt"
 	}
 
-	status := r.URL.Query().Get("status")
-	search := r.URL.Query().Get("search")
-	protocol := r.URL.Query().Get("protocol")
-
-	// Get all proxies matching the supplied filters
-	proxies, _, err := h.proxyRepo.List(r.Context(), 1, 10000, search, status, protocol, "created_at", "asc")
+	proxies, _, err := h.proxyRepo.List(r.Context(), 1, 10000, queryFilter(r), "created_at", "asc")
 	if err != nil {
 		h.logger.Error("failed to get proxies for export", "error", err)
 		writeError(w, http.StatusInternalServerError, "Failed to export proxies")

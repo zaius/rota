@@ -137,6 +137,7 @@ class ApiClient {
     search?: string
     status?: string
     protocol?: string
+    source?: string
     sort?: string
     order?: "asc" | "desc"
   }): Promise<ProxiesResponse> {
@@ -239,6 +240,7 @@ class ApiClient {
     if (filter?.status) params.append("status", filter.status)
     if (filter?.search) params.append("search", filter.search)
     if (filter?.protocol) params.append("protocol", filter.protocol)
+    if (filter?.source) params.append("source", filter.source)
 
     const response = await fetch(
       `${this.baseUrl}/api/v1/proxies/export?${params.toString()}`,

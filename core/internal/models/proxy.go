@@ -72,6 +72,7 @@ type ProxyWithStats struct {
 	CountryName *string `json:"country_name,omitempty"`
 	// Tags
 	Tags      []string  `json:"tags"`
+	SourceID  *int      `json:"source_id,omitempty"` // nil for proxies added by hand
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -123,6 +124,7 @@ type ProxyFilter struct {
 	Search   string `json:"search,omitempty"`
 	Status   string `json:"status,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
+	Source   string `json:"source,omitempty"` // a source ID, or "manual" for proxies added by hand
 }
 
 // BulkDeleteProxyRequest represents a request to delete multiple proxies,

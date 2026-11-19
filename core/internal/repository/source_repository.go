@@ -26,6 +26,7 @@ const sourceColumns = `
 	id, name, url, protocol, format, enabled, interval_minutes,
 	last_fetched_at, last_count, last_total, last_error,
 	cleanup_enabled, cleanup_days,
+	(SELECT COUNT(*) FROM proxies WHERE proxies.source_id = proxy_sources.id),
 	created_at, updated_at
 `
 
@@ -38,7 +39,7 @@ func scanSource(r rowScanner, s *models.ProxySource) error {
 	return r.Scan(
 		&s.ID, &s.Name, &s.URL, &s.Protocol, &s.Format, &s.Enabled,
 		&s.IntervalMinutes, &s.LastFetchedAt, &s.LastCount, &s.LastTotal, &s.LastError,
-		&s.CleanupEnabled, &s.CleanupDays,
+		&s.CleanupEnabled, &s.CleanupDays, &s.ProxyCount,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 }

@@ -57,7 +57,7 @@ const SORTS: { value: string; label: string; sort: string; order: "asc" | "desc"
 ]
 
 // The list's search, filters, sort and page, kept in the URL.
-const URL_DEFAULTS = { page: "1", q: "", status: "", protocol: "", sort: "created_at", order: "desc" }
+const URL_DEFAULTS = { page: "1", q: "", status: "", protocol: "", source: "", sort: "created_at", order: "desc" }
 
 // parseImportLine parses one bulk-import line into a proxy request using the
 // shared lineformat engine (see lib/lineformat.ts), then fills in the default
@@ -174,7 +174,7 @@ export default function ProxiesPage() {
   // the old rows on screen while the next page loads.
   const queryClient = useQueryClient()
   const proxiesQuery = useQuery({
-    queryKey: ["proxies", page, PAGE_SIZE, url.q, status, protocol, url.sort, order],
+    queryKey: ["proxies", page, PAGE_SIZE, url.q, status, protocol, url.source, url.sort, order],
     queryFn: () =>
       api.getProxies({
         page,
@@ -182,6 +182,7 @@ export default function ProxiesPage() {
         search: url.q || undefined,
         status: status || undefined,
         protocol: protocol || undefined,
+        source: url.source || undefined,
         sort: url.sort,
         order,
       }),
@@ -195,6 +196,11 @@ export default function ProxiesPage() {
   // tagging works without them.
   const tagListQuery = useQuery({ queryKey: ["proxy-tags"], queryFn: () => api.getTagList() })
   const allTags = tagListQuery.data ?? []
+
+  // Shares the Sources page's cache entry.
+  const sourcesQuery = useQuery({ queryKey: ["sources"], queryFn: () => api.getSources().then((r) => r.sources) })
+  const sources = sourcesQuery.data ?? []
+  const sourceName = (id: number) => sources.find((s) => s.id === id)?.name ?? `Source #${id}`
 
   // Stable, so the bulk-test poller can call it on completion without being
   // torn down when the filters change.
@@ -216,13 +222,14 @@ export default function ProxiesPage() {
   React.useEffect(() => {
     setSelected(new Set())
     setSelectAllMatching(false)
-  }, [page, url.q, status, protocol, url.sort, order])
+  }, [page, url.q, status, protocol, url.source, url.sort, order])
 
   // The list filters currently applied, shared by every filter-based bulk op.
   const currentFilter = (): ProxyFilter => ({
     search: url.q || undefined,
     status: status || undefined,
     protocol: protocol || undefined,
+    source: url.source || undefined,
   })
 
   const setFilter = (patch: Partial<typeof URL_DEFAULTS>) => setUrl({ ...patch, page: "1" }, { replace: true })
@@ -575,7 +582,7 @@ export default function ProxiesPage() {
   }
   const importDone = importProgress.total > 0 && importProgress.current === importProgress.total
 
-  const hasFilters = !!(url.q || status || protocol)
+  const hasFilters = !!(url.q || status || protocol || url.source)
 
   // ── Render ───────────────────────────────────────────────────────────────
 
@@ -629,6 +636,20 @@ export default function ProxiesPage() {
           options={[{ value: "", label: "All protocols" }, ...PROTOCOLS.map((p) => ({ value: p, label: p.toUpperCase() }))]}
         />
         <NativeSelect
+          aria-label="Source"
+          value={url.source}
+          onChange={(v) => setFilter({ source: v })}
+          options={[
+            { value: "", label: "All sources" },
+            { value: "manual", label: "Added manually" },
+            ...sources.map((s) => ({ value: String(s.id), label: s.name })),
+            // Keeps a linked source visible while the list loads, or after it's gone.
+            ...(url.source && url.source !== "manual" && !sources.some((s) => String(s.id) === url.source)
+              ? [{ value: url.source, label: sourceName(Number(url.source)) }]
+              : []),
+          ]}
+        />
+        <NativeSelect
           aria-label="Sort"
           value={sortValue}
           onChange={(v) => {
@@ -644,7 +665,7 @@ export default function ProxiesPage() {
           <button
             type="button"
             className="text-muted-foreground hover:text-foreground ml-1 font-medium"
-            onClick={() => setFilter({ q: "", status: "", protocol: "" })}
+            onClick={() => setFilter({ q: "", status: "", protocol: "", source: "" })}
           >
             Clear
           </button>
@@ -734,6 +755,7 @@ export default function ProxiesPage() {
                 </TableHead>
                 <SortHeader field="address" sort={url.sort} order={order} onSort={onSort}>Address</SortHeader>
                 <TableHead>Protocol</TableHead>
+                <TableHead>Source</TableHead>
                 <TableHead>Tags</TableHead>
                 <SortHeader field="status" sort={url.sort} order={order} onSort={onSort}>Status</SortHeader>
                 <SortHeader field="requests" sort={url.sort} order={order} onSort={onSort} align="right">Requests</SortHeader>
@@ -762,6 +784,19 @@ export default function ProxiesPage() {
                       {proxy.username && <span className="text-muted-foreground ml-2 font-sans text-[0.6875rem]">auth</span>}
                     </TableCell>
                     <TableCell className="text-muted-foreground font-mono">{proxy.protocol}</TableCell>
+                    <TableCell>
+                      <button
+                        type="button"
+                        title="Show only proxies from this source"
+                        className={cn(
+                          "block max-w-[12rem] truncate underline-offset-4 hover:underline",
+                          !proxy.source_id && "text-muted-foreground",
+                        )}
+                        onClick={() => setFilter({ source: proxy.source_id ? String(proxy.source_id) : "manual" })}
+                      >
+                        {proxy.source_id ? sourceName(proxy.source_id) : "manual"}
+                      </button>
+                    </TableCell>
                     <TableCell>
                       {tags.length === 0 ? (
                         <span className="text-muted-foreground">—</span>

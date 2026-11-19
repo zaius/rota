@@ -18,6 +18,7 @@ export interface Proxy {
   cooldown_reason?: string
   username?: string
   tags: string[]
+  source_id?: number        // absent for proxies added by hand
   created_at: string
   updated_at: string
 }
@@ -147,6 +148,7 @@ export interface ProxyFilter {
   search?: string
   status?: string
   protocol?: string
+  source?: string           // a source ID, or "manual"
 }
 
 export interface BulkDeleteRequest {
@@ -207,6 +209,7 @@ export interface ProxySource {
   last_error?: string
   cleanup_enabled: boolean
   cleanup_days: number
+  proxy_count: number       // proxies currently attributed to this source
   created_at: string
   updated_at: string
 }

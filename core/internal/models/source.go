@@ -20,6 +20,7 @@ type ProxySource struct {
 	LastError       *string    `json:"last_error,omitempty"`
 	CleanupEnabled  bool       `json:"cleanup_enabled"` // per-source opt-in soft cleanup
 	CleanupDays     int        `json:"cleanup_days"`    // delete proxies stale for this many days
+	ProxyCount      int        `json:"proxy_count"`     // proxies currently attributed to this source
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 }

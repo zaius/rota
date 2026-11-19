@@ -34,26 +34,36 @@ func (r *ProxyRepository) GetDB() *database.DB {
 // buildProxyWhere builds a WHERE clause (and its arguments) for the list-style
 // filters shared by List and the bulk-by-filter operations. argPos is the next
 // positional placeholder to use, so callers can append further args afterwards.
-func buildProxyWhere(search, status, protocol string, argPos int) (string, []interface{}) {
+func buildProxyWhere(filter models.ProxyFilter, argPos int) (string, []interface{}) {
 	whereClauses := []string{}
 	args := []interface{}{}
 
-	if search != "" {
+	if filter.Search != "" {
 		// Use both ILIKE for simple search and to_tsvector for full-text search
 		whereClauses = append(whereClauses, fmt.Sprintf("(address ILIKE $%d OR to_tsvector('simple', address) @@ plainto_tsquery('simple', $%d))", argPos, argPos))
-		args = append(args, "%"+search+"%")
+		args = append(args, "%"+filter.Search+"%")
 		argPos++
 	}
 
-	if status != "" {
+	if filter.Status != "" {
 		whereClauses = append(whereClauses, fmt.Sprintf("status = $%d", argPos))
-		args = append(args, status)
+		args = append(args, filter.Status)
 		argPos++
 	}
 
-	if protocol != "" {
+	if filter.Protocol != "" {
 		whereClauses = append(whereClauses, fmt.Sprintf("protocol = $%d", argPos))
-		args = append(args, protocol)
+		args = append(args, filter.Protocol)
+		argPos++
+	}
+
+	switch filter.Source {
+	case "":
+	case "manual":
+		whereClauses = append(whereClauses, "source_id IS NULL")
+	default:
+		whereClauses = append(whereClauses, fmt.Sprintf("source_id = $%d", argPos))
+		args = append(args, filter.Source)
 		argPos++
 	}
 
@@ -65,8 +75,8 @@ func buildProxyWhere(search, status, protocol string, argPos int) (string, []int
 }
 
 // List retrieves proxies with pagination and filters
-func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, status, protocol, sortField, sortOrder string) ([]models.ProxyWithStats, int, error) {
-	whereClause, args := buildProxyWhere(search, status, protocol, 1)
+func (r *ProxyRepository) List(ctx context.Context, page, limit int, filter models.ProxyFilter, sortField, sortOrder string) ([]models.ProxyWithStats, int, error) {
+	whereClause, args := buildProxyWhere(filter, 1)
 	argPos := len(args) + 1
 
 	// Validate and set sort field
@@ -102,7 +112,7 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 			avg_response_time, last_check,
 			cooldown_until, cooldown_reason,
 			country_code, country_name,
-			COALESCE(tags, '{}') AS tags,
+			COALESCE(tags, '{}') AS tags, source_id,
 			created_at, updated_at
 		FROM proxies
 		%s
@@ -121,13 +131,14 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 	proxies := []models.ProxyWithStats{}
 	for rows.Next() {
 		var p models.Proxy
+		var sourceID *int
 		err := rows.Scan(
 			&p.ID, &p.Address, &p.Protocol, &p.Username, &p.Status,
 			&p.Requests, &p.SuccessfulRequests,
 			&p.AvgResponseTime, &p.LastCheck,
 			&p.CooldownUntil, &p.CooldownReason,
 			&p.CountryCode, &p.CountryName,
-			&p.Tags,
+			&p.Tags, &sourceID,
 			&p.CreatedAt, &p.UpdatedAt,
 		)
 		if err != nil {
@@ -160,6 +171,7 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 			CountryCode:     p.CountryCode,
 			CountryName:     p.CountryName,
 			Tags:            tags,
+			SourceID:        sourceID,
 			CreatedAt:       p.CreatedAt,
 			UpdatedAt:       p.UpdatedAt,
 		})
@@ -554,7 +566,7 @@ func (r *ProxyRepository) BulkDelete(ctx context.Context, ids []int) (int, error
 // BulkDeleteByFilter deletes every proxy matching the given list-style filter
 // and returns the number of rows removed. An empty filter deletes all proxies.
 func (r *ProxyRepository) BulkDeleteByFilter(ctx context.Context, filter models.ProxyFilter) (int, error) {
-	whereClause, args := buildProxyWhere(filter.Search, filter.Status, filter.Protocol, 1)
+	whereClause, args := buildProxyWhere(filter, 1)
 	query := fmt.Sprintf("DELETE FROM proxies %s", whereClause)
 	result, err := r.db.Pool.Exec(ctx, query, args...)
 	if err != nil {
@@ -577,7 +589,7 @@ func (r *ProxyRepository) BulkUpdateTags(ctx context.Context, ids []int, filter 
 	args := []any{add, remove, ids}
 	if filter != nil {
 		var filterArgs []any
-		where, filterArgs = buildProxyWhere(filter.Search, filter.Status, filter.Protocol, 3)
+		where, filterArgs = buildProxyWhere(*filter, 3)
 		args = append(args[:2], filterArgs...)
 	}
 	query := `
@@ -645,7 +657,7 @@ func (r *ProxyRepository) GetByIDs(ctx context.Context, ids []int, limit int) ([
 // the given list-style filter, ordered by address. The limit caps how many are
 // returned. An empty filter matches every proxy.
 func (r *ProxyRepository) GetByFilter(ctx context.Context, filter models.ProxyFilter, limit int) ([]*models.Proxy, error) {
-	whereClause, args := buildProxyWhere(filter.Search, filter.Status, filter.Protocol, 1)
+	whereClause, args := buildProxyWhere(filter, 1)
 	args = append(args, limit)
 	query := fmt.Sprintf("SELECT %s FROM proxies %s ORDER BY address LIMIT $%d", proxyFullColumns, whereClause, len(args))
 	rows, err := r.db.Pool.Query(ctx, query, args...)
@@ -657,7 +669,7 @@ func (r *ProxyRepository) GetByFilter(ctx context.Context, filter models.ProxyFi
 
 // CountByFilter returns how many proxies match the given list-style filter.
 func (r *ProxyRepository) CountByFilter(ctx context.Context, filter models.ProxyFilter) (int, error) {
-	whereClause, args := buildProxyWhere(filter.Search, filter.Status, filter.Protocol, 1)
+	whereClause, args := buildProxyWhere(filter, 1)
 	query := fmt.Sprintf("SELECT COUNT(*) FROM proxies %s", whereClause)
 	var total int
 	if err := r.db.Pool.QueryRow(ctx, query, args...).Scan(&total); err != nil {
