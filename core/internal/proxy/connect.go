@@ -22,13 +22,16 @@ const connectTargetLookupTimeout = 5 * time.Second
 // validateConnectTarget checks for an IPv4 address before selection can consume a
 // rotation slot or session reservation. Keep the hostname in the CONNECT request
 // so the upstream still resolves it using its own DNS view.
-func (r *Rotator) validateConnectTarget(ctx context.Context, authority string) error {
+//
+// unresolved is a lookup failure that proves nothing alone, such as a SERVFAIL
+// or a timeout, so the target still goes to an upstream whose DNS may work.
+func (r *Rotator) validateConnectTarget(ctx context.Context, authority string) (unresolved, err error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	host, err := connectTargetHost(authority)
 	if err != nil {
-		return forwardingFailure("target_invalid", fmt.Errorf("invalid CONNECT target %q: %w", authority, err))
+		return nil, forwardingFailure("target_invalid", fmt.Errorf("invalid CONNECT target %q: %w", authority, err))
 	}
 	noIPv4 := func() error {
 		return forwardingFailure("target_no_ipv4", &net.DNSError{
@@ -37,24 +40,23 @@ func (r *Rotator) validateConnectTarget(ctx context.Context, authority string) e
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if ip.To4() == nil {
-			return noIPv4()
+			return nil, noIPv4()
 		}
-		return nil
+		return nil, nil
 	}
 
 	lookupCtx, cancel := context.WithTimeout(ctx, connectTargetLookupTimeout)
 	defer cancel()
 	ips, err := net.DefaultResolver.LookupIP(lookupCtx, "ip4", host)
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if err != nil && !isDNSNotFound(err) {
-		// A local resolver failure is inconclusive; the upstream's DNS may work.
-		return nil
+		return err, nil
 	}
 	for _, ip := range ips {
 		if ip.To4() != nil {
-			return nil
+			return nil, nil
 		}
 	}
 
@@ -63,12 +65,12 @@ func (r *Rotator) validateConnectTarget(ctx context.Context, authority string) e
 	// outcome still leaves the target without IPv4.
 	_, err = net.DefaultResolver.LookupIP(lookupCtx, "ip6", host)
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if isDNSNotFound(err) {
-		return forwardingFailure("target_dns_not_found", fmt.Errorf("resolve CONNECT target %q: %w", host, err))
+		return nil, forwardingFailure("target_dns_not_found", fmt.Errorf("resolve CONNECT target %q: %w", host, err))
 	}
-	return noIPv4()
+	return nil, noIPv4()
 }
 
 // connectTargetHost returns the host of a CONNECT authority that an upstream

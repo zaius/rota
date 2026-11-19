@@ -26,13 +26,14 @@ Every other status and body comes from upstream, including `429`, `502` and `503
 | `upstream_request_failed` | Any other forwarding failure |
 | `target_invalid` | The CONNECT target has no host, or no port from 1 to 65535 |
 | `target_dns_not_found` | The CONNECT host has neither an A nor an AAAA record |
+| `target_dns_failed` | Rota's lookup of the CONNECT host failed without proving it missing, such as a SERVFAIL or a timeout, and a proxy then refused the CONNECT |
 | `target_no_ipv4` | The CONNECT host has no IPv4 address: an IPv6 literal, or a name without an A record |
 | `client_request_aborted` | The client canceled the request, or its deadline passed |
 
 Rota cannot always tell whether the proxy or the target caused a failure, so it counts a failure against a proxy only when the proxy is clearly at fault:
 
 - Connection, handshake, authentication, payment and timeout failures count against the proxy, and Rota retries through another one.
-- `target_*` failures come from a local check before Rota picks a proxy, so they use no attempt and no session reservation. Rota resolves the host itself for up to five seconds. If that lookup is inconclusive, Rota leaves resolution to the proxy.
+- The other `target_*` failures come from a local check before Rota picks a proxy, so they use no attempt and no session reservation. Rota resolves the host itself for up to five seconds. If that lookup is inconclusive, Rota leaves resolution to the proxy, and answers `target_dns_failed` without trying a second proxy if the first refuses.
 - `upstream_connect_rejected` might be the target refusing, the proxy blocking the domain, or the target blocking the exit IP. Rota retries once through a different proxy and counts neither rejection against its proxy.
 - `client_request_aborted` is not retried and does not count against the proxy.
 

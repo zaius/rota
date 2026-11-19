@@ -423,7 +423,8 @@ func (b *TunnelBinding) RecordClose(counts TunnelCounts, requests int, cause err
 // The returned binding attributes everything that subsequently happens in the
 // tunnel back to the proxy that served it.
 func (r *Rotator) ConnectWithRetry(host string, ctx context.Context) (net.Conn, *TunnelBinding, error) {
-	if err := r.validateConnectTarget(ctx, host); err != nil {
+	unresolved, err := r.validateConnectTarget(ctx, host)
+	if err != nil {
 		return nil, nil, err
 	}
 	rt := routeFrom(ctx)
@@ -462,6 +463,11 @@ func (r *Rotator) ConnectWithRetry(host string, ctx context.Context) (net.Conn, 
 			r.recordAttempt(client, p, "CONNECT://"+host, "CONNECT", 0, start, err)
 			lastErr = fmt.Errorf("CONNECT proxy %s attempt %d: %w", p.Address, attempt+1, err)
 			if isTargetConnectFailure(err) {
+				// The exit most likely failed to resolve the name just as Rota did,
+				// so a second exit would too.
+				if unresolved != nil {
+					return nil, nil, forwardingFailure("target_dns_failed", fmt.Errorf("%w; %w", unresolved, lastErr))
+				}
 				// One exit's rejection can mean the target blocks that IP or the
 				// upstream blocks the domain, so a second exit confirms it. Neither
 				// proxy takes a strike, and a session selecting the second proxy
