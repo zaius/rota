@@ -20,6 +20,7 @@ Every other status and body comes from upstream, including `429`, `502` and `503
 | `proxy_handshake_failed` | Sending CONNECT to the proxy, or reading its reply, failed |
 | `proxy_configuration_error` | The proxy has an invalid URL or an unsupported protocol |
 | `upstream_proxy_auth_failed` | The proxy answered `407`. Check its stored credentials |
+| `upstream_proxy_payment_required` | The proxy answered `402`: the provider account is out of bandwidth or unpaid |
 | `upstream_connect_rejected` | The proxy refused the CONNECT with another 4xx or 5xx, and so did a second proxy if one was free. `X-Rota-Upstream-Status` carries the last status |
 | `upstream_timeout` | The connection, tunnel or request timed out |
 | `upstream_request_failed` | Any other forwarding failure |
@@ -30,7 +31,7 @@ Every other status and body comes from upstream, including `429`, `502` and `503
 
 Rota cannot always tell whether the proxy or the target caused a failure, so it counts a failure against a proxy only when the proxy is clearly at fault:
 
-- Connection, handshake, authentication and timeout failures count against the proxy, and Rota retries through another one.
+- Connection, handshake, authentication, payment and timeout failures count against the proxy, and Rota retries through another one.
 - `target_*` failures come from a local check before Rota picks a proxy, so they use no attempt and no session reservation. Rota resolves the host itself for up to five seconds. If that lookup is inconclusive, Rota leaves resolution to the proxy.
 - `upstream_connect_rejected` might be the target refusing, the proxy blocking the domain, or the target blocking the exit IP. Rota retries once through a different proxy and counts neither rejection against its proxy.
 - `client_request_aborted` is not retried and does not count against the proxy.

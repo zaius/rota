@@ -214,6 +214,11 @@ func sendCONNECT(conn net.Conn, p *models.Proxy, target string) error {
 	switch {
 	case status == http.StatusProxyAuthRequired:
 		return forwardingFailure("upstream_proxy_auth_failed", cause)
+	// A 402 is the proxy provider refusing an account that is out of bandwidth
+	// or unpaid, so it counts against the proxy. A target rejection would not,
+	// and would leave a dead list failing requests until the next health check.
+	case status == http.StatusPaymentRequired:
+		return forwardingFailure("upstream_proxy_payment_required", cause)
 	case status < 400:
 		return forwardingFailure("proxy_handshake_failed", cause)
 	}
