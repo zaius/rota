@@ -15,6 +15,7 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/zaius/rota/core/internal/config"
+	"github.com/zaius/rota/core/internal/models"
 	"github.com/zaius/rota/core/pkg/logger"
 )
 
@@ -198,25 +199,32 @@ func TestParquetMidnightFinishesDayAndKeepsAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	before, err := store.DomainStats(ctx, "24h", "", 10)
-	if err != nil {
-		t.Fatal(err)
+	// The all-history views read the finished day from its summary.
+	views := func() (day, all []models.DomainStats, traffic []models.TrafficPoint) {
+		t.Helper()
+		var errs [3]error
+		day, errs[0] = store.DomainStats(ctx, "24h", "", 10)
+		all, errs[1] = store.DomainStats(ctx, "all", "", 10)
+		traffic, errs[2] = store.TrafficSeries(ctx, "all")
+		if err := errors.Join(errs[:]...); err != nil {
+			t.Fatal(err)
+		}
+		return day, all, traffic
 	}
+	before, beforeAll, beforeTraffic := views()
 	closedDay := day.get()
 	midnight(t, store, day)
 
 	got := dirNames(t, store.requests.dir)
-	want := []string{filepath.Base(store.requests.path(store.requests.ownKey(closedDay), parquetSuffix)),
+	finished := store.requests.ownKey(closedDay)
+	want := []string{filepath.Base(store.requests.path(finished, parquetSuffix)), filepath.Base(store.requests.path(finished, summarySuffix)),
 		filepath.Base(store.requests.path(store.requests.ownKey(day.get()), logSuffix))}
 	if !slices.Equal(got, want) {
 		t.Fatalf("files after midnight: got %v, want %v", got, want)
 	}
-	after, err := store.DomainStats(ctx, "24h", "", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(before, after) {
-		t.Fatalf("finishing the day changed answers:\nbefore %+v\nafter  %+v", before, after)
+	after, afterAll, afterTraffic := views()
+	if !slices.Equal(before, after) || !slices.Equal(beforeAll, afterAll) || !slices.Equal(beforeTraffic, afterTraffic) {
+		t.Fatalf("finishing the day changed answers:\nbefore %+v %+v %+v\nafter  %+v %+v %+v", before, beforeAll, beforeTraffic, after, afterAll, afterTraffic)
 	}
 	if len(after) != 1 || after[0].Requests != 3 || after[0].P50Ms != 200 || after[0].TunnelErrors != 1 {
 		t.Fatalf("domain stats: %+v", after)
@@ -307,7 +315,8 @@ func TestParquetSweepsOpenDayWithoutLosingOrRepeatingEvents(t *testing.T) {
 	closedDay := day.get()
 	midnight(t, reopened, day)
 	got := dirNames(t, reopened.requests.dir)
-	want := []string{filepath.Base(reopened.requests.path(reopened.requests.ownKey(closedDay), parquetSuffix)),
+	finished := reopened.requests.ownKey(closedDay)
+	want := []string{filepath.Base(reopened.requests.path(finished, parquetSuffix)), filepath.Base(reopened.requests.path(finished, summarySuffix)),
 		filepath.Base(reopened.requests.path(reopened.requests.ownKey(day.get()), logSuffix))}
 	if !slices.Equal(got, want) {
 		t.Fatalf("files after midnight: got %v, want %v", got, want)
@@ -346,7 +355,7 @@ func TestParquetReadsEveryInstanceAndSweepsOnlyItsOwn(t *testing.T) {
 	}
 
 	midnight(t, a, day)
-	check(name(today, "a", parquetSuffix), name(today+1, "a", logSuffix), name(today, "b", logSuffix))
+	check(name(today, "a", parquetSuffix), name(today, "a", summarySuffix), name(today+1, "a", logSuffix), name(today, "b", logSuffix))
 
 	for _, table := range b.tables() {
 		if err := table.rotate(day.get()); err != nil {
@@ -354,8 +363,8 @@ func TestParquetReadsEveryInstanceAndSweepsOnlyItsOwn(t *testing.T) {
 		}
 	}
 	b.sweepPending(ctx)
-	check(name(today, "a", parquetSuffix), name(today+1, "a", logSuffix),
-		name(today, "b", parquetSuffix), name(today+1, "b", logSuffix))
+	check(name(today, "a", parquetSuffix), name(today, "a", summarySuffix), name(today+1, "a", logSuffix),
+		name(today, "b", parquetSuffix), name(today, "b", summarySuffix), name(today+1, "b", logSuffix))
 }
 
 func TestParquetRollupCacheFollowsFiles(t *testing.T) {

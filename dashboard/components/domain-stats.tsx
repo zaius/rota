@@ -20,7 +20,7 @@ export function DomainStats({ range }: { range: ChartRange }) {
   return (
     <Section
       title="Domains"
-      description={`Top 100 hostnames by requests and completed tunnels in the last ${range}. Latency measures successful requests; HTTPS request outcomes appear only with interception enabled.`}
+      description={`Top 100 hostnames by requests and completed tunnels ${range === "all" ? "over all retained history" : `in the last ${range}`}. Latency measures successful requests; HTTPS request outcomes appear only with interception enabled.`}
       actions={
         <SearchInput
           value={search}

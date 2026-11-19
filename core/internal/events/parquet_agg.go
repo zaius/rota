@@ -1,11 +1,10 @@
 package events
 
 import (
+	"encoding/binary"
 	"maps"
 	"slices"
 	"strings"
-
-	"github.com/zaius/rota/core/internal/models"
 )
 
 // latencyLowLimit bounds the flat array of latency counts. Almost every
@@ -21,20 +20,41 @@ type latencyCounts struct {
 	high  map[int32]uint32
 }
 
-func (c *latencyCounts) add(ms int32) {
+func (c *latencyCounts) add(ms int32, n uint32) {
 	ms = max(ms, 0)
-	c.total++
+	c.total += uint64(n)
 	if ms >= latencyLowLimit {
 		if c.high == nil {
 			c.high = map[int32]uint32{}
 		}
-		c.high[ms]++
+		c.high[ms] += n
 		return
 	}
 	if int(ms) >= len(c.low) {
 		c.growLow(max(int(ms)+1, 2*len(c.low)))
 	}
-	c.low[ms]++
+	c.low[ms] += n
+}
+
+// packed returns the counts as ascending (milliseconds, count) pairs of
+// little-endian uint32s.
+func (c *latencyCounts) packed() []byte {
+	var b []byte
+	for ms, n := range c.low {
+		if n > 0 {
+			b = binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(b, uint32(ms)), n)
+		}
+	}
+	for _, ms := range slices.Sorted(maps.Keys(c.high)) {
+		b = binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(b, uint32(ms)), c.high[ms])
+	}
+	return b
+}
+
+func (c *latencyCounts) addPacked(b []byte) {
+	for ; len(b) >= 8; b = b[8:] {
+		c.add(int32(binary.LittleEndian.Uint32(b)), binary.LittleEndian.Uint32(b[4:]))
+	}
 }
 
 func (c *latencyCounts) growLow(size int) {
@@ -276,9 +296,42 @@ func (a *bucketAgg) add(b *eventBatch) {
 		current.requests++
 		if b.success[i] {
 			current.successes++
-			current.latency.add(b.responseTime[i])
+			current.latency.add(b.responseTime[i], 1)
 		}
 	}
+}
+
+// load takes a finished day's totals from its summary, which holds daily
+// buckets.
+func (a *bucketAgg) load(f *eventFile) bool {
+	if a.width != dayMillis {
+		return false
+	}
+	rows, ok := f.summaryFor(a.from, true)
+	for i := range rows {
+		if rows[i].Domain != "" {
+			break
+		}
+		counts := a.buckets[rows[i].Bucket]
+		if counts == nil {
+			counts = &bucketCounts{}
+			a.buckets[rows[i].Bucket] = counts
+		}
+		counts.requests += rows[i].Requests
+		counts.successes += rows[i].Successes
+		counts.latency.addPacked(rows[i].Latency)
+	}
+	return ok
+}
+
+// rows returns the buckets as summary rows, in time order.
+func (a *bucketAgg) rows() []summaryRow {
+	rows := make([]summaryRow, 0, len(a.buckets))
+	for _, start := range a.sortedStarts() {
+		counts := a.buckets[start]
+		rows = append(rows, summaryRow{Bucket: start, Requests: counts.requests, Successes: counts.successes, Latency: counts.latency.packed()})
+	}
+	return rows
 }
 
 func (a *bucketAgg) merge(other *bucketAgg) {
@@ -310,28 +363,28 @@ type domainCounts struct {
 	latency                                     latencyCounts
 }
 
-// domainAgg groups one event table by hostname. filter, when set, keeps that
-// hostname and its subdomains.
+// domainAgg groups one file of an event table by hostname, leaving out events
+// with none.
 type domainAgg struct {
 	from    int64
-	filter  string
 	tunnels bool
 	domains map[string]*domainCounts
+	// summary holds a finished day's rows when load took them from its
+	// summary instead of scanning the day.
+	summary []summaryRow
 }
 
-func newDomainAgg(from int64, filter string, tunnels bool) *domainAgg {
-	return &domainAgg{from: from, filter: filter, tunnels: tunnels, domains: map[string]*domainCounts{}}
+func newDomainAgg(from int64, tunnels bool) *domainAgg {
+	return &domainAgg{from: from, tunnels: tunnels, domains: map[string]*domainCounts{}}
 }
 
-func (a *domainAgg) keeps(domain string) bool {
-	if domain == "" {
-		return false
-	}
-	return a.filter == "" || domain == a.filter || strings.HasSuffix(domain, "."+a.filter)
+func (a *domainAgg) load(f *eventFile) (ok bool) {
+	a.summary, ok = f.summaryFor(a.from, false)
+	return ok
 }
 
 func (a *domainAgg) add(b *eventBatch) {
-	// excluded marks a domain the filter rejected, so each ID resolves once.
+	// excluded marks the events with no domain, so each ID resolves once.
 	excluded := &domainCounts{}
 	resolved := make([]*domainCounts, len(b.domains))
 	for i := range b.n {
@@ -347,7 +400,7 @@ func (a *domainAgg) add(b *eventBatch) {
 		counts := resolved[id]
 		if counts == nil {
 			counts = excluded
-			if name := b.domains[id]; a.keeps(name) {
+			if name := b.domains[id]; name != "" {
 				if counts = a.domains[name]; counts == nil {
 					counts = &domainCounts{}
 					a.domains[name] = counts
@@ -375,63 +428,24 @@ func (a *domainAgg) add(b *eventBatch) {
 		if b.success[i] {
 			counts.successes++
 			counts.successMs += int64(b.responseTime[i])
-			counts.latency.add(b.responseTime[i])
+			counts.latency.add(b.responseTime[i], 1)
 		}
 	}
 }
 
-func (a *domainAgg) merge(other *domainAgg) {
-	for name, from := range other.domains {
-		counts := a.domains[name]
-		if counts == nil {
-			a.domains[name] = from
-			continue
-		}
-		counts.requests += from.requests
-		counts.successes += from.successes
-		counts.rateLimited += from.rateLimited
-		counts.successMs += from.successMs
-		counts.tunnels += from.tunnels
-		counts.tunnelErrors += from.tunnelErrors
-		counts.bytesUp += from.bytesUp
-		counts.bytesDown += from.bytesDown
-		counts.latency.merge(&from.latency)
+// rows returns the file's domains as summary rows sorted by domain.
+func (a *domainAgg) rows() []summaryRow {
+	if a.summary != nil {
+		return a.summary
 	}
-}
-
-// stats orders domains by total traffic, then name, and applies limit.
-func (a *domainAgg) stats(limit int) []models.DomainStats {
-	stats := make([]models.DomainStats, 0, len(a.domains))
+	rows := make([]summaryRow, 0, len(a.domains))
 	for name, counts := range a.domains {
-		st := models.DomainStats{
-			Domain:       name,
-			Requests:     counts.requests,
-			Successes:    counts.successes,
-			Failures:     counts.requests - counts.successes,
-			RateLimited:  counts.rateLimited,
-			Tunnels:      counts.tunnels,
-			TunnelErrors: counts.tunnelErrors,
-			BytesUp:      counts.bytesUp,
-			BytesDown:    counts.bytesDown,
-		}
-		if counts.successes > 0 {
-			st.AvgResponseTime = int(counts.successMs / counts.successes)
-			st.P50Ms = int(counts.latency.percentile(0.5))
-			st.P95Ms = int(counts.latency.percentile(0.95))
-		}
-		stats = append(stats, st)
+		rows = append(rows, summaryRow{
+			Domain: name, Requests: counts.requests, Successes: counts.successes, RateLimited: counts.rateLimited,
+			SuccessMs: counts.successMs, Tunnels: counts.tunnels, TunnelErrors: counts.tunnelErrors,
+			BytesUp: counts.bytesUp, BytesDown: counts.bytesDown, Latency: counts.latency.packed(),
+		})
 	}
-	slices.SortFunc(stats, func(x, y models.DomainStats) int {
-		if diff := (y.Requests + y.Tunnels) - (x.Requests + x.Tunnels); diff != 0 {
-			if diff > 0 {
-				return 1
-			}
-			return -1
-		}
-		return strings.Compare(x.Domain, y.Domain)
-	})
-	if limit >= 0 && len(stats) > limit {
-		stats = stats[:limit]
-	}
-	return stats
+	slices.SortFunc(rows, func(x, y summaryRow) int { return strings.Compare(x.Domain, y.Domain) })
+	return rows
 }

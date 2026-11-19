@@ -20,6 +20,7 @@ const RANGES: { value: ChartRange; hint: string }[] = [
   { value: "24h", hint: "30-minute buckets over the last 24 hours." },
   { value: "7d", hint: "4-hour buckets over the last 7 days." },
   { value: "30d", hint: "Daily buckets over the last 30 days." },
+  { value: "all", hint: "Daily buckets over all retained history." },
 ]
 
 const requestsConfig = {
@@ -67,7 +68,7 @@ function toRows(points: TrafficPoint[]): TrafficRow[] {
 function tickFormatter(range: ChartRange): (iso: string) => string {
   return (iso) => {
     const d = new Date(iso)
-    if (range === "30d") return d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    if (range === "30d" || range === "all") return d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
     if (range === "7d")
       return d.toLocaleDateString(undefined, { weekday: "short" }) +
         " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })

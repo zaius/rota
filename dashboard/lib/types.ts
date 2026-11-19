@@ -60,7 +60,7 @@ export interface TunnelStats {
   requests_today: number
 }
 
-export type ChartRange = "1h" | "6h" | "24h" | "7d" | "30d"
+export type ChartRange = "1h" | "6h" | "24h" | "7d" | "30d" | "all"
 
 export interface TrafficPoint {
   time: string // bucket start, RFC3339

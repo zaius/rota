@@ -54,11 +54,11 @@ func (h *DashboardHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 func (h *DashboardHandler) SetProxyServer(ps *proxy.Server) { h.proxyServer = ps }
 
 // trafficRanges is the set of ranges the traffic chart accepts.
-var trafficRanges = map[string]bool{"1h": true, "6h": true, "24h": true, "7d": true, "30d": true}
+var trafficRanges = map[string]bool{"1h": true, "6h": true, "24h": true, "7d": true, "30d": true, "all": true}
 
 // GetDomainStats returns traffic grouped by normalized target hostname.
 //
-// Query: range (1h, 6h, 24h — the default — 7d or 30d), domain (a host and
+// Query: range (1h, 6h, 24h — the default — 7d, 30d or all), domain (a host and
 // its subdomains; each hostname keeps its own row), limit (1–1000, default
 // 100).
 func (h *DashboardHandler) GetDomainStats(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +67,7 @@ func (h *DashboardHandler) GetDomainStats(w http.ResponseWriter, r *http.Request
 		rng = "24h"
 	}
 	if !trafficRanges[rng] {
-		writeError(w, http.StatusBadRequest, "Invalid range (use 1h, 6h, 24h, 7d or 30d)")
+		writeError(w, http.StatusBadRequest, "Invalid range (use 1h, 6h, 24h, 7d, 30d or all)")
 		return
 	}
 	limit := 100
@@ -102,7 +102,7 @@ func (h *DashboardHandler) GetTrafficChart(w http.ResponseWriter, r *http.Reques
 		rng = "24h"
 	}
 	if !trafficRanges[rng] {
-		writeError(w, http.StatusBadRequest, "Invalid range (use 1h, 6h, 24h, 7d or 30d)")
+		writeError(w, http.StatusBadRequest, "Invalid range (use 1h, 6h, 24h, 7d, 30d or all)")
 		return
 	}
 

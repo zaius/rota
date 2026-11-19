@@ -6,12 +6,15 @@ import (
 	"github.com/zaius/rota/core/internal/models"
 )
 
-// SeriesWindow maps a chart range to its bucket width and lookback period.
-// Bucket widths aim for roughly 50 points per series. Unknown ranges fall
-// back to 24h. All widths divide a day evenly, so epoch-aligned buckets land
-// on the boundaries of fillTrafficGaps' grid.
+// SeriesWindow maps a chart range to its bucket width and lookback period. A
+// lookback of zero covers all the history retention keeps. Bucket widths aim
+// for roughly 50 points per series. Unknown ranges fall back to 24h. All
+// widths divide a day evenly, so epoch-aligned buckets land on the boundaries
+// of fillTrafficGaps' grid.
 func SeriesWindow(rng string) (bucket, lookback time.Duration) {
 	switch rng {
+	case "all":
+		return 24 * time.Hour, 0
 	case "1h":
 		return time.Minute, time.Hour
 	case "6h":
@@ -23,6 +26,14 @@ func SeriesWindow(rng string) (bucket, lookback time.Duration) {
 	default: // "24h"
 		return 30 * time.Minute, 24 * time.Hour
 	}
+}
+
+// windowStart returns when a lookback's window begins, in Unix milliseconds.
+func windowStart(lookback time.Duration, now time.Time) int64 {
+	if lookback == 0 {
+		return 0
+	}
+	return now.Add(-lookback).UnixMilli()
 }
 
 // fillTrafficGaps expands a sparse, time-ascending traffic series into a

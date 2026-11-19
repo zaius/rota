@@ -26,7 +26,8 @@ import (
 // day's tab-separated log. Every sweepRows appends, a sweep moves the new
 // lines into the day's Parquet file, and the last sweep of a day removes its
 // log. Queries read the Parquet files and the unswept end of the log through
-// the same aggregations.
+// the same aggregations. A finished day also gets a summary file, which the
+// views that span many days read in place of the day's rows.
 //
 // A completed append survives a crash or kill of this process. Surviving power
 // loss or a kernel crash takes EVENT_STORE_SYNC, which makes every append wait
@@ -198,6 +199,26 @@ func (s *ParquetStore) sweepPending(ctx context.Context) {
 				s.logger.Info("swept event log into parquet", "dir", t.dir, "file", file, "rows", rows, "elapsed", time.Since(started).String())
 			}
 		}
+		s.summarizePending(ctx, t)
+	}
+}
+
+// summarizePending writes the summary of every finished day of this store
+// that lacks one. The long-range views read a day's rows until it has one.
+func (s *ParquetStore) summarizePending(ctx context.Context, t *eventTable) {
+	listed, err := t.list()
+	if err != nil {
+		s.logger.Error("failed to list event files", "error", err)
+		return
+	}
+	for _, key := range sortedKeys(listed) {
+		have := listed[key]
+		if !have.parquet || have.log || have.summary || !t.owns(key) || ctx.Err() != nil {
+			continue
+		}
+		if err := t.summarize(ctx, key); err != nil && ctx.Err() == nil {
+			s.logger.Error("failed to summarize event file", "dir", t.dir, "file", filepath.Base(t.path(key, parquetSuffix)), "error", err)
+		}
 	}
 }
 
@@ -327,11 +348,11 @@ func (s *ParquetStore) LowSuccessProxies(ctx context.Context, window time.Durati
 }
 
 // TrafficSeries returns request volume and latency percentiles bucketed over
-// the trailing range, zero-filled to a dense series.
+// the range, zero-filled to a dense series.
 func (s *ParquetStore) TrafficSeries(ctx context.Context, rng string) ([]models.TrafficPoint, error) {
 	bucket, lookback := SeriesWindow(rng)
 	now := time.Now()
-	from := now.Add(-lookback).UnixMilli()
+	from := windowStart(lookback, now)
 	agg, err := collect(ctx, s.requests, dayOf(from), bucketColumns, func() *bucketAgg {
 		return newBucketAgg(from, bucket.Milliseconds())
 	})
@@ -350,27 +371,35 @@ func (s *ParquetStore) TrafficSeries(ctx context.Context, rng string) ([]models.
 			P95Ms:     int(counts.latency.percentile(0.95)),
 		})
 	}
+	if lookback == 0 && len(points) > 0 {
+		lookback = now.Sub(points[0].Time)
+	}
 	return fillTrafficGaps(points, bucket, lookback, now), nil
 }
 
-// DomainStats groups traffic by target hostname over the trailing range.
+// DomainStats groups traffic by target hostname over the range.
 func (s *ParquetStore) DomainStats(ctx context.Context, rng, domain string, limit int) ([]models.DomainStats, error) {
-	_, window := SeriesWindow(rng)
-	from := time.Now().Add(-window).UnixMilli()
-	total, err := collect(ctx, s.requests, dayOf(from), domainRequestColumns, func() *domainAgg {
-		return newDomainAgg(from, domain, false)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get domain stats: %w", err)
+	_, lookback := SeriesWindow(rng)
+	return s.domainsSince(ctx, windowStart(lookback, time.Now()), domain, limit)
+}
+
+func (s *ParquetStore) domainsSince(ctx context.Context, from int64, domain string, limit int) ([]models.DomainStats, error) {
+	var parts [][]summaryRow
+	for _, t := range s.tables() {
+		tunnels := t == s.tunnels
+		want := domainRequestColumns
+		if tunnels {
+			want = domainTunnelColumns
+		}
+		files, err := scanFrom(ctx, t, dayOf(from), want, func() *domainAgg { return newDomainAgg(from, tunnels) })
+		if err != nil {
+			return nil, fmt.Errorf("failed to get domain stats: %w", err)
+		}
+		for _, file := range files {
+			parts = append(parts, file.rows())
+		}
 	}
-	tunnels, err := collect(ctx, s.tunnels, dayOf(from), domainTunnelColumns, func() *domainAgg {
-		return newDomainAgg(from, domain, true)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get domain stats: %w", err)
-	}
-	total.merge(tunnels)
-	return total.stats(limit), nil
+	return domainStats(parts, domain, limit), nil
 }
 
 // ApplyRetention removes the files of expired days. A file goes only once its

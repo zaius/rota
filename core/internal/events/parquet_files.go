@@ -25,6 +25,7 @@ import (
 const (
 	logSuffix     = ".log"
 	parquetSuffix = ".parquet"
+	summarySuffix = ".summary"
 	tempSuffix    = ".tmp"
 
 	dayMillis = int64(24 * time.Hour / time.Millisecond)
@@ -65,9 +66,10 @@ func parseDayName(name string) (int64, bool) {
 
 // eventTable stores one event stream in one directory. Each store writes its
 // own files per UTC day, named by its instance: a log that takes every append,
-// and a Parquet file that sweeps fill from the log and that replaces it once
-// the day is finished. Reads and retention cover every file in the directory;
-// appends and sweeps touch only the store's own.
+// a Parquet file that sweeps fill from the log and that replaces it once the
+// day is finished, and then a summary of that file for the long-range views.
+// Reads and retention cover every file in the directory; appends, sweeps and
+// summaries touch only the store's own.
 //
 // A file's day is the day its events arrived, not their own timestamps. A
 // trailing window starting on day D therefore finds every event inside it in
@@ -247,7 +249,7 @@ func (t *eventTable) close() error {
 	return err
 }
 
-type dayFiles struct{ log, parquet bool }
+type dayFiles struct{ log, parquet, summary bool }
 
 func (t *eventTable) list() (map[fileKey]dayFiles, error) {
 	entries, err := os.ReadDir(t.dir)
@@ -256,33 +258,32 @@ func (t *eventTable) list() (map[fileKey]dayFiles, error) {
 	}
 	files := make(map[fileKey]dayFiles, len(entries))
 	for _, entry := range entries {
-		key, isLog, ok := parseFileName(entry.Name())
+		key, suffix, ok := parseFileName(entry.Name())
 		if !ok {
 			continue
 		}
 		have := files[key]
-		have.log = have.log || isLog
-		have.parquet = have.parquet || !isLog
+		have.log = have.log || suffix == logSuffix
+		have.parquet = have.parquet || suffix == parquetSuffix
+		have.summary = have.summary || suffix == summarySuffix
 		files[key] = have
 	}
 	return files, nil
 }
 
-// parseFileName reads the key of a log or Parquet file name.
-func parseFileName(name string) (key fileKey, isLog, ok bool) {
-	base, isLog := strings.CutSuffix(name, logSuffix)
-	if !isLog {
-		var isParquet bool
-		if base, isParquet = strings.CutSuffix(name, parquetSuffix); !isParquet {
-			return fileKey{}, false, false
-		}
+// parseFileName reads the key and suffix of a log, Parquet or summary file
+// name.
+func parseFileName(name string) (key fileKey, suffix string, ok bool) {
+	suffix = filepath.Ext(name)
+	if suffix != logSuffix && suffix != parquetSuffix && suffix != summarySuffix {
+		return fileKey{}, "", false
 	}
-	day, instance, named := strings.Cut(base, ".")
+	day, instance, named := strings.Cut(strings.TrimSuffix(name, suffix), ".")
 	if key.day, ok = parseDayName(day); !ok || named && !config.ValidEventInstance(instance) {
-		return fileKey{}, false, false
+		return fileKey{}, "", false
 	}
 	key.instance = instance
-	return key, isLog, true
+	return key, suffix, true
 }
 
 // sortedKeys orders keys by day, then instance.
@@ -317,11 +318,14 @@ type eventFile struct {
 	table   *eventTable
 	file    *os.File
 	path    string
+	day     int64
 	start   int64
 	size    int64
 	parquet bool
 	// final marks the Parquet file of a finished day, which never changes.
-	final bool
+	// summary is the path of that day's summary, when it has one.
+	final   bool
+	summary string
 }
 
 // openFiles opens every file from fromDay onward, whichever store wrote it.
@@ -351,7 +355,10 @@ func (t *eventTable) openFiles(fromDay int64) ([]*eventFile, error) {
 			if err != nil {
 				return fail(err)
 			}
-			f.final = !have.log
+			f.day, f.final = key.day, !have.log
+			if f.final && have.summary {
+				f.summary = t.path(key, summarySuffix)
+			}
 			files = append(files, f)
 			if have.log {
 				day, err := openParquet(f.file, f.size)
@@ -483,6 +490,11 @@ func scanFiles[A interface{ add(*eventBatch) }](ctx context.Context, files []*ev
 					return
 				}
 				parts[i] = fresh()
+				// An aggregate that can take a finished day from its
+				// summary skips the day's rows.
+				if summarized, ok := any(parts[i]).(interface{ load(*eventFile) bool }); ok && summarized.load(files[i]) {
+					continue
+				}
 				errs[i] = files[i].scan(ctx, want, parts[i].add)
 			}
 		})
@@ -497,18 +509,24 @@ func scanFiles[A interface{ add(*eventBatch) }](ctx context.Context, files []*ev
 	return parts, nil
 }
 
+// scanFrom aggregates every file from fromDay onward and returns one result
+// per file.
+func scanFrom[A interface{ add(*eventBatch) }](ctx context.Context, t *eventTable, fromDay int64, want columnSet, fresh func() A) ([]A, error) {
+	files, err := t.openFiles(fromDay)
+	if err != nil {
+		return nil, err
+	}
+	defer closeEventFiles(files)
+	return scanFiles(ctx, files, want, fresh)
+}
+
 // collect aggregates every file from fromDay onward into one result.
 func collect[A interface {
 	add(*eventBatch)
 	merge(A)
 }](ctx context.Context, t *eventTable, fromDay int64, want columnSet, fresh func() A) (A, error) {
 	var zero A
-	files, err := t.openFiles(fromDay)
-	if err != nil {
-		return zero, err
-	}
-	defer closeEventFiles(files)
-	parts, err := scanFiles(ctx, files, want, fresh)
+	parts, err := scanFrom(ctx, t, fromDay, want, fresh)
 	if err != nil {
 		return zero, err
 	}
@@ -705,6 +723,11 @@ func (t *eventTable) expire(before int64) error {
 		}
 		if have.parquet {
 			if err := os.Remove(t.path(key, parquetSuffix)); err != nil {
+				return err
+			}
+		}
+		if have.summary {
+			if err := os.Remove(t.path(key, summarySuffix)); err != nil {
 				return err
 			}
 		}
