@@ -110,11 +110,11 @@ func (r *Rotator) Refresh(ctx context.Context) error {
 // it used. A session keeps its bound proxy while that stays eligible. Otherwise
 // the least recently used eligible proxy wins, which is round-robin for a
 // single filter and stays fair when requests with different filters
-// interleave.
-func (r *Rotator) pick(ctx context.Context, tried map[int]bool) (*models.Proxy, error) {
+// interleave. A gateway comes back ready to dial, with its exit.
+func (r *Rotator) pick(ctx context.Context, tried map[int]bool) (*models.Proxy, string, error) {
 	rt := routeFrom(ctx)
 	r.mu.Lock()
-	p, err := r.sessions.selectProxy(rt.sessionKey(), r.sessionTTL(), func(boundID int, available func(int) bool) (*models.Proxy, error) {
+	p, exit, err := r.sessions.selectProxy(rt.sessionKey(), r.sessionTTL(), func(boundID int, available func(int) bool) (*models.Proxy, error) {
 		var chosen *models.Proxy
 		eligible := 0
 		for _, p := range r.proxies {
@@ -144,10 +144,27 @@ func (r *Rotator) pick(ctx context.Context, tried map[int]bool) (*models.Proxy, 
 	}
 	r.mu.Unlock()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	r.startCooldownRecovery(ctx, p.ID)
-	return p, nil
+	if exit != "" {
+		p = withExit(p, exit, rt.Country)
+	}
+	return p, exit, nil
+}
+
+// attemptFailed charges a failed attempt through p to the proxy, unless p is
+// a gateway whose exit failed. The session then drops that exit, and the
+// gateway can serve the retry through a new one.
+func (r *Rotator) attemptFailed(ctx context.Context, p *models.Proxy, exit string, err error, tried map[int]bool) {
+	if exit != "" && !isGatewayFailure(err) {
+		r.sessions.releaseExit(routeFrom(ctx).sessionKey(), p.ID, exit)
+		delete(tried, p.ID)
+		return
+	}
+	if !isTargetConnectFailure(err) {
+		r.markFailed(p.ID)
+	}
 }
 
 // markFailed evicts a proxy once it fails failureThreshold times in a row, so
@@ -238,7 +255,7 @@ func (r *Rotator) SendWithRetry(req *http.Request, ctx context.Context) (*http.R
 		if err := clientRequestAbort(req, ctx, nil); err != nil {
 			return nil, 0, err
 		}
-		p, err := r.pick(ctx, tried)
+		p, exit, err := r.pick(ctx, tried)
 		if err != nil {
 			if lastErr != nil {
 				return nil, 0, fmt.Errorf("proxy attempts failed: %w", lastErr)
@@ -249,11 +266,17 @@ func (r *Rotator) SendWithRetry(req *http.Request, ctx context.Context) (*http.R
 		start := time.Now()
 		url := req.URL.String()
 
-		r.logger.Info("trying proxy", "attempt", attempt+1, "max", maxAttempts, "proxy", p.Address)
+		r.logger.Info("trying proxy", "attempt", attempt+1, "max", maxAttempts, "proxy", p.Address, "exit", exit)
 
 		// The shared per-proxy transport reuses keep-alive connections across
-		// attempts.
-		transport, err := GetOrCreateTransport(p)
+		// attempts. Each gateway exit has its own credentials, so caching their
+		// transports would grow the cache without bound.
+		var transport *http.Transport
+		if exit == "" {
+			transport, err = GetOrCreateTransport(p)
+		} else if transport, err = CreateProxyTransport(p); err == nil {
+			transport.DisableKeepAlives = true
+		}
 		if err != nil {
 			// Building a transport fails on local configuration problems (an
 			// unsupported protocol, a malformed address), not because the upstream
@@ -295,8 +318,8 @@ func (r *Rotator) SendWithRetry(req *http.Request, ctx context.Context) (*http.R
 			}
 			r.recordAttempt(client, p, url, req.Method, 0, start, err)
 			lastErr = fmt.Errorf("proxy %s attempt %d: %w", p.Address, attempt+1, err)
-			r.logger.Warn("proxy failed", "proxy", p.Address, "err", err)
-			r.markFailed(p.ID)
+			r.logger.Warn("proxy failed", "proxy", p.Address, "exit", exit, "err", err)
+			r.attemptFailed(ctx, p, exit, err, tried)
 			continue
 		}
 
@@ -304,7 +327,7 @@ func (r *Rotator) SendWithRetry(req *http.Request, ctx context.Context) (*http.R
 			resp.Body.Close()
 			lastErr = forwardingFailure("upstream_proxy_auth_failed", fmt.Errorf("upstream proxy %s rejected authentication", p.Address))
 			r.recordAttempt(client, p, url, req.Method, 0, start, lastErr)
-			r.markFailed(p.ID)
+			r.attemptFailed(ctx, p, exit, lastErr, tried)
 			continue
 		}
 
@@ -437,7 +460,7 @@ func (r *Rotator) ConnectWithRetry(host string, ctx context.Context) (net.Conn, 
 		if err := ctx.Err(); err != nil {
 			return nil, nil, clientAbort(err)
 		}
-		p, err := r.pick(ctx, tried)
+		p, exit, err := r.pick(ctx, tried)
 		if err != nil {
 			if lastErr != nil {
 				return nil, nil, fmt.Errorf("CONNECT attempts failed: %w", lastErr)
@@ -447,7 +470,7 @@ func (r *Rotator) ConnectWithRetry(host string, ctx context.Context) (net.Conn, 
 		tried[p.ID] = true
 		start := time.Now()
 
-		r.logger.Info("CONNECT: trying proxy", "attempt", attempt+1, "proxy", p.Address, "host", host)
+		r.logger.Info("CONNECT: trying proxy", "attempt", attempt+1, "proxy", p.Address, "exit", exit, "host", host)
 
 		attemptCtx, cancel := context.WithTimeout(ctx, r.timeout())
 		conn, err := dialTarget(attemptCtx, p, host)
@@ -472,15 +495,16 @@ func (r *Rotator) ConnectWithRetry(host string, ctx context.Context) (net.Conn, 
 				// upstream blocks the domain, so a second exit confirms it. Neither
 				// proxy takes a strike, and a session selecting the second proxy
 				// rebinds to it.
+				r.attemptFailed(ctx, p, exit, err, tried)
 				rejections++
-				r.logger.Warn("CONNECT: target rejected", "proxy", p.Address, "host", host, "rejections", rejections, "err", err)
+				r.logger.Warn("CONNECT: target rejected", "proxy", p.Address, "exit", exit, "host", host, "rejections", rejections, "err", err)
 				if rejections >= maxConnectRejections {
 					return nil, nil, lastErr
 				}
 				continue
 			}
-			r.logger.Warn("CONNECT: failed", "proxy", p.Address, "err", err)
-			r.markFailed(p.ID)
+			r.logger.Warn("CONNECT: failed", "proxy", p.Address, "exit", exit, "err", err)
+			r.attemptFailed(ctx, p, exit, err, tried)
 			continue
 		}
 
@@ -494,7 +518,7 @@ func (r *Rotator) ConnectWithRetry(host string, ctx context.Context) (net.Conn, 
 			OpenedAt: start,
 			client:   client,
 			rotator:  r,
-			session:  r.sessions.openTunnel(rt.sessionKey(), p.ID, rt.host),
+			session:  r.sessions.openTunnel(rt.sessionKey(), p.ID, exit, rt.host),
 		}, nil
 	}
 

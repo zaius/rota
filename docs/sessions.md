@@ -54,6 +54,8 @@ curl -X POST http://localhost:8001/api/v1/sessions/invalidate \
 
 A cooldown applies to every request for that scope or domain, with or without a session, and survives restarts. The session's tunnels through the proxy close, and it rebinds on its next request. `X-Rota-Proxy-Id` on a proxied response, or on the CONNECT response for HTTPS, gives the ID for the last two rows.
 
+A session on a residential gateway sets no cooldown, whatever the options. Its exit is dropped, and its next request gets a new IP. Invalidating a gateway by ID fails with `400`, since that would cool every exit behind it.
+
 ### Backoff
 
 Repeated session invalidations of the same proxy for the same scope or domain last 1×, 2×, then 4× `minutes`. The fourth excludes the proxy from that scope or domain until it is reactivated. Sending `minutes: 360` each time gives 6h, 12h, 24h, then excluded. The response reports `failure_count` and `invalid`. For an exclusion, `invalid` is `true` and `cooldown_until` is `null`.

@@ -21,7 +21,7 @@ func TestRotator_ConcurrentSessionReservations(t *testing.T) {
 				}
 				go func() {
 					<-start
-					_, err := r.pick(ctxWithToken(token), nil)
+					_, _, err := r.pick(ctxWithToken(token), nil)
 					results <- err
 				}()
 			}
@@ -53,14 +53,14 @@ func TestRotator_SessionRebindsOnDomainCooldown(t *testing.T) {
 	ctxFoo := requestCtx("foo.com", Options{Session: "sess", Scope: "shared"})
 	ctxBar := requestCtx("bar.com", Options{Session: "sess", Scope: "shared"})
 
-	first, err := r.pick(ctxFoo, nil)
+	first, _, err := r.pick(ctxFoo, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	r.domainCD.Set(first.ID, "foo.com", time.Now().Add(time.Hour), "429")
 
-	p, err := r.pick(ctxBar, nil)
+	p, _, err := r.pick(ctxBar, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestRotator_SessionRebindsOnDomainCooldown(t *testing.T) {
 		t.Fatalf("session should keep proxy %d for bar.com, got %d", first.ID, p.ID)
 	}
 
-	next, err := r.pick(ctxFoo, nil)
+	next, _, err := r.pick(ctxFoo, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestRotator_SessionRebindsOnDomainCooldown(t *testing.T) {
 	}
 
 	// The session sticks to the new proxy from here on, for every host.
-	again, err := r.pick(ctxBar, nil)
+	again, _, err := r.pick(ctxBar, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

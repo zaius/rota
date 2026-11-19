@@ -101,6 +101,9 @@ func (h *HealthChecker) CheckProxy(ctx context.Context, proxy *models.Proxy) (*m
 // bulk tests that want a snappier per-proxy timeout than scheduled checks).
 func (h *HealthChecker) checkProxy(ctx context.Context, proxy *models.Proxy, timeoutSecs int) (*models.ProxyTestResult, error) {
 	startTime := time.Now()
+	if IsGateway(proxy) {
+		proxy = withExit(proxy, newExit(), "")
+	}
 
 	settings, err := h.ensureSettings(ctx)
 	if err != nil {

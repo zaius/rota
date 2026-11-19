@@ -8,7 +8,7 @@ import (
 )
 
 func reserveForTest(m *SessionManager, key sessionIdentity, proxyID int, ttl time.Duration) error {
-	_, err := m.selectProxy(key, ttl, func(_ int, available func(int) bool) (*models.Proxy, error) {
+	_, _, err := m.selectProxy(key, ttl, func(_ int, available func(int) bool) (*models.Proxy, error) {
 		if !available(proxyID) {
 			return nil, ErrNoProxyAvailable
 		}
@@ -32,7 +32,7 @@ func TestSessionManager_TunnelTrafficHoldsBinding(t *testing.T) {
 	defer m.Stop()
 	key := sessionIdentity{token: "a", scope: "example.com"}
 	mustReserve(t, m, key, 42, time.Minute)
-	hold := m.openTunnel(key, 42, "example.com")
+	hold := m.openTunnel(key, 42, "", "example.com")
 	idle := func(d time.Duration) {
 		m.mu.Lock()
 		m.sessions[key].lastUsed = time.Now().Add(-d)
@@ -65,7 +65,7 @@ func TestSessionManager_IdleTunnelEndsWithBinding(t *testing.T) {
 	defer m.Stop()
 	key := sessionIdentity{token: "a", scope: "example.com"}
 	mustReserve(t, m, key, 42, time.Minute)
-	hold := m.openTunnel(key, 42, "example.com")
+	hold := m.openTunnel(key, 42, "", "example.com")
 	ended := make(chan struct{})
 	hold.onEnd(func() { close(ended) })
 
@@ -125,7 +125,7 @@ func TestSessionManager_TunnelEndsWhenSessionLeavesProxy(t *testing.T) {
 			defer m.Stop()
 			key := sessionIdentity{token: "a", scope: "example.com"}
 			mustReserve(t, m, key, 42, time.Minute)
-			hold := m.openTunnel(key, 42, "example.com")
+			hold := m.openTunnel(key, 42, "", "example.com")
 			ended := make(chan struct{})
 			hold.onEnd(func() { close(ended) })
 
@@ -164,12 +164,12 @@ func TestSessionManager_TunnelEndedBeforeShutdownIsSet(t *testing.T) {
 	defer m.Stop()
 	key := sessionIdentity{token: "a", scope: "example.com"}
 	mustReserve(t, m, key, 42, time.Minute)
-	early := m.openTunnel(key, 42, "example.com")
+	early := m.openTunnel(key, 42, "", "example.com")
 	m.ReleaseSessions(SessionFilter{Token: "a"})
 
 	// The binding moved off proxy 42 between selection and the tunnel opening.
 	mustReserve(t, m, key, 43, time.Minute)
-	moved := m.openTunnel(key, 42, "example.com")
+	moved := m.openTunnel(key, 42, "", "example.com")
 
 	for name, hold := range map[string]*sessionHold{"released": early, "moved": moved} {
 		ran := false
@@ -190,10 +190,10 @@ func TestSessionManager_StaleTunnelCloseIgnoresNewBinding(t *testing.T) {
 	defer m.Stop()
 	key := sessionIdentity{token: "a", scope: "example.com"}
 	mustReserve(t, m, key, 42, time.Minute)
-	stale := m.openTunnel(key, 42, "example.com")
+	stale := m.openTunnel(key, 42, "", "example.com")
 	m.ReleaseSessions(SessionFilter{Token: "a"})
 	mustReserve(t, m, key, 42, time.Minute)
-	current := m.openTunnel(key, 42, "example.com")
+	current := m.openTunnel(key, 42, "", "example.com")
 
 	stale.close()
 	m.mu.Lock()

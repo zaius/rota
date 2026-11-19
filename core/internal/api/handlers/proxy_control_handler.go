@@ -266,11 +266,21 @@ func cooldownExpiry(until time.Time, invalid bool) *time.Time {
 // client detects it has been rate-limited). It sets a DB cooldown and evicts the
 // proxy from live rotation immediately, rebinding any sessions that were using it.
 // When a domain is supplied the cooldown is scoped to that domain (and its
-// subdomains) only: the proxy keeps serving every other target.
+// subdomains) only: the proxy keeps serving every other target. A gateway is
+// refused, since its cooldown would take out every exit behind it.
 func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	p, err := h.proxyRepo.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load proxy")
+		return
+	}
+	if p != nil && proxy.IsGateway(p) {
+		writeError(w, http.StatusBadRequest, "a gateway can't be invalidated by ID; invalidate the session to drop its exit")
 		return
 	}
 
@@ -300,6 +310,7 @@ func (h *ProxyControlHandler) InvalidateProxy(w http.ResponseWriter, r *http.Req
 // but not which proxy ID served it. By default each bound proxy is cooled only
 // in that binding's reservation scope. domain overrides with a domain cooldown;
 // global explicitly cools the proxy across all targets and drops all bindings.
+// A binding on a gateway drops only its exit, whatever the options.
 func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Token string `json:"token"`
@@ -333,7 +344,7 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 
 	if !body.Global && body.Domain == "" {
 		for _, s := range sessions {
-			if s.Scope == "" {
+			if s.Scope == "" && s.Exit == "" {
 				writeError(w, http.StatusBadRequest, "session has no reservation scope; supply domain or global")
 				return
 			}
@@ -348,6 +359,13 @@ func (h *ProxyControlHandler) InvalidateSession(w http.ResponseWriter, r *http.R
 	seen := make(map[cooldownKey]bool)
 	invalidated := make([]map[string]interface{}, 0, len(sessions))
 	for _, s := range sessions {
+		// A gateway binding's IP is its exit, so drop just that exit. A
+		// cooldown would take every exit on the gateway out with it.
+		if s.Exit != "" {
+			h.proxyServer.ReleaseSessions(proxy.SessionFilter{Token: body.Token, Scope: s.Scope})
+			invalidated = append(invalidated, map[string]interface{}{"status": "released", "id": s.ProxyID, "exit": s.Exit, "scope": s.Scope})
+			continue
+		}
 		invalidation := body.invalidateBody
 		invalidation.sessionBackoff = true
 		if !body.Global && body.Domain == "" {

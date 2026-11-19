@@ -40,6 +40,7 @@ type reservationKey struct {
 
 type sessionEntry struct {
 	proxyID   int
+	exit      string // set when proxyID is a gateway
 	createdAt time.Time
 	lastUsed  time.Time
 	ttl       time.Duration
@@ -85,6 +86,7 @@ type SessionInfo struct {
 	Token     string    `json:"token"`
 	Scope     string    `json:"scope"`
 	ProxyID   int       `json:"proxy_id"`
+	Exit      string    `json:"exit,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	LastUsed  time.Time `json:"last_used"`
 	ExpiresAt time.Time `json:"expires_at"`
@@ -133,8 +135,9 @@ func NewSessionManager() *SessionManager {
 
 // selectProxy checks ownership, selects, and reserves under one lock. choose
 // must not call back into the manager. An empty token selects an unreserved
-// proxy without creating a sticky binding.
-func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, choose func(boundID int, available func(int) bool) (*models.Proxy, error)) (*models.Proxy, error) {
+// proxy without creating a sticky binding. It also returns the exit to dial
+// when the proxy is a gateway: the binding's, or a new one without a token.
+func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, choose func(boundID int, available func(int) bool) (*models.Proxy, error)) (*models.Proxy, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
@@ -154,10 +157,14 @@ func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, cho
 	}
 	p, err := choose(boundID, available)
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	exit := ""
+	if IsGateway(p) {
+		exit = newExit()
 	}
 	if key.token == "" {
-		return p, nil
+		return p, exit, nil
 	}
 	e := m.sessions[key]
 	if e == nil {
@@ -166,10 +173,25 @@ func (m *SessionManager) selectProxy(key sessionIdentity, ttl time.Duration, cho
 		delete(m.reservations, reservationKey{e.proxyID, key.scope})
 		e.endTunnelsLocked(func(h *sessionHold) bool { return h.proxyID != p.ID })
 	}
+	if e.proxyID != p.ID {
+		e.exit = exit
+	}
 	e.proxyID, e.lastUsed, e.ttl = p.ID, now, ttl
 	m.sessions[key] = e
-	m.reservations[reservationKey{p.ID, key.scope}] = key
-	return p, nil
+	if exit == "" {
+		m.reservations[reservationKey{p.ID, key.scope}] = key
+	}
+	return p, e.exit, nil
+}
+
+// releaseExit drops key's binding while it still dials exit, so the session's
+// next selection takes a new exit.
+func (m *SessionManager) releaseExit(key sessionIdentity, proxyID int, exit string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e := m.sessions[key]; e != nil && e.proxyID == proxyID && e.exit == exit {
+		m.deleteLocked(key)
+	}
 }
 
 func (m *SessionManager) liveLocked(key sessionIdentity, now time.Time) *sessionEntry {
@@ -181,11 +203,11 @@ func (m *SessionManager) liveLocked(key sessionIdentity, now time.Time) *session
 	return e
 }
 
-// openTunnel attaches a tunnel through proxyID to key's live binding until the
-// returned hold closes. It returns nil when key has no live binding, and a
-// hold that has already ended when the binding moved off proxyID after
-// selecting it.
-func (m *SessionManager) openTunnel(key sessionIdentity, proxyID int, host string) *sessionHold {
+// openTunnel attaches a tunnel through proxyID and exit to key's live binding
+// until the returned hold closes. It returns nil when key has no live binding,
+// and a hold that has already ended when the binding moved off them after
+// selecting them.
+func (m *SessionManager) openTunnel(key sessionIdentity, proxyID int, exit, host string) *sessionHold {
 	if key.token == "" {
 		return nil
 	}
@@ -198,7 +220,7 @@ func (m *SessionManager) openTunnel(key sessionIdentity, proxyID int, host strin
 	}
 	h := &sessionHold{m: m, key: key, entry: e, proxyID: proxyID, host: host}
 	h.lastTraffic.Store(now.UnixNano())
-	if e.proxyID != proxyID {
+	if e.proxyID != proxyID || e.exit != exit {
 		h.ended = true
 		return h
 	}
@@ -310,7 +332,7 @@ func (m *SessionManager) listMatching(matches func(sessionIdentity) bool) []Sess
 		lastActive := e.lastActive()
 		out = append(out, SessionInfo{
 			Token: key.token, Scope: key.scope,
-			ProxyID: e.proxyID, CreatedAt: e.createdAt, LastUsed: lastActive,
+			ProxyID: e.proxyID, Exit: e.exit, CreatedAt: e.createdAt, LastUsed: lastActive,
 			ExpiresAt: lastActive.Add(e.ttl),
 		})
 	}

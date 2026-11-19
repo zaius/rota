@@ -84,9 +84,13 @@ func ParseOptions(username string) (Options, error) {
 // NormalizeSessionScope canonicalizes explicit identifiers like default hosts.
 func NormalizeSessionScope(raw string) string { return normalizeHost(raw) }
 
-// matches reports whether p satisfies the country and tag filters.
+// matches reports whether p satisfies the country and tag filters. A gateway
+// bills by traffic, so it serves only requests that name it by tag.
 func (o Options) matches(p *models.Proxy) bool {
-	if o.Country != "" && (p.CountryCode == nil || !strings.EqualFold(*p.CountryCode, o.Country)) {
+	if len(o.Tags) == 0 && IsGateway(p) {
+		return false
+	}
+	if o.Country != "" && !fillsCountry(p) && (p.CountryCode == nil || !strings.EqualFold(*p.CountryCode, o.Country)) {
 		return false
 	}
 	for _, tag := range o.Tags {

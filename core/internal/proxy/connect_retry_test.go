@@ -117,7 +117,7 @@ func TestConnectWithRetry_RejectionRetryRebindsSession(t *testing.T) {
 	ctx := requestCtx("192.0.2.1", Options{Client: "etl", Session: "abc"})
 
 	// Bind the session to the rejecting proxy first.
-	if p, err := r.pick(ctx, nil); err != nil || p.ID != 1 {
+	if p, _, err := r.pick(ctx, nil); err != nil || p.ID != 1 {
 		t.Fatalf("session did not bind proxy 1: %v %v", p, err)
 	}
 

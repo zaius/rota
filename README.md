@@ -76,6 +76,7 @@ curl -u "scraper:$ROTA_PASSWORD" http://localhost:8001/api/v1/proxies
 
 - PostgreSQL holds the configuration. Request and tunnel history goes to Parquet files under `EVENT_STORE_DIR`, one per day, which tools like DuckDB can read. Keep that directory on persistent storage and run one Rota process per directory.
 - Add proxies in the dashboard, or point a source at a URL serving one `ip:port` per line and Rota imports it on a schedule. A health check every 30 minutes returns failed proxies to rotation.
+- A residential gateway is one proxy whose username holds `{session}`, such as Webshare's `p.webshare.io:80` with `user-residential-{country}-{session}`. Rota fills `{session}` with a new exit for each sticky binding, and `{country}` from the `country-` option, dropping `-{country}` without one. Give it a tag: a gateway only serves requests that name one. A failed or [invalidated](docs/sessions.md#invalidation) exit gets replaced, and only an unreachable gateway or rejected credentials count against the gateway itself.
 - `GET :8001/metrics` serves Prometheus metrics, each described by its `# HELP` line. Set the standard `OTEL_EXPORTER_OTLP_*` variables to push the same metrics over OTLP.
 - HTTPS passes through as opaque tunnels, so history counts tunnels and bytes for it. Opt in to [HTTPS inspection](docs/tls-inspection.md) to record each request and choose the TLS fingerprint the target sees.
 
