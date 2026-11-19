@@ -677,12 +677,20 @@ func (r *ProxyRepository) ListAll(ctx context.Context) ([]*models.Proxy, error) 
 }
 
 // ListSelectable returns the proxies rotation may pick (including credentials):
-// active or idle and outside a global cooldown, ordered by ID.
+// active or idle, outside a global cooldown, and not from a disabled source,
+// ordered by ID.
+//   - Disabling a source is how an operator retires a proxy list, so it stops
+//     the list's traffic as well as its fetches.
+//   - Proxies added by hand have no source and are always eligible.
 func (r *ProxyRepository) ListSelectable(ctx context.Context) ([]*models.Proxy, error) {
 	rows, err := r.db.Pool.Query(ctx, fmt.Sprintf(`
 		SELECT %s FROM proxies
 		WHERE status IN ('active', 'idle')
 		  AND (cooldown_until IS NULL OR cooldown_until < NOW())
+		  AND NOT EXISTS (
+		    SELECT 1 FROM proxy_sources
+		    WHERE proxy_sources.id = proxies.source_id AND NOT proxy_sources.enabled
+		  )
 		ORDER BY id`, proxyFullColumns))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list selectable proxies: %w", err)
