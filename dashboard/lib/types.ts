@@ -66,8 +66,7 @@ export interface TrafficPoint {
   time: string // bucket start, RFC3339
   requests: number
   successes: number
-  p50_ms: number
-  p95_ms: number
+  avg_response_time: number
 }
 
 export interface TrafficChartResponse {
@@ -83,8 +82,6 @@ export interface DomainStats {
   failures: number
   rate_limited: number
   avg_response_time: number
-  p50_ms: number
-  p95_ms: number
   tunnels: number
   tunnel_errors: number
   bytes_up: number

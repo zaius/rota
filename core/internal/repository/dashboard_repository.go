@@ -75,7 +75,7 @@ func (r *DashboardRepository) GetStats(ctx context.Context) (*models.DashboardSt
 	return &stats, nil
 }
 
-// GetTrafficChart retrieves the traffic series (volume + latency percentiles)
+// GetTrafficChart retrieves the traffic series (volume + mean latency)
 // for the given range.
 func (r *DashboardRepository) GetTrafficChart(ctx context.Context, rng string) ([]models.TrafficPoint, error) {
 	return r.events.TrafficSeries(ctx, rng)

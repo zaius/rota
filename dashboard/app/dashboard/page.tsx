@@ -33,8 +33,7 @@ const successConfig = {
 } satisfies ChartConfig
 
 const latencyConfig = {
-  p50: { label: "p50", color: "var(--chart-1)" },
-  p95: { label: "p95", color: "var(--chart-2)" },
+  latency: { label: "Mean", color: "var(--chart-1)" },
 } satisfies ChartConfig
 
 const URL_DEFAULTS = { range: "24h" }
@@ -48,8 +47,7 @@ interface TrafficRow {
   successes: number
   failures: number
   successRate: number | null
-  p50: number | null
-  p95: number | null
+  latency: number | null
 }
 
 function toRows(points: TrafficPoint[]): TrafficRow[] {
@@ -59,8 +57,7 @@ function toRows(points: TrafficPoint[]): TrafficRow[] {
     successes: p.successes,
     failures: p.requests - p.successes,
     successRate: p.requests > 0 ? Math.round((p.successes / p.requests) * 1000) / 10 : null,
-    p50: p.successes > 0 ? p.p50_ms : null,
-    p95: p.successes > 0 ? p.p95_ms : null,
+    latency: p.successes > 0 ? p.avg_response_time : null,
   }))
 }
 
@@ -86,7 +83,7 @@ const axisTick = { fill: "var(--muted-foreground)", fontSize: 11 }
 
 // loneDot draws a dot only on a point with no neighbor to join: a lone value
 // between gaps otherwise renders as nothing at all.
-function loneDot(rows: TrafficRow[], key: "successRate" | "p50" | "p95", color: string) {
+function loneDot(rows: TrafficRow[], key: "successRate" | "latency", color: string) {
   return function LoneDot({ cx, cy, index = 0 }: { cx?: number; cy?: number; index?: number }) {
     const lone = rows[index]?.[key] != null && rows[index - 1]?.[key] == null && rows[index + 1]?.[key] == null
     if (!lone || cx == null || cy == null) return <g key={index} />
@@ -172,9 +169,8 @@ export default function OverviewPage() {
     (low, r) => (r.successRate !== null && (low === null || r.successRate < (low.successRate ?? 100)) ? r : low),
     null,
   )
-  const hasLatency = traffic.some((r) => r.p50 !== null)
-  const peakP95 = Math.max(0, ...traffic.map((r) => r.p95 ?? 0))
-  const peakP50 = Math.max(0, ...traffic.map((r) => r.p50 ?? 0))
+  const hasLatency = traffic.some((r) => r.latency !== null)
+  const peakLatency = Math.max(0, ...traffic.map((r) => r.latency ?? 0))
 
   const xAxis = (
     <XAxis
@@ -289,7 +285,7 @@ export default function OverviewPage() {
 
       <Section
         title="Response time"
-        description={`${range.hint} Latency percentiles of successful requests.`}
+        description={`${range.hint} Mean latency of successful requests.`}
         actions={
           <Link to="/dashboard/proxies?sort=avg_response_time&order=desc" className="text-muted-foreground hover:text-foreground font-medium">
             Slowest proxies →
@@ -305,16 +301,12 @@ export default function OverviewPage() {
               {xAxis}
               <YAxis width={48} tickLine={false} axisLine={false} tickFormatter={(v) => `${v} ms`} tick={axisTick} />
               <ChartTooltip cursor={{ stroke: "var(--border)" }} content={<ChartTooltipContent indicator="line" labelFormatter={tooltipLabel} />} />
-              <Line type="linear" dataKey="p95" stroke="var(--color-p95)" strokeWidth={2} strokeDasharray="4 3" dot={loneDot(traffic, "p95", "var(--color-p95)")} connectNulls={false} isAnimationActive={false} />
-              <Line type="linear" dataKey="p50" stroke="var(--color-p50)" strokeWidth={2} dot={loneDot(traffic, "p50", "var(--color-p50)")} connectNulls={false} isAnimationActive={false} />
+              <Line type="linear" dataKey="latency" stroke="var(--color-latency)" strokeWidth={2} dot={loneDot(traffic, "latency", "var(--color-latency)")} connectNulls={false} isAnimationActive={false} />
             </ComposedChart>
           </ChartContainer>
         )}
         <Footnote
-          items={[
-            { label: "Peak p50", value: hasLatency ? ms(peakP50) : "—" },
-            { label: "Peak p95", value: hasLatency ? ms(peakP95) : "—" },
-          ]}
+          items={[{ label: "Peak mean", value: hasLatency ? ms(peakLatency) : "—" }]}
         />
       </Section>
 

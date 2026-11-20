@@ -51,7 +51,7 @@ export function DomainStats({ range }: { range: ChartRange }) {
               <TableHead className="text-right">Success</TableHead>
               <TableHead className="text-right">Failures</TableHead>
               <TableHead className="text-right">429s</TableHead>
-              <TableHead className="text-right">p50 / p95</TableHead>
+              <TableHead className="text-right">Mean latency</TableHead>
               <TableHead className="text-right">Tunnels</TableHead>
               <TableHead className="text-right">Tunnel errors</TableHead>
               <TableHead className="text-right">Sent / received</TableHead>
@@ -66,7 +66,7 @@ export function DomainStats({ range }: { range: ChartRange }) {
                 <TableCell className="num text-right">{count(row.failures)}</TableCell>
                 <TableCell className="num text-right">{count(row.rate_limited)}</TableCell>
                 <TableCell className="num text-right whitespace-nowrap">
-                  {row.successes ? `${count(row.p50_ms)} / ${count(row.p95_ms)} ms` : "—"}
+                  {row.successes ? `${count(row.avg_response_time)} ms` : "—"}
                 </TableCell>
                 <TableCell className="num text-right">{count(row.tunnels)}</TableCell>
                 <TableCell className="num text-right">{count(row.tunnel_errors)}</TableCell>

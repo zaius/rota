@@ -1,116 +1,10 @@
 package events
 
 import (
-	"encoding/binary"
 	"maps"
 	"slices"
 	"strings"
 )
-
-// latencyLowLimit bounds the flat array of latency counts. Almost every
-// proxied request lands under it; the slow tail goes to a map.
-const latencyLowLimit = 1 << 12
-
-// latencyCounts is an exact multiset of millisecond latencies. Latencies are
-// small integers, so counting each value yields exact percentiles in bounded
-// memory, however many requests a range covers.
-type latencyCounts struct {
-	total uint64
-	low   []uint32
-	high  map[int32]uint32
-}
-
-func (c *latencyCounts) add(ms int32, n uint32) {
-	ms = max(ms, 0)
-	c.total += uint64(n)
-	if ms >= latencyLowLimit {
-		if c.high == nil {
-			c.high = map[int32]uint32{}
-		}
-		c.high[ms] += n
-		return
-	}
-	if int(ms) >= len(c.low) {
-		c.growLow(max(int(ms)+1, 2*len(c.low)))
-	}
-	c.low[ms] += n
-}
-
-// packed returns the counts as ascending (milliseconds, count) pairs of
-// little-endian uint32s.
-func (c *latencyCounts) packed() []byte {
-	var b []byte
-	for ms, n := range c.low {
-		if n > 0 {
-			b = binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(b, uint32(ms)), n)
-		}
-	}
-	for _, ms := range slices.Sorted(maps.Keys(c.high)) {
-		b = binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(b, uint32(ms)), c.high[ms])
-	}
-	return b
-}
-
-func (c *latencyCounts) addPacked(b []byte) {
-	for ; len(b) >= 8; b = b[8:] {
-		c.add(int32(binary.LittleEndian.Uint32(b)), binary.LittleEndian.Uint32(b[4:]))
-	}
-}
-
-func (c *latencyCounts) growLow(size int) {
-	grown := make([]uint32, min(size, latencyLowLimit))
-	copy(grown, c.low)
-	c.low = grown
-}
-
-func (c *latencyCounts) merge(other *latencyCounts) {
-	c.total += other.total
-	if len(other.low) > len(c.low) {
-		c.growLow(len(other.low))
-	}
-	for ms, n := range other.low {
-		c.low[ms] += n
-	}
-	if len(other.high) > 0 && c.high == nil {
-		c.high = make(map[int32]uint32, len(other.high))
-	}
-	for ms, n := range other.high {
-		c.high[ms] += n
-	}
-}
-
-// percentile interpolates between ranks like Postgres' percentile_cont and
-// returns 0 for an empty set.
-func (c *latencyCounts) percentile(q float64) float64 {
-	if c.total == 0 {
-		return 0
-	}
-	position := q * float64(c.total-1)
-	rank := uint64(position)
-	fraction := position - float64(rank)
-	lower := c.valueAt(rank)
-	if fraction == 0 {
-		return float64(lower)
-	}
-	return float64(lower) + fraction*float64(c.valueAt(rank+1)-lower)
-}
-
-func (c *latencyCounts) valueAt(rank uint64) int32 {
-	var seen uint64
-	for ms, n := range c.low {
-		seen += uint64(n)
-		if seen > rank {
-			return int32(ms)
-		}
-	}
-	for _, ms := range slices.Sorted(maps.Keys(c.high)) {
-		seen += uint64(c.high[ms])
-		if seen > rank {
-			return ms
-		}
-	}
-	return 0
-}
 
 type windowTotals struct {
 	requests, successes, responseMs int64
@@ -261,8 +155,7 @@ func (a *proxyAgg) rollup() []ProxyRequestStats {
 const bucketColumns = colTimestamp | colResponseTime | colSuccess
 
 type bucketCounts struct {
-	requests, successes int64
-	latency             latencyCounts
+	requests, successes, successMs int64
 }
 
 // bucketAgg groups requests into fixed-width buckets aligned to the epoch.
@@ -296,32 +189,26 @@ func (a *bucketAgg) add(b *eventBatch) {
 		current.requests++
 		if b.success[i] {
 			current.successes++
-			current.latency.add(b.responseTime[i], 1)
+			current.successMs += int64(b.responseTime[i])
 		}
 	}
 }
 
-// load takes a finished day's totals from its summary, which holds daily
-// buckets.
-func (a *bucketAgg) load(f *eventFile) bool {
-	if a.width != dayMillis {
-		return false
+// load takes a finished day's daily buckets from its summary instead of its
+// rows.
+func (a *bucketAgg) load(f *eventFile) (bool, error) {
+	if a.width != dayMillis || f.summary == "" {
+		return false, nil
 	}
-	rows, ok := f.summaryFor(a.from, true)
+	rows, err := readSummary(f.summary, true)
 	for i := range rows {
-		if rows[i].Domain != "" {
-			break
+		if rows[i].Domain == "" && rows[i].Bucket >= a.from {
+			a.merge(&bucketAgg{buckets: map[int64]*bucketCounts{
+				rows[i].Bucket: {requests: rows[i].Requests, successes: rows[i].Successes, successMs: rows[i].SuccessMs},
+			}})
 		}
-		counts := a.buckets[rows[i].Bucket]
-		if counts == nil {
-			counts = &bucketCounts{}
-			a.buckets[rows[i].Bucket] = counts
-		}
-		counts.requests += rows[i].Requests
-		counts.successes += rows[i].Successes
-		counts.latency.addPacked(rows[i].Latency)
 	}
-	return ok
+	return true, err
 }
 
 // rows returns the buckets as summary rows, in time order.
@@ -329,7 +216,7 @@ func (a *bucketAgg) rows() []summaryRow {
 	rows := make([]summaryRow, 0, len(a.buckets))
 	for _, start := range a.sortedStarts() {
 		counts := a.buckets[start]
-		rows = append(rows, summaryRow{Bucket: start, Requests: counts.requests, Successes: counts.successes, Latency: counts.latency.packed()})
+		rows = append(rows, summaryRow{Bucket: start, Requests: counts.requests, Successes: counts.successes, SuccessMs: counts.successMs})
 	}
 	return rows
 }
@@ -343,7 +230,7 @@ func (a *bucketAgg) merge(other *bucketAgg) {
 		}
 		counts.requests += from.requests
 		counts.successes += from.successes
-		counts.latency.merge(&from.latency)
+		counts.successMs += from.successMs
 	}
 }
 
@@ -360,27 +247,28 @@ const (
 type domainCounts struct {
 	requests, successes, rateLimited, successMs int64
 	tunnels, tunnelErrors, bytesUp, bytesDown   int64
-	latency                                     latencyCounts
 }
 
 // domainAgg groups one file of an event table by hostname, leaving out events
-// with none.
+// with none. A from of zero counts every event in the file.
 type domainAgg struct {
 	from    int64
 	tunnels bool
 	domains map[string]*domainCounts
-	// summary holds a finished day's rows when load took them from its
-	// summary instead of scanning the day.
-	summary []summaryRow
+	// summary names a finished day's summary when it stands in for the day's
+	// rows. rows reads it, so only one day's summary is in memory at a time.
+	summary string
 }
 
 func newDomainAgg(from int64, tunnels bool) *domainAgg {
 	return &domainAgg{from: from, tunnels: tunnels, domains: map[string]*domainCounts{}}
 }
 
-func (a *domainAgg) load(f *eventFile) (ok bool) {
-	a.summary, ok = f.summaryFor(a.from, false)
-	return ok
+func (a *domainAgg) load(f *eventFile) (bool, error) {
+	if a.from == 0 {
+		a.summary = f.summary
+	}
+	return a.summary != "", nil
 }
 
 func (a *domainAgg) add(b *eventBatch) {
@@ -428,24 +316,23 @@ func (a *domainAgg) add(b *eventBatch) {
 		if b.success[i] {
 			counts.successes++
 			counts.successMs += int64(b.responseTime[i])
-			counts.latency.add(b.responseTime[i], 1)
 		}
 	}
 }
 
 // rows returns the file's domains as summary rows sorted by domain.
-func (a *domainAgg) rows() []summaryRow {
-	if a.summary != nil {
-		return a.summary
+func (a *domainAgg) rows() ([]summaryRow, error) {
+	if a.summary != "" {
+		return readSummary(a.summary, false)
 	}
 	rows := make([]summaryRow, 0, len(a.domains))
 	for name, counts := range a.domains {
 		rows = append(rows, summaryRow{
 			Domain: name, Requests: counts.requests, Successes: counts.successes, RateLimited: counts.rateLimited,
 			SuccessMs: counts.successMs, Tunnels: counts.tunnels, TunnelErrors: counts.tunnelErrors,
-			BytesUp: counts.bytesUp, BytesDown: counts.bytesDown, Latency: counts.latency.packed(),
+			BytesUp: counts.bytesUp, BytesDown: counts.bytesDown,
 		})
 	}
 	slices.SortFunc(rows, func(x, y summaryRow) int { return strings.Compare(x.Domain, y.Domain) })
-	return rows
+	return rows, nil
 }

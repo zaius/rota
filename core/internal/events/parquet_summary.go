@@ -11,14 +11,11 @@ import (
 )
 
 // summaryRow is the Parquet schema of a finished day's summary: what the
-// long-range views need from that day, so they do not read its rows.
+// views that span many days need from that day, so they do not read its rows.
 //
-//   - A row with a domain totals that domain over the day's file. The rows are
-//     sorted by domain.
+//   - A row with a domain totals that domain over the day's file.
 //   - A row without one totals the requests of one UTC day, for charts with
 //     daily buckets. These rows come first, in a row group of their own.
-//
-// Latency holds exact latency counts, as latencyCounts packs them.
 type summaryRow struct {
 	Bucket       int64  `parquet:"bucket,timestamp(millisecond)"`
 	Domain       string `parquet:"domain"`
@@ -30,11 +27,10 @@ type summaryRow struct {
 	TunnelErrors int64  `parquet:"tunnel_errors"`
 	BytesUp      int64  `parquet:"bytes_up"`
 	BytesDown    int64  `parquet:"bytes_down"`
-	Latency      []byte `parquet:"latency"`
 }
 
 // summaryInts gives each integer column of summaryRow by its position in the
-// schema. Domain is column 1 and Latency column 10.
+// schema. Domain is column 1.
 var summaryInts = map[int]func(*summaryRow) *int64{
 	0: func(r *summaryRow) *int64 { return &r.Bucket },
 	2: func(r *summaryRow) *int64 { return &r.Requests },
@@ -45,17 +41,6 @@ var summaryInts = map[int]func(*summaryRow) *int64{
 	7: func(r *summaryRow) *int64 { return &r.TunnelErrors },
 	8: func(r *summaryRow) *int64 { return &r.BytesUp },
 	9: func(r *summaryRow) *int64 { return &r.BytesDown },
-}
-
-func (r *summaryRow) add(other *summaryRow) {
-	r.Requests += other.Requests
-	r.Successes += other.Successes
-	r.RateLimited += other.RateLimited
-	r.SuccessMs += other.SuccessMs
-	r.Tunnels += other.Tunnels
-	r.TunnelErrors += other.TunnelErrors
-	r.BytesUp += other.BytesUp
-	r.BytesDown += other.BytesDown
 }
 
 // summarize writes the summary of key's finished Parquet file.
@@ -76,6 +61,10 @@ func (t *eventTable) summarize(ctx context.Context, key fileKey) error {
 	if err := f.scan(ctx, want, add); err != nil {
 		return err
 	}
+	rows, err := domains.rows()
+	if err != nil {
+		return err
+	}
 
 	path := t.path(key, summarySuffix)
 	out, err := os.Create(path + tempSuffix)
@@ -88,7 +77,7 @@ func (t *eventTable) summarize(ctx context.Context, key fileKey) error {
 		err = writer.Flush()
 	}
 	if err == nil {
-		_, err = writer.Write(domains.rows())
+		_, err = writer.Write(rows)
 	}
 	if err == nil {
 		err = writer.Close()
@@ -106,25 +95,9 @@ func (t *eventTable) summarize(ctx context.Context, key fileKey) error {
 	return os.Rename(path+tempSuffix, path)
 }
 
-// summaryFor returns the rows of f's summary when a window starting at from
-// may use them in place of f's own rows: the day is finished and summarized,
-// and every event in the file falls inside the window. A day's file can hold
-// events from the day before, so the first two days of a trailing window do
-// not qualify. totals asks for the day totals only.
-func (f *eventFile) summaryFor(from int64, totals bool) ([]summaryRow, bool) {
-	if f.summary == "" || from > 0 && f.day < dayOf(from)+2 {
-		return nil, false
-	}
-	rows, err := readSummary(f.summary, totals)
-	if err != nil {
-		f.table.store.logger.Warn("failed to read event summary, reading the day's rows instead", "file", f.summary, "error", err)
-		return nil, false
-	}
-	return rows, true
-}
-
-// readSummary reads a summary through its column pages. Every value of a
-// column shares one buffer, so a row costs no allocation of its own.
+// readSummary reads a summary through its column pages, which is several
+// times faster than the library's row reader on a day with many domains.
+// totals stops after the day totals.
 func readSummary(path string, totals bool) ([]summaryRow, error) {
 	in, err := os.Open(path)
 	if err != nil {
@@ -157,19 +130,16 @@ func readSummary(path string, totals bool) ([]summaryRow, error) {
 				*field(&part[i]) = v
 			}
 		}
-		err := readBytes(chunks[1], func(text []byte, offsets []uint32) {
-			domains := string(text)
-			for i := range part {
-				part[i].Domain = domains[offsets[i]:offsets[i+1]]
+		row := 0
+		err := readPages(chunks[1], func(page parquet.Page) error {
+			data := page.Data()
+			values, offsets := data.ByteArray()
+			domains := string(values)
+			for i := 0; i+1 < len(offsets); i++ {
+				part[row].Domain = domains[offsets[i]:offsets[i+1]]
+				row++
 			}
-		})
-		if err != nil {
-			return nil, err
-		}
-		err = readBytes(chunks[10], func(counts []byte, offsets []uint32) {
-			for i := range part {
-				part[i].Latency = counts[offsets[i]:offsets[i+1]]
-			}
+			return nil
 		})
 		if err != nil {
 			return nil, err
@@ -179,53 +149,45 @@ func readSummary(path string, totals bool) ([]summaryRow, error) {
 	return rows, nil
 }
 
-// readBytes passes fn every value of a byte-array column in one buffer, with
-// the offsets that divide it into rows.
-func readBytes(chunk parquet.ColumnChunk, fn func(values []byte, offsets []uint32)) error {
-	var values []byte
-	offsets := []uint32{0}
-	err := readPages(chunk, func(page parquet.Page) error {
-		data := page.Data()
-		pageValues, pageOffsets := data.ByteArray()
-		base := uint32(len(values))
-		values = append(values, pageValues...)
-		for _, end := range pageOffsets[1:] {
-			offsets = append(offsets, base+end)
-		}
-		return nil
-	})
-	if err == nil {
-		fn(values, offsets)
-	}
-	return err
+// domainTotals totals domains across files, one file's rows at a time. filter,
+// when set, keeps that hostname and its subdomains.
+type domainTotals struct {
+	filter string
+	index  map[string]int
+	rows   []summaryRow
 }
 
-// domainStats totals every domain across parts and returns the limit busiest,
-// by traffic and then name. filter, when set, keeps that hostname and its
-// subdomains. A percentile needs a domain's latency counts from every part,
-// so only the returned rows gather them.
-func domainStats(parts [][]summaryRow, filter string, limit int) []models.DomainStats {
-	index := map[string]int{}
-	var totals []summaryRow
-	for _, part := range parts {
-		for i := range part {
-			name := part[i].Domain
-			if name == "" || filter != "" && name != filter && !strings.HasSuffix(name, "."+filter) {
-				continue
-			}
-			id, ok := index[name]
-			if !ok {
-				id = len(totals)
-				index[name] = id
-				totals = append(totals, summaryRow{Domain: name})
-			}
-			totals[id].add(&part[i])
+func (t *domainTotals) add(rows []summaryRow) {
+	for i := range rows {
+		name := rows[i].Domain
+		if name == "" || t.filter != "" && name != t.filter && !strings.HasSuffix(name, "."+t.filter) {
+			continue
 		}
+		id, ok := t.index[name]
+		if !ok {
+			// A summary's domains share one string; the clone lets it go.
+			name = strings.Clone(name)
+			id = len(t.rows)
+			t.index[name] = id
+			t.rows = append(t.rows, summaryRow{Domain: name})
+		}
+		total := &t.rows[id]
+		total.Requests += rows[i].Requests
+		total.Successes += rows[i].Successes
+		total.RateLimited += rows[i].RateLimited
+		total.SuccessMs += rows[i].SuccessMs
+		total.Tunnels += rows[i].Tunnels
+		total.TunnelErrors += rows[i].TunnelErrors
+		total.BytesUp += rows[i].BytesUp
+		total.BytesDown += rows[i].BytesDown
 	}
+}
 
-	order := make([]*summaryRow, len(totals))
-	for i := range totals {
-		order[i] = &totals[i]
+// stats returns the limit busiest domains, by traffic and then name.
+func (t *domainTotals) stats(limit int) []models.DomainStats {
+	order := make([]*summaryRow, len(t.rows))
+	for i := range t.rows {
+		order[i] = &t.rows[i]
 	}
 	slices.SortFunc(order, func(x, y *summaryRow) int {
 		if diff := (y.Requests + y.Tunnels) - (x.Requests + x.Tunnels); diff != 0 {
@@ -239,35 +201,28 @@ func domainStats(parts [][]summaryRow, filter string, limit int) []models.Domain
 	if limit >= 0 && len(order) > limit {
 		order = order[:limit]
 	}
-
 	stats := make([]models.DomainStats, len(order))
 	for i, total := range order {
 		stats[i] = models.DomainStats{
-			Domain:       total.Domain,
-			Requests:     total.Requests,
-			Successes:    total.Successes,
-			Failures:     total.Requests - total.Successes,
-			RateLimited:  total.RateLimited,
-			Tunnels:      total.Tunnels,
-			TunnelErrors: total.TunnelErrors,
-			BytesUp:      total.BytesUp,
-			BytesDown:    total.BytesDown,
+			Domain:          total.Domain,
+			Requests:        total.Requests,
+			Successes:       total.Successes,
+			Failures:        total.Requests - total.Successes,
+			RateLimited:     total.RateLimited,
+			AvgResponseTime: mean(total.SuccessMs, total.Successes),
+			Tunnels:         total.Tunnels,
+			TunnelErrors:    total.TunnelErrors,
+			BytesUp:         total.BytesUp,
+			BytesDown:       total.BytesDown,
 		}
-		if total.Successes == 0 {
-			continue
-		}
-		var latency latencyCounts
-		for _, part := range parts {
-			at, found := slices.BinarySearchFunc(part, total.Domain, func(row summaryRow, name string) int {
-				return strings.Compare(row.Domain, name)
-			})
-			if found {
-				latency.addPacked(part[at].Latency)
-			}
-		}
-		stats[i].AvgResponseTime = int(total.SuccessMs / total.Successes)
-		stats[i].P50Ms = int(latency.percentile(0.5))
-		stats[i].P95Ms = int(latency.percentile(0.95))
 	}
 	return stats
+}
+
+// mean returns sum/n, or 0 for nothing to average.
+func mean(sum, n int64) int {
+	if n == 0 {
+		return 0
+	}
+	return int(sum / n)
 }

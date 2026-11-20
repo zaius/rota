@@ -226,7 +226,7 @@ func TestParquetMidnightFinishesDayAndKeepsAnswers(t *testing.T) {
 	if !slices.Equal(before, after) || !slices.Equal(beforeAll, afterAll) || !slices.Equal(beforeTraffic, afterTraffic) {
 		t.Fatalf("finishing the day changed answers:\nbefore %+v %+v %+v\nafter  %+v %+v %+v", before, beforeAll, beforeTraffic, after, afterAll, afterTraffic)
 	}
-	if len(after) != 1 || after[0].Requests != 3 || after[0].P50Ms != 200 || after[0].TunnelErrors != 1 {
+	if len(after) != 1 || after[0].Requests != 3 || after[0].AvgResponseTime != 200 || after[0].TunnelErrors != 1 {
 		t.Fatalf("domain stats: %+v", after)
 	}
 

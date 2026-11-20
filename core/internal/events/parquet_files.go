@@ -492,8 +492,13 @@ func scanFiles[A interface{ add(*eventBatch) }](ctx context.Context, files []*ev
 				parts[i] = fresh()
 				// An aggregate that can take a finished day from its
 				// summary skips the day's rows.
-				if summarized, ok := any(parts[i]).(interface{ load(*eventFile) bool }); ok && summarized.load(files[i]) {
-					continue
+				if summarized, ok := any(parts[i]).(interface {
+					load(*eventFile) (bool, error)
+				}); ok {
+					if done, err := summarized.load(files[i]); done || err != nil {
+						errs[i] = err
+						continue
+					}
 				}
 				errs[i] = files[i].scan(ctx, want, parts[i].add)
 			}

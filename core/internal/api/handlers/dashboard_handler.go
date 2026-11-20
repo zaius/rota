@@ -94,8 +94,8 @@ func (h *DashboardHandler) GetDomainStats(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, models.DomainStatsData{Range: rng, Data: data})
 }
 
-// GetTrafficChart handles traffic series requests: request volume and latency
-// percentiles in shared time buckets.
+// GetTrafficChart handles traffic series requests: request volume and mean
+// latency in shared time buckets.
 func (h *DashboardHandler) GetTrafficChart(w http.ResponseWriter, r *http.Request) {
 	rng := r.URL.Query().Get("range")
 	if rng == "" {

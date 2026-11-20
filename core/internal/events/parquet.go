@@ -347,12 +347,16 @@ func (s *ParquetStore) LowSuccessProxies(ctx context.Context, window time.Durati
 	return ids, nil
 }
 
-// TrafficSeries returns request volume and latency percentiles bucketed over
-// the range, zero-filled to a dense series.
+// TrafficSeries returns request volume and mean latency bucketed over the
+// range, zero-filled to a dense series.
 func (s *ParquetStore) TrafficSeries(ctx context.Context, rng string) ([]models.TrafficPoint, error) {
 	bucket, lookback := SeriesWindow(rng)
 	now := time.Now()
 	from := windowStart(lookback, now)
+	// Daily buckets cover whole UTC days, which a finished day's summary holds.
+	if bucket == 24*time.Hour {
+		from -= from % dayMillis
+	}
 	agg, err := collect(ctx, s.requests, dayOf(from), bucketColumns, func() *bucketAgg {
 		return newBucketAgg(from, bucket.Milliseconds())
 	})
@@ -364,11 +368,10 @@ func (s *ParquetStore) TrafficSeries(ctx context.Context, rng string) ([]models.
 	for _, start := range agg.sortedStarts() {
 		counts := agg.buckets[start]
 		points = append(points, models.TrafficPoint{
-			Time:      time.UnixMilli(start).UTC(),
-			Requests:  counts.requests,
-			Successes: counts.successes,
-			P50Ms:     int(counts.latency.percentile(0.5)),
-			P95Ms:     int(counts.latency.percentile(0.95)),
+			Time:            time.UnixMilli(start).UTC(),
+			Requests:        counts.requests,
+			Successes:       counts.successes,
+			AvgResponseTime: mean(counts.successMs, counts.successes),
 		})
 	}
 	if lookback == 0 && len(points) > 0 {
@@ -377,29 +380,40 @@ func (s *ParquetStore) TrafficSeries(ctx context.Context, rng string) ([]models.
 	return fillTrafficGaps(points, bucket, lookback, now), nil
 }
 
-// DomainStats groups traffic by target hostname over the range.
+// DomainStats groups traffic by target hostname over the range. A range
+// longer than a day covers whole UTC days: every event in those days' files,
+// so a finished day's summary can stand in for its rows.
 func (s *ParquetStore) DomainStats(ctx context.Context, rng, domain string, limit int) ([]models.DomainStats, error) {
 	_, lookback := SeriesWindow(rng)
-	return s.domainsSince(ctx, windowStart(lookback, time.Now()), domain, limit)
+	from := windowStart(lookback, time.Now())
+	fromDay := dayOf(from)
+	if lookback == 0 || lookback > 24*time.Hour {
+		from = 0
+	}
+	return s.domainsSince(ctx, fromDay, from, domain, limit)
 }
 
-func (s *ParquetStore) domainsSince(ctx context.Context, from int64, domain string, limit int) ([]models.DomainStats, error) {
-	var parts [][]summaryRow
+func (s *ParquetStore) domainsSince(ctx context.Context, fromDay, from int64, domain string, limit int) ([]models.DomainStats, error) {
+	totals := domainTotals{filter: domain, index: map[string]int{}}
 	for _, t := range s.tables() {
 		tunnels := t == s.tunnels
 		want := domainRequestColumns
 		if tunnels {
 			want = domainTunnelColumns
 		}
-		files, err := scanFrom(ctx, t, dayOf(from), want, func() *domainAgg { return newDomainAgg(from, tunnels) })
+		files, err := scanFrom(ctx, t, fromDay, want, func() *domainAgg { return newDomainAgg(from, tunnels) })
 		if err != nil {
 			return nil, fmt.Errorf("failed to get domain stats: %w", err)
 		}
 		for _, file := range files {
-			parts = append(parts, file.rows())
+			rows, err := file.rows()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get domain stats: %w", err)
+			}
+			totals.add(rows)
 		}
 	}
-	return domainStats(parts, domain, limit), nil
+	return totals.stats(limit), nil
 }
 
 // ApplyRetention removes the files of expired days. A file goes only once its

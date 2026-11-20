@@ -39,14 +39,13 @@ type TunnelStats struct {
 }
 
 // TrafficPoint is one time bucket of the traffic series: request volume plus
-// latency percentiles of the successful requests in the bucket. P50Ms/P95Ms
-// are 0 when the bucket has no successful requests.
+// the mean latency of the successful requests in the bucket, which is 0 when
+// the bucket has none.
 type TrafficPoint struct {
-	Time      time.Time `json:"time"` // bucket start, RFC3339
-	Requests  int64     `json:"requests"`
-	Successes int64     `json:"successes"`
-	P50Ms     int       `json:"p50_ms"`
-	P95Ms     int       `json:"p95_ms"`
+	Time            time.Time `json:"time"` // bucket start, RFC3339
+	Requests        int64     `json:"requests"`
+	Successes       int64     `json:"successes"`
+	AvgResponseTime int       `json:"avg_response_time"`
 }
 
 // TrafficChartData is the traffic-series chart payload. BucketSeconds tells
@@ -67,8 +66,6 @@ type DomainStats struct {
 	Failures        int64  `json:"failures"`
 	RateLimited     int64  `json:"rate_limited"`
 	AvgResponseTime int    `json:"avg_response_time"`
-	P50Ms           int    `json:"p50_ms"`
-	P95Ms           int    `json:"p95_ms"`
 	Tunnels         int64  `json:"tunnels"`
 	TunnelErrors    int64  `json:"tunnel_errors"`
 	BytesUp         int64  `json:"bytes_up"`
